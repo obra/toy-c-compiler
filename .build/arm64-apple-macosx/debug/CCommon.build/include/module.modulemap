@@ -1,0 +1,3 @@
+module CCommon {
+    header "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/include/CCommon-Swift.h"
+}

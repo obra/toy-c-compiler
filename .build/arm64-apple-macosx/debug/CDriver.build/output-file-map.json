@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/primary.swiftdeps"
+  },
+  "/Users/jesse/git/c-compiler/Sources/CDriver/main.swift": {
+    "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.d",
+    "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o",
+    "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swiftdeps",
+    "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.dia"
+  }
+}

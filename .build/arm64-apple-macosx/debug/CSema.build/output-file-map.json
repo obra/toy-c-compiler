@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/primary.swiftdeps"
+  },
+  "/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift": {
+    "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.d",
+    "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o",
+    "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema~partial.swiftmodule",
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swiftdeps",
+    "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.dia"
+  }
+}

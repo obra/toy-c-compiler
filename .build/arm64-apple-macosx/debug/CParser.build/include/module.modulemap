@@ -1,0 +1,3 @@
+module CParser {
+    header "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/include/CParser-Swift.h"
+}

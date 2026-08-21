@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/primary.swiftdeps"
+  },
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.d",
+    "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.dia"
+  }
+}

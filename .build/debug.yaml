@@ -1,0 +1,256 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "CCodegen-arm64-apple-macosx-debug.module": ["<CCodegen-arm64-apple-macosx-debug.module>"]
+  "CCommon-arm64-apple-macosx-debug.module": ["<CCommon-arm64-apple-macosx-debug.module>"]
+  "CCompilerTests-arm64-apple-macosx-debug.module": ["<CCompilerTests-arm64-apple-macosx-debug.module>"]
+  "CDriver-arm64-apple-macosx-debug.exe": ["<CDriver-arm64-apple-macosx-debug.exe>"]
+  "CDriver-arm64-apple-macosx-debug.module": ["<CDriver-arm64-apple-macosx-debug.module>"]
+  "CParser-arm64-apple-macosx-debug.module": ["<CParser-arm64-apple-macosx-debug.module>"]
+  "CPreproc-arm64-apple-macosx-debug.module": ["<CPreproc-arm64-apple-macosx-debug.module>"]
+  "CSema-arm64-apple-macosx-debug.module": ["<CSema-arm64-apple-macosx-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "c-compilerPackageTests-arm64-apple-macosx-debug.module": ["<c-compilerPackageTests-arm64-apple-macosx-debug.module>"]
+  "c-compilerPackageTests-arm64-apple-macosx-debug.test": ["<c-compilerPackageTests-arm64-apple-macosx-debug.test>"]
+  "main": ["<CCodegen-arm64-apple-macosx-debug.module>","<CCommon-arm64-apple-macosx-debug.module>","<CDriver-arm64-apple-macosx-debug.exe>","<CDriver-arm64-apple-macosx-debug.module>","<CParser-arm64-apple-macosx-debug.module>","<CPreproc-arm64-apple-macosx-debug.module>","<CSema-arm64-apple-macosx-debug.module>"]
+  "test": ["<CCodegen-arm64-apple-macosx-debug.module>","<CCommon-arm64-apple-macosx-debug.module>","<CCompilerTests-arm64-apple-macosx-debug.module>","<CDriver-arm64-apple-macosx-debug.exe>","<CDriver-arm64-apple-macosx-debug.module>","<CParser-arm64-apple-macosx-debug.module>","<CPreproc-arm64-apple-macosx-debug.module>","<CSema-arm64-apple-macosx-debug.module>","<c-compilerPackageTests-arm64-apple-macosx-debug.test>"]
+default: "main"
+nodes:
+  "/Users/jesse/git/c-compiler/Sources/CCodegen/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Sources/CCommon/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Sources/CDriver/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Sources/CParser/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Sources/CPreproc/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Sources/CSema/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/Tests/CCompilerTests/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver":
+    is-mutated: true
+commands:
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift","/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift","/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CDriver/main.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift","/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift","/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift":
+    tool: test-entry-point-tool
+    inputs: []
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"]
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources"]
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources"
+
+  "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+
+  "<CCodegen-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule"]
+    outputs: ["<CCodegen-arm64-apple-macosx-debug.module>"]
+
+  "<CCommon-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"]
+    outputs: ["<CCommon-arm64-apple-macosx-debug.module>"]
+
+  "<CCompilerTests-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule"]
+    outputs: ["<CCompilerTests-arm64-apple-macosx-debug.module>"]
+
+  "<CDriver-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<CDriver-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<CDriver-arm64-apple-macosx-debug.exe>"]
+
+  "<CDriver-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule"]
+    outputs: ["<CDriver-arm64-apple-macosx-debug.module>"]
+
+  "<CParser-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"]
+    outputs: ["<CParser-arm64-apple-macosx-debug.module>"]
+
+  "<CPreproc-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"]
+    outputs: ["<CPreproc-arm64-apple-macosx-debug.module>"]
+
+  "<CSema-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"]
+    outputs: ["<CSema-arm64-apple-macosx-debug.module>"]
+
+  "<c-compilerPackageTests-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule"]
+    outputs: ["<c-compilerPackageTests-arm64-apple-macosx-debug.module>"]
+
+  "<c-compilerPackageTests-arm64-apple-macosx-debug.test>":
+    tool: phony
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.xctest/Contents/MacOS/c-compilerPackageTests"]
+    outputs: ["<c-compilerPackageTests-arm64-apple-macosx-debug.test>"]
+
+  "C.CCodegen-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule"]
+    description: "Compiling Swift Module 'CCodegen' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CCodegen","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/include/CCodegen-Swift.h","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CCommon-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift","/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift","/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"]
+    description: "Compiling Swift Module 'CCommon' (3 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CCommon","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/include/CCommon-Swift.h","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CCompilerTests-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule"]
+    description: "Compiling Swift Module 'CCompilerTests' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CCompilerTests","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-Xfrontend","-enable-cross-import-overlays","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CDriver-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/CDriver"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-L","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug","-o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver","-module-name","CDriver","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_CDriver_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.5/macosx","-Xlinker","-rpath","-Xlinker","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx10.13","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g"]
+
+  "C.CDriver-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist"]
+    outputs: ["<CDriver-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/CDriver"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver"]
+
+  "C.CDriver-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CDriver/main.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule"]
+    description: "Compiling Swift Module 'CDriver' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CDriver","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/output-file-map.json","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","CDriver_main","-parse-as-library","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CParser-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"]
+    description: "Compiling Swift Module 'CParser' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CParser","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/include/CParser-Swift.h","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CPreproc-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift","/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift","/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"]
+    description: "Compiling Swift Module 'CPreproc' (3 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CPreproc","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/include/CPreproc-Swift.h","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.CSema-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"]
+    description: "Compiling Swift Module 'CSema' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","CSema","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/include/CSema-Swift.h","-swift-version","6","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.c-compilerPackageTests-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule"]
+    description: "Compiling Swift Module 'c_compilerPackageTests' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","c_compilerPackageTests","-emit-dependencies","-emit-module","-emit-module-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule","-output-file-map","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources","-I","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx10.13","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-Xfrontend","-enable-cross-import-overlays","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/include/c-compilerPackageTests-Swift.h","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","c_compiler"]
+
+  "C.c-compilerPackageTests-arm64-apple-macosx-debug.test":
+    tool: shell
+    inputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList"]
+    outputs: ["/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.xctest/Contents/MacOS/c-compilerPackageTests"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/c-compilerPackageTests.xctest/Contents/MacOS/c-compilerPackageTests"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-L","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug","-o","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.xctest/Contents/MacOS/c-compilerPackageTests","-module-name","c_compilerPackageTests","-Xlinker","-no_warn_duplicate_libraries","-Xlinker","-bundle","-Xlinker","-rpath","-Xlinker","@loader_path/../../../","@/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/jesse/git/c-compiler/Sources/CCodegen/","/Users/jesse/git/c-compiler/Sources/CCommon/","/Users/jesse/git/c-compiler/Sources/CDriver/","/Users/jesse/git/c-compiler/Sources/CParser/","/Users/jesse/git/c-compiler/Sources/CPreproc/","/Users/jesse/git/c-compiler/Sources/CSema/","/Users/jesse/git/c-compiler/Tests/CCompilerTests/","/Users/jesse/git/c-compiler/Package.swift","/Users/jesse/git/c-compiler/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

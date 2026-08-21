@@ -1,0 +1,3 @@
+module c_compilerPackageTests {
+    header "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/include/c-compilerPackageTests-Swift.h"
+}

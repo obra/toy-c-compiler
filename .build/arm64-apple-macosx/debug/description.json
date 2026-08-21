@@ -1,0 +1,1692 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.xctest/Contents/MacOS/c-compilerPackageTests",
+      "packagePath" : "/Users/jesse/git/c-compiler",
+      "productName" : "c-compilerPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.CCodegen-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CCodegen",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/include/CCodegen-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CCommon-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CCommon",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/include/CCommon-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift",
+        "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift",
+        "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CCompilerTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CCompilerTests",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CDriver-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CDriver/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCodegen.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "CDriver",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "CDriver_main",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CDriver.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CDriver/main.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CParser-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CParser",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/include/CParser-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CPreproc-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CPreproc",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/include/CPreproc-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CPreproc.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift",
+        "/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift",
+        "/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.CSema-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CParser.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "CSema",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/include/CSema-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CSema.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.c-compilerPackageTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources",
+      "importPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "c_compilerPackageTests",
+      "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/include/c-compilerPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "c_compiler"
+      ],
+      "outputFileMapPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/c_compilerPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "CCodegen" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CCodegen",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/include/CCodegen-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CCommon" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CCommon",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift",
+      "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift",
+      "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/include/CCommon-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CCompilerTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CCompilerTests",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CDriver" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CDriver",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CDriver/main.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "CDriver_main",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CParser" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CParser",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/include/CParser-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CPreproc" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CPreproc",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift",
+      "/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift",
+      "/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/include/CPreproc-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "CSema" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "CSema",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/include/CSema-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "c_compilerPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "c_compilerPackageTests",
+      "-package-name",
+      "c_compiler",
+      "-c",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/include/c-compilerPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "c_compiler",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "CCodegen" : [
+      "CSema",
+      "CParser",
+      "CPreproc",
+      "CCommon"
+    ],
+    "CCommon" : [
+
+    ],
+    "CCompilerTests" : [
+      "CDriver",
+      "CCodegen",
+      "CSema",
+      "CParser",
+      "CPreproc",
+      "CCommon"
+    ],
+    "CDriver" : [
+      "CCodegen",
+      "CSema",
+      "CParser",
+      "CPreproc",
+      "CCommon"
+    ],
+    "CParser" : [
+      "CPreproc",
+      "CCommon"
+    ],
+    "CPreproc" : [
+      "CCommon"
+    ],
+    "CSema" : [
+      "CParser",
+      "CPreproc",
+      "CCommon"
+    ],
+    "c_compilerPackageTests" : [
+      "CCompilerTests",
+      "CDriver",
+      "CCodegen",
+      "CSema",
+      "CParser",
+      "CPreproc",
+      "CCommon"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCodegen/Codegen.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver-entitlement.plist"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CDriver/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.product/Objects.LinkFileList"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CParser/Parser.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Lexer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Preprocessor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CPreproc/Token.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CSema/Sema.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Preprocessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Token.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CSema.build/Sema.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c-compilerPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/c_compilerPackageTests.build/sources"
+    },
+    "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}
