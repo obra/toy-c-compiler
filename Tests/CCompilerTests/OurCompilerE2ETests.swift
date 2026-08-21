@@ -96,4 +96,40 @@ final class OurCompilerE2ETests: XCTestCase {
         // fib(10) = 55
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 55))
     }
+
+    // MARK: - printf (external function call + string literal)
+
+    func testPrintfHello() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            printf("hello\\n");
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "hello\n"))
+    }
+
+    func testPrintfHelloWorld() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            printf("hello world\\n");
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "hello world\n"))
+    }
+
+    func testPrintfMultiple() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            printf("line1\\n");
+            printf("line2\\n");
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "line1\nline2\n"))
+    }
 }
