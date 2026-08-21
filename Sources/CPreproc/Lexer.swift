@@ -32,6 +32,17 @@ public final class Lexer {
         while pos < bytes.count {
             let b = bytes[pos]
 
+            // Line continuation: backslash-newline → skip both
+            if b == 0x5C && pos + 1 < bytes.count && bytes[pos + 1] == 0x0A {
+                pos += 2
+                continue
+            }
+            // Also handle \r\n
+            if b == 0x5C && pos + 2 < bytes.count && bytes[pos + 1] == 0x0D && bytes[pos + 2] == 0x0A {
+                pos += 3
+                continue
+            }
+
             // Skip whitespace
             if isWhitespace(b) {
                 pos += 1

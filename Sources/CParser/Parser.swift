@@ -133,6 +133,17 @@ public final class Parser {
         return current().kind == .identifier && typedefNames.contains(current().spelling)
     }
 
+    /// Check if the current identifier is being used as a type in a typedef declaration.
+    /// Only trigger in typedef context to avoid false positives with variable names.
+    private func isForwardTypedef() -> Bool {
+        // Only in typedef context (isTypedef was set by parseDeclSpecifiers)
+        // This is checked via the `isTypedef` local in parseDeclSpecifiers,
+        // but we can't access it here. So we use a simpler heuristic:
+        // An unknown identifier is a forward typedef if it's followed by
+        // another identifier (the new type name) in a typedef declaration.
+        return next().kind == .identifier
+    }
+
     // MARK: - Error recovery
 
     private func synchronize() {
@@ -351,6 +362,13 @@ public final class Parser {
                 let name = current().spelling
                 typedefBase = CType.typedef(name: name, base: .int) // base will be resolved by sema
                 advance()
+            } else if current().kind == .identifier && isForwardTypedef() {
+                // Unknown identifier used as a type in a typedef context
+                // (e.g., typedef __int64 sqlite3_int64; where __int64 is unknown)
+                let name = current().spelling
+                typedefNames.insert(name)
+                typedefBase = CType.typedef(name: name, base: .long)
+                advance()
             } else {
                 done = true
             }
@@ -537,23 +555,86 @@ public final class Parser {
             let savePos = pos
             advance() // (
             if isPunct("*") {
-                // Function pointer: (*name)(params)
-                // Already consumed ( and *
-                var innerType = type
+                // Function pointer: (*name)(params) or (*(*name)(params))(params)
+                advance() // consume the first *
+                // Handle nested: (*(*name)...) — consume additional * and inner (
+                var pointerDepth = 1
+                while isPunct("*") {
+                    advance()
+                    pointerDepth += 1
+                }
+                // If we see (, it's a nested function pointer — skip the inner (*
+                var hadInnerParen = false
+                if isPunct("(") {
+                    advance() // consume inner (
+                    hadInnerParen = true
+                    while isPunct("*") { advance(); pointerDepth += 1 }
+                }
                 // Skip qualifiers
                 while isKeyword("const") || isKeyword("volatile") { advance() }
-                innerType = .pointer(to: innerType)
-                // Get the name
-                guard current().kind == .identifier else {
+                var innerType = type
+                for _ in 0..<pointerDepth {
+                    innerType = .pointer(to: innerType)
+                }
+                // Get the name (may be empty for abstract declarators)
+                var name = ""
+                var nameLoc = SourceLoc.unknown
+                if current().kind == .identifier {
+                    name = current().spelling
+                    nameLoc = advance().loc
+                } else if isPunct(")") {
+                    // Abstract: (*) — no name, just a pointer
+                    nameLoc = current().loc
+                } else {
                     throw ParseError.expected("identifier", current().spelling, current().loc)
                 }
-                let name = current().spelling
-                let nameLoc = advance().loc
+                // Check if this is a function returning a function pointer:
+                // void (*name(params))(return_params) — name is followed by ( for params
+                if !name.isEmpty && isPunct("(") {
+                    // Function returning function pointer: name(params)
+                    let (funcParams, funcVariadic, funcRetType) = try parseFunctionParams(innerType)
+                    _ = try consume(kind: .punct, spelling: ")")
+                    // Now parse the return params: ( return_params )
+                    let (retParams, retVariadic, retRetType) = try parseFunctionParams(funcRetType)
+                    let funcType = CType.function(params: funcParams.map { $0.type },
+                                                  returnType: .function(params: retParams.map { $0.type },
+                                                                        returnType: retRetType, variadic: retVariadic),
+                                                  variadic: funcVariadic)
+                    return (name, funcType, nameLoc)
+                }
                 _ = try consume(kind: .punct, spelling: ")")
                 // Now parse the function parameters: ( params )
                 let (params, variadic, retType) = try parseFunctionParams(innerType)
-                let funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
-                return (name, funcType, nameLoc)
+                type = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                // If we had an inner (, consume the matching ) for the outer (
+                if hadInnerParen {
+                    _ = try consume(kind: .punct, spelling: ")")
+                }
+                // Don't return yet — there may be more suffixes (e.g., (void) for
+                // function pointer returning function pointer: void (*(*name)(params))(void))
+                // Fall through to the suffix loop below
+                // Set name and loc for the fall-through
+                let savedName = name
+                let savedLoc = nameLoc
+                // Continue to suffix parsing
+                while isPunct("[") || isPunct("(") {
+                    if isPunct("[") {
+                        advance()
+                        if isPunct("]") {
+                            advance()
+                            type = .incompleteArray(of: type)
+                        } else {
+                            let sizeExpr = try parseAssignmentExpr()
+                            _ = try consume(kind: .punct, spelling: "]")
+                            let size = evalIntConst(sizeExpr)
+                            type = .array(of: type, count: Int(size))
+                        }
+                    } else if isPunct("(") {
+                        let (params2, variadic2, retType2) = try parseFunctionParams(type)
+                        type = .function(params: params2.map { $0.type }, returnType: retType2, variadic: variadic2)
+                    }
+                }
+                return (savedName, type, savedLoc)
             } else {
                 // Not a function pointer — restore and parse as normal declarator
                 pos = savePos

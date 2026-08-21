@@ -210,8 +210,19 @@ public final class Preprocessor {
         let prevEnd = prevToken.loc.offset + prevToken.spelling.utf8.count
         let currStart = currToken.loc.offset
         if prevEnd >= contents.count || currStart > contents.count { return true }
-        for byte in contents[prevEnd..<currStart] {
-            if byte == 0x0A { return true }
+        // Check for newline that is NOT preceded by backslash (line continuation)
+        var i = prevEnd
+        while i < currStart {
+            if contents[i] == 0x0A {
+                // Check if preceded by backslash
+                if i > 0 && contents[i - 1] == 0x5C {
+                    // Line continuation — skip
+                    i += 1
+                    continue
+                }
+                return true
+            }
+            i += 1
         }
         // Also true if it's the very first non-whitespace token on the line
         // Check backwards from current position to last newline
@@ -242,10 +253,17 @@ public final class Preprocessor {
                     if currStart > prevEnd && result.last!.loc.fileId == tokens[i].loc.fileId {
                         let contents = sm.contents(of: result.last!.loc.fileId)
                         if prevEnd < contents.count && currStart <= contents.count {
-                            for byte in contents[prevEnd..<currStart] {
-                                if byte == 0x0A {
-                                    return (result, i) // newline found — directive ends
+                            // Check for newline NOT preceded by backslash
+                            var j = prevEnd
+                            while j < currStart {
+                                if contents[j] == 0x0A {
+                                    if j > 0 && contents[j - 1] == 0x5C {
+                                        j += 1
+                                        continue
+                                    }
+                                    return (result, i) // real newline — directive ends
                                 }
+                                j += 1
                             }
                         }
                     }
