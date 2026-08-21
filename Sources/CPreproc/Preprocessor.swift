@@ -474,16 +474,12 @@ public final class Preprocessor {
             }
         }
 
-        // System include paths (hardcoded fallback)
+        // For system includes, only use our own include paths (not system SDK paths).
+        // This avoids pulling in complex system headers we can't parse yet.
+        // Our include/ directory provides minimal declarations for needed functions.
         if resolvedPath == nil && isSystem {
-            let systemPaths = ["/usr/include", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include"]
-            for sysPath in systemPaths {
-                let candidate = "\(sysPath)/\(path)"
-                if FileManager.default.fileExists(atPath: candidate) {
-                    resolvedPath = candidate
-                    break
-                }
-            }
+            // Silently skip — we provide our own headers for needed functions.
+            return
         }
 
         guard let filePath = resolvedPath else {
