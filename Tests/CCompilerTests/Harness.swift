@@ -125,18 +125,7 @@ public struct Harness {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-
-        if let stdoutFile = stdoutFile {
-            // Redirect stdout to a file
-            let fh = try? FileHandle(forWritingTo: URL(fileURLWithPath: stdoutFile))
-            if let fh = fh {
-                proc.standardOutput = fh
-            } else {
-                proc.standardOutput = stdoutPipe
-            }
-        } else {
-            proc.standardOutput = stdoutPipe
-        }
+        proc.standardOutput = stdoutPipe
         proc.standardError = stderrPipe
 
         do {
@@ -152,6 +141,15 @@ public struct Harness {
 
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+
+        // If a stdoutFile was specified, write the captured stdout to it
+        if let stdoutFile = stdoutFile {
+            do {
+                try stdout.write(toFile: stdoutFile, atomically: true, encoding: .utf8)
+            } catch {
+                return ProcessResult(exitCode: -1, stdout: "", stderr: "failed to write stdout file: \(error)")
+            }
+        }
 
         return ProcessResult(exitCode: Int(proc.terminationStatus), stdout: stdout, stderr: stderr)
     }
