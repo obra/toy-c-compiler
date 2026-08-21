@@ -2,14 +2,15 @@
 #ifndef _STDLIB_H
 #define _STDLIB_H
 
-void *malloc(unsigned long size);
+#include <stddef.h>
+
+void *malloc(size_t size);
 void free(void *ptr);
-void *calloc(unsigned long nmemb, unsigned long size);
-void *realloc(void *ptr, unsigned long size);
+void *calloc(size_t nmemb, size_t size);
+void *realloc(void *ptr, size_t size);
 
 void exit(int status);
 void abort(void);
-int atexit(void (*func)(void));
 
 int abs(int n);
 long labs(long n);
@@ -22,8 +23,5 @@ double strtod(const char *nptr, char **endptr);
 
 int rand(void);
 void srand(unsigned int seed);
-
-void qsort(void *base, unsigned long nmemb, unsigned long size,
-           int (*compar)(const void *, const void *));
 
 #endif /* _STDLIB_H */

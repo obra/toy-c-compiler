@@ -308,4 +308,42 @@ final class OurCompilerE2ETests: XCTestCase {
         """
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "0\n1\n2\n4\n5\n6\n7\n8\n9\n"))
     }
+
+    // MARK: - Real programs
+
+    func testLinkedList() {
+        let source = """
+        #include <stdio.h>
+        #include <stdlib.h>
+
+        struct Node {
+            int val;
+            struct Node *next;
+        };
+
+        struct Node *create(int v) {
+            struct Node *n = malloc(sizeof(struct Node));
+            n->val = v;
+            n->next = 0;
+            return n;
+        }
+
+        int main() {
+            struct Node *head = create(1);
+            head->next = create(2);
+            head->next->next = create(3);
+
+            int sum = 0;
+            struct Node *p = head;
+            while (p != 0) {
+                sum += p->val;
+                p = p->next;
+            }
+
+            printf("sum=%d\\n", sum);
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "sum=6\n", extraArgs: ["-I", "include"]))
+    }
 }

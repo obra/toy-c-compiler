@@ -525,7 +525,15 @@ public final class Codegen {
             let reg = regAlloc.alloc() ?? .x9
             let size: Int
             if let typeName = s.typeName {
-                size = typeName.sizeInBytes ?? 0
+                // Resolve incomplete struct types via known records
+                var t = typeName.unqualified
+                if case .structType(let rec) = t, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                    t = .structType(completed)
+                }
+                if case .unionType(let rec) = t, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                    t = .unionType(completed)
+                }
+                size = t.sizeInBytes ?? 0
             } else if let e = s.expr {
                 // Evaluate type of expression (simplified: use literal type)
                 switch e {
@@ -936,6 +944,17 @@ public final class Codegen {
             var recordType = bt.unqualified
             if m.isArrow {
                 if case .pointer(let to) = bt.unqualified { recordType = to }
+            }
+            // Look up completed record if incomplete
+            if case .structType(let rec) = recordType.unqualified, rec.fields.isEmpty {
+                if let completed = knownRecords[rec.name] {
+                    recordType = .structType(completed)
+                }
+            }
+            if case .unionType(let rec) = recordType.unqualified, rec.fields.isEmpty {
+                if let completed = knownRecords[rec.name] {
+                    recordType = .unionType(completed)
+                }
             }
             if case .structType(let rec) = recordType.unqualified {
                 for field in rec.fields where field.name == m.memberName {
