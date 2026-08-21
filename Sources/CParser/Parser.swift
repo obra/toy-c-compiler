@@ -22,6 +22,10 @@ public final class Parser {
     /// from identifiers in declarations).
     private var typedefNames: Set<String> = []
 
+    /// Last parsed function params (with names) — used by parseExternalDecl.
+    private var lastFuncParams: [Param] = []
+    private var lastFuncVariadic: Bool = false
+
     public init(_ tokens: [Token], diags: DiagnosticEngine = DiagnosticEngine()) {
         // Filter out EOF for easier processing, we'll add it back at the end
         self.tokens = tokens.filter { $0.kind != .eof }
@@ -187,20 +191,14 @@ public final class Parser {
                 let body = try parseCompoundStmt()
                 // Extract the return type from the function type
                 let returnType: CType
-                let params: [CType]
-                let variadic: Bool
-                if case .function(let p, let ret, let v) = type {
+                if case .function(_, let ret, _) = type {
                     returnType = ret
-                    params = p
-                    variadic = v
                 } else {
                     returnType = type
-                    params = []
-                    variadic = false
                 }
                 let funcDecl = FuncDecl(name: name, returnType: returnType,
-                                        params: params.map { Param(name: nil, type: $0, loc: SourceLoc.unknown) },
-                                        variadic: variadic,
+                                        params: lastFuncParams,
+                                        variadic: lastFuncVariadic,
                                         body: body, storageClass: storageClass, isInline: isInline, loc: loc)
                 return .funcDecl(funcDecl)
             }
@@ -214,20 +212,14 @@ public final class Parser {
             // Function prototype (no body) — create a FuncDecl instead of VarDecl
             if type.isFunction {
                 let returnType: CType
-                let params: [CType]
-                let variadic: Bool
-                if case .function(let p, let ret, let v) = type {
+                if case .function(_, let ret, _) = type {
                     returnType = ret
-                    params = p
-                    variadic = v
                 } else {
                     returnType = type
-                    params = []
-                    variadic = false
                 }
                 let fd = FuncDecl(name: name, returnType: returnType,
-                                  params: params.map { Param(name: nil, type: $0, loc: SourceLoc.unknown) },
-                                  variadic: variadic,
+                                  params: lastFuncParams,
+                                  variadic: lastFuncVariadic,
                                   body: nil, storageClass: storageClass, isInline: isInline, loc: loc)
                 if firstDecl == nil {
                     firstDecl = .funcDecl(fd)
@@ -551,7 +543,7 @@ public final class Parser {
                 _ = try consume(kind: .punct, spelling: ")")
                 // Now parse the function parameters: ( params )
                 let (params, variadic, retType) = try parseFunctionParams(innerType)
-                let funcType = CType.function(params: params, returnType: retType, variadic: variadic)
+                let funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
                 return (name, funcType, nameLoc)
             } else {
                 // Not a function pointer — restore and parse as normal declarator
@@ -583,7 +575,7 @@ public final class Parser {
                 }
             } else if isPunct("(") {
                 let (params, variadic, retType) = try parseFunctionParams(type)
-                type = .function(params: params, returnType: retType, variadic: variadic)
+                type = .function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
             }
         }
 
@@ -591,10 +583,10 @@ public final class Parser {
     }
 
     /// Parse function parameters: ( int a, int b, ... )
-    /// Returns (param types, variadic, returnType).
-    private func parseFunctionParams(_ returnType: CType) throws -> ([CType], Bool, CType) {
+    /// Returns (params, variadic, returnType).
+    private func parseFunctionParams(_ returnType: CType) throws -> ([Param], Bool, CType) {
         _ = try consume(kind: .punct, spelling: "(")
-        var params: [CType] = []
+        var params: [Param] = []
         var variadic = false
 
         // void as sole parameter means no parameters
@@ -612,7 +604,7 @@ public final class Parser {
             }
 
             let (baseType, _, _, _) = try parseDeclSpecifiers()
-            let (paramName, paramType, _) = try parseDeclarator(baseType)
+            let (paramName, paramType, paramLoc) = try parseDeclarator(baseType)
             // In function params, array types decay to pointers
             var actualType = paramType
             if case .array(let elem, _) = actualType.unqualified {
@@ -620,14 +612,15 @@ public final class Parser {
             } else if case .incompleteArray(let elem) = actualType.unqualified {
                 actualType = .pointer(to: elem)
             }
-            params.append(actualType)
-            _ = paramName // param names not used in type but could be for sema
+            params.append(Param(name: paramName.isEmpty ? nil : paramName, type: actualType, loc: paramLoc))
 
             if !match(kind: .punct, spelling: ",") {
                 break
             }
         }
         _ = try consume(kind: .punct, spelling: ")")
+        lastFuncParams = params
+        lastFuncVariadic = variadic
         return (params, variadic, returnType)
     }
 
