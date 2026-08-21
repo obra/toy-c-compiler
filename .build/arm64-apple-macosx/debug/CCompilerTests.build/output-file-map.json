@@ -8,5 +8,12 @@
     "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests~partial.swiftmodule",
     "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swiftdeps",
     "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.dia"
+  },
+  "/Users/jesse/git/c-compiler/Tests/CCompilerTests/TypeTests.swift": {
+    "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.d",
+    "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swift.o",
+    "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swiftdeps",
+    "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.dia"
   }
 }

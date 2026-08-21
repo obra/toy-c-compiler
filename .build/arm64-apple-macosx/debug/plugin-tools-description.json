@@ -131,6 +131,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift"
         },
         {
@@ -151,6 +155,7 @@
       "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCommon.swiftmodule",
       "objects" : [
         "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o",
         "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o",
         "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o"
       ],
@@ -211,6 +216,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o"
         },
         {
@@ -225,6 +234,7 @@
       "prepareForIndexing" : false,
       "sources" : [
         "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift",
+        "/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift",
         "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift",
         "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift"
       ],
@@ -239,6 +249,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/TypeTests.swift"
         },
         {
           "kind" : "file",
@@ -277,7 +291,8 @@
       "moduleName" : "CCompilerTests",
       "moduleOutputPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule",
       "objects" : [
-        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o"
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o",
+        "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swift.o"
       ],
       "otherArguments" : [
         "-target",
@@ -335,12 +350,17 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules/CCompilerTests.swiftmodule"
         }
       ],
       "prepareForIndexing" : false,
       "sources" : [
-        "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+        "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift",
+        "/Users/jesse/git/c-compiler/Tests/CCompilerTests/TypeTests.swift"
       ],
       "tempsPath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build",
       "wholeModuleOptimization" : false
@@ -938,6 +958,7 @@
       "c_compiler",
       "-c",
       "/Users/jesse/git/c-compiler/Sources/CCommon/AST.swift",
+      "/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift",
       "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift",
       "/Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift",
       "-I",
@@ -1000,6 +1021,7 @@
       "c_compiler",
       "-c",
       "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift",
+      "/Users/jesse/git/c-compiler/Tests/CCompilerTests/TypeTests.swift",
       "-I",
       "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/Modules",
       "-target",
@@ -1451,6 +1473,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift"
         },
         {
@@ -1470,6 +1496,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/CompileTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/Tests/CCompilerTests/TypeTests.swift"
         }
       ],
       "outputFilePath" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/sources"
@@ -1516,6 +1546,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o"
         },
         {
           "kind" : "file",
@@ -1619,6 +1653,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o"
         },
         {
@@ -1628,6 +1666,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swift.o"
         },
         {
           "kind" : "file",

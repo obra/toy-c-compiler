@@ -9,6 +9,13 @@
     "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swiftdeps",
     "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.dia"
   },
+  "/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift": {
+    "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.d",
+    "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o",
+    "swiftmodule": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType~partial.swiftmodule",
+    "swift-dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swiftdeps",
+    "diagnostics": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.dia"
+  },
   "/Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift": {
     "dependencies": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.d",
     "object": "/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o",

@@ -1,8 +1,10 @@
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCodegen.build/Codegen.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/AST.swift.o
+/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/CType.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/Diagnostic.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCommon.build/SourceManager.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/CompileTests.swift.o
+/Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CCompilerTests.build/TypeTests.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CDriver.build/main.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CParser.build/Parser.swift.o
 /Users/jesse/git/c-compiler/.build/arm64-apple-macosx/debug/CPreproc.build/Lexer.swift.o

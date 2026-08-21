@@ -1,3 +1,4 @@
 /Users/jesse/git/c-compiler/Sources/CCommon/AST.swift
+/Users/jesse/git/c-compiler/Sources/CCommon/CType.swift
 /Users/jesse/git/c-compiler/Sources/CCommon/Diagnostic.swift
 /Users/jesse/git/c-compiler/Sources/CCommon/SourceManager.swift
