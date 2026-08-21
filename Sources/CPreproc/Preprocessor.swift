@@ -47,6 +47,18 @@ public final class Preprocessor {
         "__INT_MAX__": "2147483647",
         "__LONG_MAX__": "9223372036854775807L",
         "__LONG_LONG_MAX__": "9223372036854775807LL",
+        "__DARWIN_C_LEVEL": "900000",
+        "__DARWIN_C_FULL": "900000",
+        "__DARWIN_C_ANSI": "900000",
+        "_POSIX_C_SOURCE": "200809L",
+        "_DARWIN_FEATURE_CLOCK_GETTIME": "0",
+        "_DARWIN_C_ANSI": "1",
+        "__STDC_NO_ATOMICS__": "1",
+        "__STDC_NO_THREADS__": "1",
+        "__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__": "140000",
+        "__DARWIN_C_SOURCE": "1",
+        "_DARWIN_C_SOURCE": "1",
+        "_DARWIN_UNLIMITED_SELECT": "1",
     ]
 
     public init(_ sm: SourceManager, includePaths: [String], predefines: [String: String],
@@ -497,6 +509,23 @@ public final class Preprocessor {
         var i = 0
         while i < tokens.count {
             let token = tokens[i]
+            // Handle __has_feature(...) and __has_extension(...) → 0
+            if token.kind == .identifier &&
+               (token.spelling == "__has_feature" || token.spelling == "__has_extension" ||
+                token.spelling == "__has_builtin" || token.spelling == "__has_attribute") {
+                i += 1
+                // Skip the ( ... ) if present
+                if i < tokens.count && tokens[i].kind == .punct && tokens[i].spelling == "(" {
+                    var depth = 0
+                    while i < tokens.count {
+                        if tokens[i].kind == .punct && tokens[i].spelling == "(" { depth += 1 }
+                        else if tokens[i].kind == .punct && tokens[i].spelling == ")" { depth -= 1; if depth == 0 { i += 1; break } }
+                        i += 1
+                    }
+                }
+                result.append(Token(kind: .integerLiteral, spelling: "0", loc: token.loc))
+                continue
+            }
             if token.kind == .identifier && token.spelling == "defined" {
                 i += 1
                 if i < tokens.count && tokens[i].kind == .punct && tokens[i].spelling == "(" {

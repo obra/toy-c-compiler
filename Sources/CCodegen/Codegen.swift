@@ -94,8 +94,8 @@ public final class Codegen {
                     emitLine(".globl _\(vd.name)")
                     emitLine(".p2align 3")
                     emitLine("_\(vd.name):")
-                    // Use at least 8 bytes for consistency with 64-bit loads
-                    let bssSize = max(size, 8)
+                    // Use at least 8 bytes for scalar types, actual size for aggregates
+                    let bssSize = vd.type.isScalar ? max(size, 8) : max(size, 1)
                     emitLine(".zero \(bssSize)")
                 }
             }
@@ -107,9 +107,27 @@ public final class Codegen {
         case .integerLiteral(let l):
             // Always emit 8-byte (quad) for consistency with 64-bit loads
             emitLine(".quad \(l.value)")
+        case .initList(let il):
+            // Emit each element as a quad
+            for v in il.values {
+                emitInitializer(v, size: 8)
+            }
+        case .unary(let u) where u.op == .addressOf:
+            // Address of string literal or global
+            if case .stringLiteral(let sl) = u.operand {
+                let label = addStringLiteral(sl.value)
+                emitLine(".quad \(label)")
+            } else if case .integerLiteral(let l) = u.operand, l.value == 0 {
+                emitLine(".quad 0")
+            } else {
+                emitLine(".quad 0")
+            }
+        case .cast(let c):
+            // Cast in initializer — just emit the underlying value
+            emitInitializer(c.expr, size: size)
         default:
             // Default: zero-fill
-            emitLine(".zero \(size)")
+            emitLine(".zero \(max(size, 8))")
         }
     }
 

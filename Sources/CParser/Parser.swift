@@ -167,6 +167,23 @@ public final class Parser {
 
     // MARK: - External declarations
 
+    /// Skip __asm("...") and __attribute__((...)) clauses that may follow a declarator.
+    private func skipAsmAndAttributes() {
+        while isKeyword("__asm") || isKeyword("__asm__") ||
+              isKeyword("__attribute__") || isKeyword("__attribute") {
+            advance() // consume the keyword
+            if isPunct("(") {
+                // Skip balanced parens
+                var depth = 0
+                while !isAtEnd() {
+                    if isPunct("(") { depth += 1 }
+                    else if isPunct(")") { depth -= 1; if depth == 0 { advance(); break } }
+                    advance()
+                }
+            }
+        }
+    }
+
     private func parseExternalDecl() throws -> Decl? {
         // Empty
         if isPunct(";") { advance(); return nil }
@@ -204,6 +221,7 @@ public final class Parser {
         var firstDecl: Decl? = nil
         repeat {
             let (name, type, loc) = try parseDeclarator(baseType)
+            skipAsmAndAttributes()
 
             if isPunct("{") && type.isFunction {
                 // Function definition — parse the body and return immediately
@@ -333,6 +351,16 @@ public final class Parser {
                 case "const": isConst = true; advance()
                 case "volatile": isVolatile = true; advance()
                 case "restrict": isRestrict = true; advance()
+                case "__restrict": isRestrict = true; advance()
+                case "__restrict__": isRestrict = true; advance()
+                case "__const": isConst = true; advance()
+                case "__const__": isConst = true; advance()
+                case "__volatile": isVolatile = true; advance()
+                case "__volatile__": isVolatile = true; advance()
+                case "__inline": isInline = true; advance()
+                case "__inline__": isInline = true; advance()
+                case "__signed": typeSpecifiers.append("signed"); advance()
+                case "__signed__": typeSpecifiers.append("signed"); advance()
                 case "inline": isInline = true; advance()
 
                 // Type specifiers
@@ -353,6 +381,30 @@ public final class Parser {
                     unionType = try parseStructOrUnion(isStruct: false)
                 case "enum":
                     enumType = try parseEnumSpec()
+
+                // GCC extensions — skip
+                case "__attribute__", "__attribute":
+                    advance()
+                    if isPunct("(") {
+                        var depth = 0
+                        while !isAtEnd() {
+                            if isPunct("(") { depth += 1; advance() }
+                            else if isPunct(")") { depth -= 1; advance(); if depth == 0 { break } }
+                            else { advance() }
+                        }
+                    }
+                case "__asm", "__asm__":
+                    advance()
+                    if isPunct("(") {
+                        var depth = 0
+                        while !isAtEnd() {
+                            if isPunct("(") { depth += 1; advance() }
+                            else if isPunct(")") { depth -= 1; advance(); if depth == 0 { break } }
+                            else { advance() }
+                        }
+                    }
+                case "__extension__", "__typeof", "__typeof__":
+                    advance() // just skip
 
                 default:
                     done = true
@@ -506,6 +558,8 @@ public final class Parser {
                     throw ParseError.expected("enumerator name", current().spelling, current().loc)
                 }
                 let name = advance().spelling
+                // Skip __attribute__ or __CLOCK_AVAILABILITY between name and =
+                skipAsmAndAttributes()
                 if match(kind: .punct, spelling: "=") {
                     let valExpr = try parseConditionalExpr()
                     nextValue = Int(evalIntConst(valExpr))
@@ -537,7 +591,10 @@ public final class Parser {
         while isPunct("*") {
             advance()
             // Skip qualifiers after *
-            while isKeyword("const") || isKeyword("volatile") || isKeyword("restrict") {
+            while isKeyword("const") || isKeyword("volatile") || isKeyword("restrict") ||
+                  isKeyword("__const") || isKeyword("__const__") ||
+                  isKeyword("__volatile") || isKeyword("__volatile__") ||
+                  isKeyword("__restrict") || isKeyword("__restrict__") {
                 advance()
             }
             type = .pointer(to: type)
@@ -744,7 +801,12 @@ public final class Parser {
                 _ = match(kind: .punct, spelling: "=")
             }
 
-            values.append(try parseAssignmentExpr())
+            // Value can be a nested init list or an expression
+            if isPunct("{") {
+                values.append(try parseInitList())
+            } else {
+                values.append(try parseAssignmentExpr())
+            }
 
             if !match(kind: .punct, spelling: ",") {
                 break
