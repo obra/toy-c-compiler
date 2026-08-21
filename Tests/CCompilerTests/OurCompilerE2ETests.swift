@@ -244,4 +244,68 @@ final class OurCompilerE2ETests: XCTestCase {
         """
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "30\n"))
     }
+
+    // MARK: - Switch/break/continue
+
+    func testSwitchStatement() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            int x = 2;
+            switch (x) {
+                case 1: printf("one\\n"); break;
+                case 2: printf("two\\n"); break;
+                case 3: printf("three\\n"); break;
+                default: printf("other\\n"); break;
+            }
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "two\n"))
+    }
+
+    func testSwitchDefault() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            int x = 99;
+            switch (x) {
+                case 1: printf("one\\n"); break;
+                default: printf("other\\n"); break;
+            }
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "other\n"))
+    }
+
+    func testBreakInForLoop() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            int i;
+            for (i = 0; i < 10; i++) {
+                if (i == 5) break;
+                printf("%d\\n", i);
+            }
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "0\n1\n2\n3\n4\n"))
+    }
+
+    func testContinueInForLoop() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            int i;
+            for (i = 0; i < 10; i++) {
+                if (i == 3) continue;
+                printf("%d\\n", i);
+            }
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "0\n1\n2\n4\n5\n6\n7\n8\n9\n"))
+    }
 }

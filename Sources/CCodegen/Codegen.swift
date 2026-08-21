@@ -19,6 +19,8 @@ public final class Codegen {
     private var localVarTypes: [String: CType] = [:]
     private var globalVarTypes: [String: CType] = [:]
     private var knownRecords: [String: RecordType] = [:]
+    private var breakLabels: [String] = []      // stack of break targets
+    private var continueLabels: [String] = []   // stack of continue targets
 
     public init() {}
 
@@ -285,15 +287,27 @@ public final class Codegen {
             emitEpilogue()
 
         case .break:
-            // TODO: track loop end labels
-            break
+            if let label = breakLabels.last {
+                emitLine("b \(label)")
+            }
 
         case .continue:
-            // TODO: track loop start labels
+            if let label = continueLabels.last {
+                emitLine("b \(label)")
+            }
+
+        case .switch(let ss):
+            emitSwitchStmt(ss)
+
+        case .case, .default:
+            // Case/default labels are handled inside emitSwitchStmt
             break
 
-        case .switch, .case, .default, .goto, .label, .empty:
+        case .goto, .label:
             // Simplified: skip for now
+            break
+
+        case .empty:
             break
         }
     }
@@ -320,7 +334,11 @@ public final class Codegen {
         let condReg = emitExpr(ws.condition)
         emitLine("cbz \(condReg.x), \(endLabel)")
         regAlloc.reset()
+        breakLabels.append(endLabel)
+        continueLabels.append(startLabel)
         emitStmt(ws.body)
+        breakLabels.removeLast()
+        continueLabels.removeLast()
         regAlloc.reset()
         emitLine("b \(startLabel)")
         emitLine("\(endLabel):")
@@ -338,6 +356,7 @@ public final class Codegen {
         if let init_ = fs.initStmt { emitStmt(init_) }
         regAlloc.reset()
         let startLabel = newLabel()
+        let continueLabel = newLabel()
         let endLabel = newLabel()
         emitLine("\(startLabel):")
         if let cond = fs.condition {
@@ -345,11 +364,81 @@ public final class Codegen {
             emitLine("cbz \(condReg.x), \(endLabel)")
         }
         regAlloc.reset()
+        breakLabels.append(endLabel)
+        continueLabels.append(continueLabel)
         emitStmt(fs.body)
+        breakLabels.removeLast()
+        continueLabels.removeLast()
+        emitLine("\(continueLabel):")
         regAlloc.reset()
         if let incr = fs.increment { _ = emitExpr(incr) }
         regAlloc.reset()
         emitLine("b \(startLabel)")
+        emitLine("\(endLabel):")
+    }
+
+    private func emitSwitchStmt(_ ss: SwitchStmt) {
+        let endLabel = newLabel()
+        let valueReg = emitExpr(ss.value)
+        regAlloc.reset()
+
+        // Spill the switch value to a stack slot so case comparisons don't clobber it
+        ensureLocalSpace(size: 8)
+        let switchOffset = -localOffset
+        emitLine("str \(valueReg.x), [x29, #\(switchOffset)]")
+        regAlloc.reset()
+
+        // First pass: emit comparison for each case label, collect labels
+        var caseLabelMap: [Int: String] = [:]
+        var defaultLabel: String? = nil
+
+        for (idx, stmt) in ss.cases.enumerated() {
+            if case .case(let cs) = stmt {
+                let caseLabel = newLabel()
+                caseLabelMap[idx] = caseLabel
+                let caseVal = emitExpr(cs.value)
+                // DON'T reset — keep caseVal alive
+                // Load switch value into a DIFFERENT register
+                let switchTemp = regAlloc.alloc() ?? .x10
+                emitLine("ldr \(switchTemp.x), [x29, #\(switchOffset)]")
+                emitLine("cmp \(switchTemp.x), \(caseVal.x)")
+                emitLine("b.eq \(caseLabel)")
+                regAlloc.free(switchTemp)
+                regAlloc.free(caseVal)
+                regAlloc.reset()
+            } else if case .default = stmt {
+                defaultLabel = newLabel()
+            }
+        }
+
+        // Jump to default or end
+        if let dl = defaultLabel {
+            emitLine("b \(dl)")
+        } else {
+            emitLine("b \(endLabel)")
+        }
+
+        // Second pass: emit the body with case/default labels
+        breakLabels.append(endLabel)
+
+        for (idx, stmt) in ss.cases.enumerated() {
+            if let label = caseLabelMap[idx] {
+                emitLine("\(label):")
+            } else if case .default = stmt, let dl = defaultLabel {
+                emitLine("\(dl):")
+            }
+            // Emit the statement (case stmt or regular stmt)
+            switch stmt {
+            case .case(let cs):
+                if let s = cs.stmt { emitStmt(s) }
+            case .default(let ds):
+                if let s = ds.stmt { emitStmt(s) }
+            default:
+                emitStmt(stmt)
+            }
+        }
+
+        breakLabels.removeLast()
         emitLine("\(endLabel):")
     }
 
@@ -704,15 +793,44 @@ public final class Codegen {
             }
             for r in argRegs { regAlloc.free(r) }
 
-            // Push variadic arguments onto the stack (in reverse order)
-            // Each arg is 8 bytes, aligned to 16 for AAPCS64
+            // Compute combined stack space for variadic args AND scratch spills.
+            // We must allocate them together so the spill doesn't push sp below
+            // the variadic args (which printf reads from [sp]).
+            let inUse = scratchRegs.filter { reg in
+                !regAlloc.available.contains(reg)
+            }
             let stackArgs = argRegs.count - 1
-            let stackSize = (stackArgs * 8 + 15) & ~15  // align to 16
-            emitLine("sub sp, sp, #\(stackSize)")
+            let variadicSize = (stackArgs * 8 + 15) & ~15  // align to 16
+            let spillCount = inUse.count + (inUse.count % 2)
+            let spillSize = spillCount * 8
+            // Total must be 16-byte aligned
+            let totalSize = (variadicSize + spillSize + 15) & ~15
+
+            if totalSize > 0 {
+                emitLine("sub sp, sp, #\(totalSize)")
+            }
+            // Place variadic args at the bottom (lowest address = [sp])
             for i in 1..<argRegs.count {
                 let argReg = argRegs[i]
                 let stackOffset = (i - 1) * 8
                 emitLine("str \(argReg.x), [sp, #\(stackOffset)]")
+            }
+            // Place scratch spills above the variadic args
+            for (idx, reg) in inUse.enumerated() {
+                emitLine("str \(reg.x), [sp, #\(variadicSize + idx * 8)]")
+            }
+
+            // Make the call
+            if !funcName.isEmpty {
+                emitLine("bl _\(funcName)")
+            }
+
+            // Restore spilled registers
+            for (idx, reg) in inUse.enumerated() {
+                emitLine("ldr \(reg.x), [sp, #\(variadicSize + idx * 8)]")
+            }
+            if totalSize > 0 {
+                emitLine("add sp, sp, #\(totalSize)")
             }
         } else {
             // Non-variadic: evaluate args and place in x0-x7
@@ -728,38 +846,31 @@ public final class Codegen {
                     regAlloc.free(argReg)
                 }
             }
-        }
 
-        // Save scratch registers that are currently in use to the stack
-        let inUse = scratchRegs.filter { reg in
-            !regAlloc.available.contains(reg)
-        }
-        let paddedCount = inUse.count + (inUse.count % 2)
-        if paddedCount > 0 {
-            emitLine("sub sp, sp, #\(paddedCount * 8)")
-            for (idx, reg) in inUse.enumerated() {
-                emitLine("str \(reg.x), [sp, #\(idx * 8)]")
+            // Save scratch registers in use
+            let inUse = scratchRegs.filter { reg in
+                !regAlloc.available.contains(reg)
             }
-        }
-
-        // Make the call
-        if !funcName.isEmpty {
-            emitLine("bl _\(funcName)")
-        }
-
-        // Restore spilled registers
-        if paddedCount > 0 {
-            for (idx, reg) in inUse.enumerated() {
-                emitLine("ldr \(reg.x), [sp, #\(idx * 8)]")
+            let paddedCount = inUse.count + (inUse.count % 2)
+            if paddedCount > 0 {
+                emitLine("sub sp, sp, #\(paddedCount * 8)")
+                for (idx, reg) in inUse.enumerated() {
+                    emitLine("str \(reg.x), [sp, #\(idx * 8)]")
+                }
             }
-            emitLine("add sp, sp, #\(paddedCount * 8)")
-        }
 
-        // Clean up variadic stack args
-        if isVariadic && c.arguments.count > 1 {
-            let stackArgs = c.arguments.count - 1
-            let stackSize = (stackArgs * 8 + 15) & ~15
-            emitLine("add sp, sp, #\(stackSize)")
+            // Make the call
+            if !funcName.isEmpty {
+                emitLine("bl _\(funcName)")
+            }
+
+            // Restore spilled registers
+            if paddedCount > 0 {
+                for (idx, reg) in inUse.enumerated() {
+                    emitLine("ldr \(reg.x), [sp, #\(idx * 8)]")
+                }
+                emitLine("add sp, sp, #\(paddedCount * 8)")
+            }
         }
 
         // Result is in x0
