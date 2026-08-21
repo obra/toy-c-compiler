@@ -204,4 +204,44 @@ final class OurCompilerE2ETests: XCTestCase {
         // 1+2+...+100 = 5050
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "5050\n"))
     }
+
+    // MARK: - Global variables
+
+    func testGlobalInitInt() {
+        let source = """
+        int printf(const char *format, ...);
+        int x = 42;
+        int main() {
+            printf("%d\\n", x);
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "42\n"))
+    }
+
+    func testGlobalWrite() {
+        let source = """
+        int printf(const char *format, ...);
+        int x;
+        int main() {
+            x = 99;
+            printf("%d\\n", x);
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "99\n"))
+    }
+
+    func testGlobalMultiple() {
+        let source = """
+        int printf(const char *format, ...);
+        int a = 10;
+        int b = 20;
+        int main() {
+            printf("%d\\n", a + b);
+            return 0;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "30\n"))
+    }
 }

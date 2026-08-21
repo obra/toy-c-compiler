@@ -92,7 +92,9 @@ public final class Codegen {
                     emitLine(".globl _\(vd.name)")
                     emitLine(".p2align 3")
                     emitLine("_\(vd.name):")
-                    emitLine(".zero \(size)")
+                    // Use at least 8 bytes for consistency with 64-bit loads
+                    let bssSize = max(size, 8)
+                    emitLine(".zero \(bssSize)")
                 }
             }
         }
@@ -101,15 +103,8 @@ public final class Codegen {
     private func emitInitializer(_ expr: Expr, size: Int) {
         switch expr {
         case .integerLiteral(let l):
-            if size >= 8 {
-                emitLine(".quad \(l.value)")
-            } else if size >= 4 {
-                emitLine(".long \(l.value)")
-            } else if size >= 2 {
-                emitLine(".short \(l.value)")
-            } else {
-                emitLine(".byte \(l.value)")
-            }
+            // Always emit 8-byte (quad) for consistency with 64-bit loads
+            emitLine(".quad \(l.value)")
         default:
             // Default: zero-fill
             emitLine(".zero \(size)")
@@ -400,6 +395,8 @@ public final class Codegen {
                 let reg = regAlloc.alloc() ?? .x9
                 emitLine("adrp \(reg.x), _\(id.name)@PAGE")
                 emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
+                // Load the value from the global address
+                emitLine("ldr \(reg.x), [\(reg.x)]")
                 return reg
             } else if id.name == "__builtin_va_list" || id.name == "__va_list_tag" {
                 let reg = regAlloc.alloc() ?? .x9
