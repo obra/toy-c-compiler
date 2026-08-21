@@ -16,6 +16,9 @@ public final class Codegen {
     private var labelCounter = 0
     private var regAlloc = RegAlloc()
     private var currentFuncName = ""
+    private var localVarTypes: [String: CType] = [:]
+    private var globalVarTypes: [String: CType] = [:]
+    private var knownRecords: [String: RecordType] = [:]
 
     public init() {}
 
@@ -24,10 +27,26 @@ public final class Codegen {
     public func generate(_ decls: [Decl]) -> String {
         output = ""
 
-        // Collect global variable names
+        // Collect global variable names and types
         for d in decls {
             if case .varDecl(let vd) = d {
                 globalLabels.insert(vd.name)
+                globalVarTypes[vd.name] = vd.type
+            }
+        }
+
+        // Collect completed struct/union definitions (by tag name)
+        for d in decls {
+            if case .structDecl(let sd) = d, sd.record.size != nil {
+                knownRecords[sd.name ?? ""] = sd.record
+            }
+            if case .unionDecl(let ud) = d, ud.record.size != nil {
+                knownRecords[ud.name ?? ""] = ud.record
+            }
+            // Also collect from struct/union declarations that have inline definitions
+            // (e.g., struct Point { int x; int y; } p; — these are VarDecls with struct types)
+            if case .varDecl(let vd) = d {
+                collectRecords(vd.type)
             }
         }
 
@@ -168,6 +187,7 @@ public final class Codegen {
                     // Always use 64-bit store for simplicity
                     emitLine("str \(reg.x), [x29, #\(offset)]")
                 }
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
             }
         }
 
@@ -211,6 +231,7 @@ public final class Codegen {
         ensureLocalSpace(size: size)
         let offset = -localOffset
         localVarOffsets[name] = offset
+        localVarTypes[name] = type
     }
 
     // MARK: - Statement emission
@@ -242,6 +263,7 @@ public final class Codegen {
                     }
                 }
             }
+            regAlloc.reset()
 
         case .if(let is_):
             emitIfStmt(is_)
@@ -299,9 +321,12 @@ public final class Codegen {
         let startLabel = newLabel()
         let endLabel = newLabel()
         emitLine("\(startLabel):")
+        regAlloc.reset()
         let condReg = emitExpr(ws.condition)
         emitLine("cbz \(condReg.x), \(endLabel)")
+        regAlloc.reset()
         emitStmt(ws.body)
+        regAlloc.reset()
         emitLine("b \(startLabel)")
         emitLine("\(endLabel):")
     }
@@ -316,6 +341,7 @@ public final class Codegen {
 
     private func emitForStmt(_ fs: ForStmt) {
         if let init_ = fs.initStmt { emitStmt(init_) }
+        regAlloc.reset()
         let startLabel = newLabel()
         let endLabel = newLabel()
         emitLine("\(startLabel):")
@@ -323,8 +349,11 @@ public final class Codegen {
             let condReg = emitExpr(cond)
             emitLine("cbz \(condReg.x), \(endLabel)")
         }
+        regAlloc.reset()
         emitStmt(fs.body)
+        regAlloc.reset()
         if let incr = fs.increment { _ = emitExpr(incr) }
+        regAlloc.reset()
         emitLine("b \(startLabel)")
         emitLine("\(endLabel):")
     }
@@ -524,48 +553,63 @@ public final class Codegen {
     }
 
     private func emitUnaryExpr(_ u: UnaryExpr) -> ARM64Reg {
+        // For addressOf, we need the address, not the value
+        if u.op == .addressOf {
+            return emitAddr(u.operand)
+        }
+
+        // For dereference, load from the address
+        if u.op == .dereference {
+            let addrReg = emitExpr(u.operand)
+            emitLine("ldr \(addrReg.x), [\(addrReg.x)]")
+            return addrReg
+        }
+
+        // For pre/post inc/dec, load, modify, store
+        if u.op == .preInc || u.op == .preDec || u.op == .postInc || u.op == .postDec {
+            let addrReg = emitAddr(u.operand)
+            let valReg = regAlloc.alloc() ?? .x9
+            emitLine("ldr \(valReg.x), [\(addrReg.x)]")
+
+            let resultReg: ARM64Reg
+            if u.op == .postInc || u.op == .postDec {
+                let origReg = regAlloc.alloc() ?? .x9
+                emitLine("mov \(origReg.x), \(valReg.x)")
+                if u.op == .postInc {
+                    emitLine("add \(valReg.x), \(valReg.x), #1")
+                } else {
+                    emitLine("sub \(valReg.x), \(valReg.x), #1")
+                }
+                emitLine("str \(valReg.x), [\(addrReg.x)]")
+                regAlloc.free(valReg)
+                regAlloc.free(addrReg)
+                resultReg = origReg
+            } else {
+                if u.op == .preInc {
+                    emitLine("add \(valReg.x), \(valReg.x), #1")
+                } else {
+                    emitLine("sub \(valReg.x), \(valReg.x), #1")
+                }
+                emitLine("str \(valReg.x), [\(addrReg.x)]")
+                regAlloc.free(addrReg)
+                resultReg = valReg
+            }
+            return resultReg
+        }
+
         let operandReg = emitExpr(u.operand)
 
         switch u.op {
         case .neg:
             emitLine("neg \(operandReg.x), \(operandReg.x)")
         case .pos:
-            break // no-op
+            break
         case .not:
             emitLine("cmp \(operandReg.x), #0")
             emitLine("cset \(operandReg.x), eq")
         case .bitNot:
             emitLine("mvn \(operandReg.x), \(operandReg.x)")
-        case .dereference:
-            emitLine("ldr \(operandReg.x), [\(operandReg.x)]")
-        case .addressOf:
-            // This is tricky — we need the address, not the value
-            // For local vars, compute the address from x29
-            // For now, this only works correctly for identifiers
-            if case .identifier(let id) = u.operand {
-                if let offset = localVarOffsets[id.name] {
-                    emitLine("add \(operandReg.x), x29, #\(offset)")
-                } else if globalLabels.contains(id.name) {
-                    emitLine("adrp \(operandReg.x), _\(id.name)@PAGE")
-                    emitLine("add \(operandReg.x), \(operandReg.x), _\(id.name)@PAGEOFF")
-                }
-            }
-        case .preInc:
-            emitLine("add \(operandReg.x), \(operandReg.x), #1")
-            // Store back if it's an lvalue
-            if case .identifier(let id) = u.operand, let offset = localVarOffsets[id.name] {
-                emitLine("str \(operandReg.x), [x29, #\(offset)]")
-            }
-        case .preDec:
-            emitLine("sub \(operandReg.x), \(operandReg.x), #1")
-            if case .identifier(let id) = u.operand, let offset = localVarOffsets[id.name] {
-                emitLine("str \(operandReg.x), [x29, #\(offset)]")
-            }
-        case .postInc:
-            // Return original value, increment in place
-            // We need a temp for the original
-            break
-        case .postDec:
+        default:
             break
         }
 
@@ -626,20 +670,12 @@ public final class Codegen {
         return valueReg
     }
 
-    /// Store a register's value back to an lvalue (local var, global, or via pointer).
+    /// Store a register's value to an lvalue (local var, global, member, subscript, deref).
     private func storeExprResult(_ target: Expr, _ reg: ARM64Reg) {
-        if case .identifier(let id) = target {
-            if let offset = localVarOffsets[id.name] {
-                emitLine("str \(reg.x), [x29, #\(offset)]")
-            } else if globalLabels.contains(id.name) {
-                let addrReg = regAlloc.alloc() ?? .x9
-                emitLine("adrp \(addrReg.x), _\(id.name)@PAGE")
-                emitLine("add \(addrReg.x), \(addrReg.x), _\(id.name)@PAGEOFF")
-                emitLine("str \(reg.x), [\(addrReg.x)]")
-                regAlloc.free(addrReg)
-            }
-        }
-        // TODO: handle member and subscript targets
+        let addrReg = emitAddr(target)
+        // Always use 64-bit stores for simplicity and consistency
+        emitLine("str \(reg.x), [\(addrReg.x)]")
+        regAlloc.free(addrReg)
     }
 
     private func emitCallExpr(_ c: CallExpr) -> ARM64Reg {
@@ -648,27 +684,59 @@ public final class Codegen {
             funcName = id.name
         }
 
-        // Evaluate arguments and place in x0-x7
-        for (i, arg) in c.arguments.enumerated() {
-            if i < 8 {
+        // Check if this is a variadic function (e.g., printf)
+        // On Apple ARM64, variadic arguments go on the stack after the named args.
+        // We track known variadic functions by name.
+        let variadicFuncs: Set<String> = ["printf", "fprintf", "sprintf", "snprintf",
+                                          "puts", "fputs", "scanf", "sscanf", "fprintf",
+                                          "__assert_fail", "qsort"]
+        let isVariadic = variadicFuncs.contains(funcName)
+
+        // For variadic functions: first arg (format) in x0, rest on stack
+        if isVariadic && c.arguments.count > 1 {
+            // Evaluate all arguments
+            var argRegs: [ARM64Reg] = []
+            for arg in c.arguments {
                 let argReg = emitExpr(arg)
-                if argReg != argRegs[i] {
-                    emitLine("mov \(argRegs[i].x), \(argReg.x)")
+                argRegs.append(argReg)
+            }
+
+            // First argument goes in x0 (the format string for printf)
+            if argRegs[0] != .x0 {
+                emitLine("mov x0, \(argRegs[0].x)")
+            }
+            for r in argRegs { regAlloc.free(r) }
+
+            // Push variadic arguments onto the stack (in reverse order)
+            // Each arg is 8 bytes, aligned to 16 for AAPCS64
+            let stackArgs = argRegs.count - 1
+            let stackSize = (stackArgs * 8 + 15) & ~15  // align to 16
+            emitLine("sub sp, sp, #\(stackSize)")
+            for i in 1..<argRegs.count {
+                let argReg = argRegs[i]
+                let stackOffset = (i - 1) * 8
+                emitLine("str \(argReg.x), [sp, #\(stackOffset)]")
+            }
+        } else {
+            // Non-variadic: evaluate args and place in x0-x7
+            for (i, arg) in c.arguments.enumerated() {
+                if i < 8 {
+                    let argReg = emitExpr(arg)
+                    if argReg != argRegs[i] {
+                        emitLine("mov \(argRegs[i].x), \(argReg.x)")
+                    }
+                    regAlloc.free(argReg)
+                } else {
+                    let argReg = emitExpr(arg)
+                    regAlloc.free(argReg)
                 }
-                regAlloc.free(argReg)
-            } else {
-                let argReg = emitExpr(arg)
-                regAlloc.free(argReg)
             }
         }
 
         // Save scratch registers that are currently in use to the stack
-        // before the call, since the callee may clobber them.
-        // Use 16-byte aligned stack adjustments (AAPCS64 requirement).
         let inUse = scratchRegs.filter { reg in
             !regAlloc.available.contains(reg)
         }
-        // Pad to even count for 16-byte alignment
         let paddedCount = inUse.count + (inUse.count % 2)
         if paddedCount > 0 {
             emitLine("sub sp, sp, #\(paddedCount * 8)")
@@ -690,6 +758,13 @@ public final class Codegen {
             emitLine("add sp, sp, #\(paddedCount * 8)")
         }
 
+        // Clean up variadic stack args
+        if isVariadic && c.arguments.count > 1 {
+            let stackArgs = c.arguments.count - 1
+            let stackSize = (stackArgs * 8 + 15) & ~15
+            emitLine("add sp, sp, #\(stackSize)")
+        }
+
         // Result is in x0
         let resultReg = regAlloc.alloc() ?? .x9
         if resultReg != .x0 {
@@ -698,22 +773,195 @@ public final class Codegen {
         return resultReg
     }
 
+    // MARK: - Type inference for codegen
+
+    /// Determine the type of an expression (for computing offsets, element sizes, etc.)
+    private func exprType(_ expr: Expr) -> CType {
+        switch expr {
+        case .integerLiteral(let l): return l.type
+        case .charLiteral: return .int
+        case .floatLiteral(let f): return f.type
+        case .stringLiteral(let s): return s.type
+        case .boolLiteral: return .bool
+        case .identifier(let id):
+            if let t = localVarTypes[id.name] { return t }
+            if let t = globalVarTypes[id.name] { return t }
+            return .int
+        case .binary(let b):
+            // For pointer arithmetic, result type is the pointer type
+            let lt = exprType(b.left)
+            let rt = exprType(b.right)
+            if lt.isPointer && rt.isInteger { return lt }
+            if lt.isInteger && rt.isPointer { return rt }
+            return lt.isArithmetic ? lt : rt
+        case .unary(let u):
+            switch u.op {
+            case .dereference:
+                let t = exprType(u.operand)
+                if case .pointer(let to) = t.unqualified { return to }
+                if case .array(let elem, _) = t.unqualified { return elem }
+                return .int
+            case .addressOf:
+                return .pointer(to: exprType(u.operand))
+            default:
+                return exprType(u.operand)
+            }
+        case .assign(let a):
+            return exprType(a.target)
+        case .call(let c):
+            // Look up function return type
+            if case .identifier(let id) = c.function {
+                if let t = globalVarTypes[id.name] {
+                    if case .function(_, let ret, _) = t.unqualified { return ret }
+                }
+                // Check if it's a known function
+                return .int
+            }
+            return .int
+        case .subscript_(let s):
+            let bt = exprType(s.base)
+            if case .pointer(let to) = bt.unqualified { return to }
+            if case .array(let elem, _) = bt.unqualified { return elem }
+            return .int
+        case .member(let m):
+            let bt = exprType(m.base)
+            var recordType = bt.unqualified
+            if m.isArrow {
+                if case .pointer(let to) = bt.unqualified { recordType = to }
+            }
+            if case .structType(let rec) = recordType.unqualified {
+                for field in rec.fields where field.name == m.memberName {
+                    return field.type
+                }
+            }
+            if case .unionType(let rec) = recordType.unqualified {
+                for field in rec.fields where field.name == m.memberName {
+                    return field.type
+                }
+            }
+            return .int
+        case .cast(let c):
+            return c.type
+        case .conditional:
+            return .int
+        case .sizeof:
+            return .ulong
+        case .compoundLiteral(let cl):
+            return cl.type
+        case .initList:
+            return .int
+        }
+    }
+
+    /// Collect completed record types from a CType (recursive).
+    private func collectRecords(_ type: CType) {
+        var t = type.unqualified
+        if case .pointer(let to) = t { t = to.unqualified }
+        if case .structType(let rec) = t, rec.size != nil {
+            knownRecords[rec.name] = rec
+        }
+        if case .unionType(let rec) = t, rec.size != nil {
+            knownRecords[rec.name] = rec
+        }
+    }
+
+    /// Get the offset of a struct/union member.
+    private func memberOffset(_ baseType: CType, _ memberName: String) -> Int {
+        var t = baseType.unqualified
+        if case .pointer(let to) = t { t = to.unqualified }
+        // If the record is incomplete, try to look it up by name
+        if case .structType(let rec) = t {
+            if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                t = .structType(completed)
+            }
+        }
+        if case .unionType(let rec) = t {
+            if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                t = .unionType(completed)
+            }
+        }
+        if case .structType(let rec) = t {
+            for field in rec.fields where field.name == memberName {
+                return field.offset
+            }
+        }
+        if case .unionType(let rec) = t {
+            for field in rec.fields where field.name == memberName {
+                return field.offset
+            }
+        }
+        return 0
+    }
+
+    /// Emit the address of an lvalue expression (without loading its value).
+    /// Returns the register holding the address.
+    private func emitAddr(_ expr: Expr) -> ARM64Reg {
+        switch expr {
+        case .identifier(let id):
+            let reg = regAlloc.alloc() ?? .x9
+            if let offset = localVarOffsets[id.name] {
+                emitLine("add \(reg.x), x29, #\(offset)")
+            } else if globalLabels.contains(id.name) {
+                emitLine("adrp \(reg.x), _\(id.name)@PAGE")
+                emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
+            }
+            return reg
+
+        case .subscript_(let s):
+            let baseReg = emitExpr(s.base)
+            let indexReg = emitExpr(s.index)
+            let elemType = exprType(s.base)
+            let elemSize = elemType.unqualified.isPointer ? 8 : (elemType.sizeInBytes ?? 4)
+            // addr = base + index * elemSize
+            if elemSize == 1 {
+                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x)")
+            } else if elemSize == 2 {
+                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #1")
+            } else if elemSize == 4 {
+                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #2")
+            } else {
+                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #3")
+            }
+            regAlloc.free(indexReg)
+            return baseReg
+
+        case .member(let m):
+            let baseReg: ARM64Reg
+            if m.isArrow {
+                // For a->b: evaluate a (loads the pointer), then add member offset
+                baseReg = emitExpr(m.base)
+            } else {
+                // For a.b: get address of a, then add member offset
+                baseReg = emitAddr(m.base)
+            }
+            let offset = memberOffset(exprType(m.base), m.memberName)
+            if offset != 0 {
+                emitLine("add \(baseReg.x), \(baseReg.x), #\(offset)")
+            }
+            return baseReg
+
+        case .unary(let u) where u.op == .dereference:
+            // Address of *p is just p
+            return emitExpr(u.operand)
+
+        default:
+            // Not an lvalue — just evaluate
+            return emitExpr(expr)
+        }
+    }
+
     private func emitSubscriptExpr(_ s: SubscriptExpr) -> ARM64Reg {
-        let baseReg = emitExpr(s.base)
-        let indexReg = emitExpr(s.index)
-        // Compute address = base + index * elementSize
-        // For simplicity, assume 4-byte elements (int)
-        emitLine("ldr \(baseReg.x), [\(baseReg.x), \(indexReg.x), lsl #2]")
-        regAlloc.free(indexReg)
-        return baseReg
+        let addrReg = emitAddr(.subscript_(s))
+        // Always use 64-bit load for consistency
+        emitLine("ldr \(addrReg.x), [\(addrReg.x)]")
+        return addrReg
     }
 
     private func emitMemberExpr(_ m: MemberExpr) -> ARM64Reg {
-        let baseReg = emitExpr(m.base)
-        // We need to know the offset of the member
-        // For simplicity, return the base for now
-        // TODO: compute member offset from struct layout
-        return baseReg
+        let addrReg = emitAddr(.member(m))
+        // Always use 64-bit load for consistency
+        emitLine("ldr \(addrReg.x), [\(addrReg.x)]")
+        return addrReg
     }
 
     private func emitConditionalExpr(_ c: ConditionalExpr) -> ARM64Reg {

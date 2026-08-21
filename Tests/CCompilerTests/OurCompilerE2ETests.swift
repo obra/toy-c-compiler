@@ -132,4 +132,76 @@ final class OurCompilerE2ETests: XCTestCase {
         """
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "line1\nline2\n"))
     }
+
+    // MARK: - Structs
+
+    func testStructMemberAccess() {
+        let source = """
+        struct Point { int x; int y; };
+        int main() {
+            struct Point p;
+            p.x = 3;
+            p.y = 4;
+            return p.x + p.y;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 7))
+    }
+
+    func testStructPointerArrow() {
+        let source = """
+        struct Point { int x; int y; };
+        int main() {
+            struct Point p;
+            struct Point *pp = &p;
+            pp->x = 7;
+            pp->y = 3;
+            return pp->x * pp->y;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 21))
+    }
+
+    // MARK: - Pointers and arrays
+
+    func testPointerDereference() {
+        let source = """
+        int main() {
+            int x = 10;
+            int *p = &x;
+            *p = 42;
+            return x;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 42))
+    }
+
+    func testArraySubscript() {
+        let source = """
+        int main() {
+            int a[5];
+            a[0] = 10;
+            a[1] = 20;
+            a[2] = 30;
+            return a[0] + a[1] + a[2];
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 60))
+    }
+
+    func testForLoopIncrement() {
+        let source = """
+        int printf(const char *format, ...);
+        int main() {
+            int sum = 0;
+            for (int i = 1; i <= 100; i++) {
+                sum += i;
+            }
+            printf("%d\\n", sum);
+            return 0;
+        }
+        """
+        // 1+2+...+100 = 5050
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "5050\n"))
+    }
 }

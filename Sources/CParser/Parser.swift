@@ -176,7 +176,16 @@ public final class Parser {
         // If nothing follows the specifiers, it's just a type declaration (e.g., struct S { ... };)
         if isPunct(";") {
             advance()
-            // Could be a struct/union/enum decl — we already processed it in parseDeclSpecifiers
+            // Return the struct/union/enum declaration if present
+            if case .structType(let rec) = baseType {
+                return .structDecl(StructDecl(name: rec.name, record: rec, loc: SourceLoc.unknown))
+            }
+            if case .unionType(let rec) = baseType {
+                return .unionDecl(UnionDecl(name: rec.name, record: rec, loc: SourceLoc.unknown))
+            }
+            if case .enumType(let en) = baseType {
+                return .enumDecl(EnumDecl(name: en.name, enumType: en, loc: SourceLoc.unknown))
+            }
             return nil
         }
 
