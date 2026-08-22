@@ -826,8 +826,8 @@ public final class Codegen {
             case .add: return lhs + rhs
             case .sub: return lhs - rhs
             case .mul: return lhs * rhs
-            case .div: return rhs != 0 ? lhs / rhs : nil
-            case .mod: return rhs != 0 ? lhs % rhs : nil
+            case .div: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) / UInt64(bitPattern: rhs)) : nil
+            case .mod: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) % UInt64(bitPattern: rhs)) : nil
             case .shl: return lhs << rhs
             case .shr: return lhs >> rhs
             case .bitAnd: return lhs & rhs
@@ -2746,7 +2746,7 @@ public final class Codegen {
                             emitLine("asr \(leftReg.x), \(leftReg.x), #3")
                         } else {
                             emitLine("mov x16, #\(pointeeSize)")
-                            emitLine("sdiv \(leftReg.x), \(leftReg.x), x16")
+                            emitLine("udiv \(leftReg.x), \(leftReg.x), x16")
                         }
                     }
                 } else {
@@ -2755,12 +2755,21 @@ public final class Codegen {
             case .mul:
                 emitLine("mul \(leftReg.x), \(leftReg.x), \(rightReg.x)")
             case .div:
-                emitLine("sdiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                // Use udiv for unsigned types, sdiv for signed types
+                if resultType.isUnsigned {
+                    emitLine("udiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                } else {
+                    emitLine("sdiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .mod:
-                // sdiv temp, left, right  → temp = left / right
+                // udiv/sdiv temp, left, right  → temp = left / right
                 // msub left, temp, right, left  → left = left - temp * right
                 // Need a scratch register since rightReg holds the divisor
-                emitLine("sdiv x16, \(leftReg.x), \(rightReg.x)")
+                if resultType.isUnsigned {
+                    emitLine("udiv x16, \(leftReg.x), \(rightReg.x)")
+                } else {
+                    emitLine("sdiv x16, \(leftReg.x), \(rightReg.x)")
+                }
                 emitLine("msub \(leftReg.x), x16, \(rightReg.x), \(leftReg.x)")
             case .shl:
                 if resultType.sizeInBytes == 4 {
@@ -3044,13 +3053,19 @@ public final class Codegen {
             case .div:
                 if targetType.isFloating {
                     emitLine("fdiv \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
+                } else if targetType.isUnsigned {
+                    emitLine("udiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 } else {
                     emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .mod:
                 // result = current - (current / rhs) * rhs
                 let temp = regAlloc.alloc() ?? .x9
-                emitLine("sdiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                if targetType.isUnsigned {
+                    emitLine("udiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                } else {
+                    emitLine("sdiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                }
                 emitLine("msub \(currentReg.x), \(temp.x), \(rhsReg.x), \(currentReg.x)")
                 regAlloc.free(temp)
             case .shl: emitLine("lsl \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
