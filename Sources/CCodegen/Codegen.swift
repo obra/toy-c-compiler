@@ -3697,6 +3697,16 @@ public final class Codegen {
                     regAlloc.free(argReg)
                 } else {
                     let argReg = emitExpr(arg)
+                    // Sign-extend 32-bit signed int to 64-bit for wide parameters
+                    // (e.g., int -1 passed to i64 parameter must become -1, not 0xFFFFFFFF)
+                    if argType.isSigned32Bit {
+                        if let pt = paramType, pt.sizeInBytes == 8 {
+                            emitLine("sxtw \(argReg.x), \(argReg.w)")
+                        } else if paramType == nil {
+                            // Variadic function: always sign-extend signed 32-bit ints
+                            emitLine("sxtw \(argReg.x), \(argReg.w)")
+                        }
+                    }
                     // Save the result on the stack to preserve it across subsequent arg evaluation
                     emitLine("str \(argReg.x), [sp, #-16]!")
                     evaluatedArgs.append(argReg)
