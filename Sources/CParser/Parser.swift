@@ -34,6 +34,8 @@ public final class Parser {
     /// Last parsed function params (with names) — used by parseExternalDecl.
     private var lastFuncParams: [Param] = []
     private var lastFuncVariadic: Bool = false
+    /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
+    private var pendingExternalDecls: [Decl] = []
 
     public init(_ tokens: [Token], diags: DiagnosticEngine = DiagnosticEngine()) {
         // Filter out EOF for easier processing, we'll add it back at the end
@@ -50,6 +52,9 @@ public final class Parser {
                 if let decl = try parseExternalDecl() {
                     decls.append(decl)
                 }
+                // Pick up any additional declarators from multi-declarator declarations
+                decls.append(contentsOf: pendingExternalDecls)
+                pendingExternalDecls.removeAll()
             } catch let error as ParseError {
                 switch error {
                 case .unexpectedToken(let msg, let loc):
@@ -228,6 +233,7 @@ public final class Parser {
 
         // Parse one or more declarators
         var firstDecl: Decl? = nil
+        var additionalDecls: [Decl] = []
         repeat {
             let (name, type, loc) = try parseDeclarator(baseType)
             skipAsmAndAttributes()
@@ -292,6 +298,7 @@ public final class Parser {
             } else {
                 let varDecl = VarDecl(name: name, type: actualType, initializer: initExpr,
                                       storageClass: storageClass, isGlobal: true, loc: loc)
+                additionalDecls.append(.varDecl(varDecl))
                 if firstDecl == nil {
                     firstDecl = .varDecl(varDecl)
                 }
@@ -305,6 +312,10 @@ public final class Parser {
         }
         _ = try consume(kind: .punct, spelling: ";")
 
+        // If there were multiple declarators, queue the extras for parse() to pick up
+        if additionalDecls.count > 1 {
+            pendingExternalDecls = Array(additionalDecls.dropFirst())
+        }
         return firstDecl
     }
 
