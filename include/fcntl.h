@@ -38,11 +38,11 @@ extern int fsctl(const char *, unsigned long, void *, int);
 #define F_WRLCK 3
 
 struct flock {
-    short l_type;
-    short l_whence;
-    off_t l_start;
-    off_t l_len;
-    pid_t l_pid;
+    off_t   l_start;        /* starting offset */
+    off_t   l_len;          /* len = 0 means until end of file */
+    pid_t   l_pid;          /* lock owner */
+    short   l_type;         /* lock type: read/write, etc. */
+    short   l_whence;       /* type of l_start */
 };
 
 #endif /* _FCNTL_H */
