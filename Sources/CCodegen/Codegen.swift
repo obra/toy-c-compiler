@@ -4764,6 +4764,10 @@ public final class Codegen {
         let mt = exprType(.member(m))
         if case .array = mt.unqualified { return addrReg }
         if case .incompleteArray = mt.unqualified { return addrReg }
+        // For structs, we can't load into a single register. Return the address
+        // so the caller (e.g., struct copy, struct assignment) can use it.
+        if case .structType = mt.unqualified, (mt.sizeInBytes ?? 0) > 0 { return addrReg }
+        if case .unionType = mt.unqualified, (mt.sizeInBytes ?? 0) > 0 { return addrReg }
         // Load the value with the correct size based on member type
         emitLoad(addrReg, type: mt)
         return addrReg
