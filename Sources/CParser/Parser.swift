@@ -1524,7 +1524,8 @@ public final class Parser {
                 case "\"": result += "\""
                 case "x":
                     // Hex escape
-                    let hexStart = s.index(after: s.index(after: i))
+                    let afterBackslash = s.index(after: i)
+                    let hexStart = afterBackslash < s.endIndex ? s.index(after: afterBackslash) : s.endIndex
                     var hexStr = ""
                     var j = hexStart
                     while j < s.endIndex && s[j].isHexDigit && hexStr.count < 2 {
@@ -1581,16 +1582,17 @@ public final class Parser {
         case "n": return 0x0A
         case "t": return 0x09
         case "r": return 0x0D
-        case "0": return 0x00
         case "\\": return 0x5C
         case "'": return 0x27
         case "\"": return 0x22
         case "x":
+            // Hex escape: \xHH (up to 2 hex digits)
             let hex = String(s.dropFirst())
-            return UInt8(hex, radix: 16) ?? 0
+            return UInt8(hex.prefix(2), radix: 16) ?? 0
         default:
-            if first.isNumber {
-                return UInt8(s, radix: 8) ?? 0
+            // Octal escape: \0, \0XX, \1XX, etc. (up to 3 octal digits)
+            if first >= "0" && first <= "7" {
+                return UInt8(s.prefix(3), radix: 8) ?? 0
             }
             return Array(String(first).utf8).first ?? 0
         }
@@ -1684,6 +1686,6 @@ public final class Parser {
 
 private extension Character {
     var isHexDigit: Bool {
-        return self.isHexDigit
+        return ("0"..."9").contains(self) || ("a"..."f").contains(self) || ("A"..."F").contains(self)
     }
 }
