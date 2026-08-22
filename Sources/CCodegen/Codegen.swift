@@ -1863,8 +1863,16 @@ public final class Codegen {
                 }
             }
 
-            // Implicit conversion: if target is float but rhs is int, convert rhs.
-            if targetType.isFloating && !valueType.isFloating {
+            // Implicit conversion for compound assignment.
+            // C standard: a op= b is equivalent to a = (a_type)((promoted_a) op b).
+            // If target is float and rhs is double, promote target to double, operate
+            // in double, then narrow back to float.
+            let needDoubleOp = targetType == .float && valueType == .double
+            if needDoubleOp {
+                // Promote current value from float to double
+                emitLine("fcvt d\(currentReg.regNum), s\(currentReg.regNum)")
+            } else if targetType.isFloating && !valueType.isFloating {
+                // int → float
                 if valueType.isSigned32Bit {
                     emitLine("sxtw \(rhsReg.x), \(rhsReg.w)")
                 }
@@ -1872,36 +1880,32 @@ public final class Codegen {
                 emitLine("scvtf \(fp)\(rhsReg.regNum), \(rhsReg.x)")
             } else if targetType == .double && valueType == .float {
                 emitLine("fcvt d\(rhsReg.regNum), s\(rhsReg.regNum)")
-            } else if targetType == .float && valueType == .double {
-                emitLine("fcvt s\(rhsReg.regNum), d\(rhsReg.regNum)")
             }
 
+            // The operation is done in the wider type (double if promoted)
+            let opFp = needDoubleOp ? "d" : (targetType == .float ? "s" : "d")
             switch binaryOp {
             case .add:
                 if targetType.isFloating {
-                    let fp = targetType == .float ? "s" : "d"
-                    emitLine("fadd \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                    emitLine("fadd \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
                 } else {
                     emitLine("add \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .sub:
                 if targetType.isFloating {
-                    let fp = targetType == .float ? "s" : "d"
-                    emitLine("fsub \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                    emitLine("fsub \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
                 } else {
                     emitLine("sub \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .mul:
                 if targetType.isFloating {
-                    let fp = targetType == .float ? "s" : "d"
-                    emitLine("fmul \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                    emitLine("fmul \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
                 } else {
                     emitLine("mul \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .div:
                 if targetType.isFloating {
-                    let fp = targetType == .float ? "s" : "d"
-                    emitLine("fdiv \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                    emitLine("fdiv \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
                 } else {
                     emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
@@ -1919,6 +1923,11 @@ public final class Codegen {
             default: break
             }
             regAlloc.free(rhsReg)
+
+            // Narrow result back to float if we promoted to double for the operation
+            if needDoubleOp {
+                emitLine("fcvt s\(currentReg.regNum), d\(currentReg.regNum)")
+            }
 
             // Store the result back to the target
             storeExprResult(a.target, currentReg)
@@ -2314,6 +2323,7 @@ public final class Codegen {
                 // This handles implicit int→float conversion for function calls (e.g., sin(2)).
                 let paramType: CType? = i < paramTypes.count ? paramTypes[i].unqualified : nil
                 let isFloatParam = paramType?.isFloating ?? false
+                let isIntParam = paramType?.isInteger ?? false
                 let argSize = argType.sizeInBytes ?? 8
                 if case .structType = argType, argSize > 8, argSize <= 16 {
                     // Struct by value (9-16 bytes): load two 8-byte chunks
@@ -2330,23 +2340,47 @@ public final class Codegen {
                     evaluatedArgs.append(addrReg)
                     wideArgs.insert(i)
                     regAlloc.free(addrReg)
-                } else if argType.isFloating {
-                    // Float/double arg: save the FP register value to temp stack
+                } else if argType.isFloating && isIntParam {
+                    // Float arg but int param: convert float→int
                     let argReg = emitExpr(arg)
-                    let fpReg = argType == .float ? "s\(argReg.regNum)" : "d\(argReg.regNum)"
-                    emitLine("str \(fpReg), [sp, #-16]!")
+                    let srcFp = argType == .float ? "s" : "d"
+                    if let pt = paramType, pt.isSigned32Bit {
+                        emitLine("fcvtzs \(argReg.w), \(srcFp)\(argReg.regNum)")
+                    } else {
+                        emitLine("fcvtzs \(argReg.x), \(srcFp)\(argReg.regNum)")
+                    }
+                    emitLine("str \(argReg.x), [sp, #-16]!")
+                    evaluatedArgs.append(argReg)
+                    regAlloc.free(argReg)
+                } else if argType.isFloating {
+                    // Float/double arg: convert to param type if needed, save to temp stack.
+                    // Always save as 8 bytes (double) for consistent load-back.
+                    let argReg = emitExpr(arg)
+                    if isFloatParam, let pt = paramType, pt != argType {
+                        convertFloat(argReg, from: argType, to: pt)
+                    }
+                    // If the value is float (4 bytes), promote to double for storage
+                    let saveType = isFloatParam ? paramType! : argType
+                    if saveType == .float {
+                        emitLine("fcvt d\(argReg.regNum), s\(argReg.regNum)")
+                    }
+                    emitLine("str d\(argReg.regNum), [sp, #-16]!")
                     evaluatedArgs.append(argReg)
                     floatArgs.insert(i)
                     regAlloc.free(argReg)
                 } else if isFloatParam {
-                    // Int arg but float param: convert int→float and save as float
+                    // Int arg but float param: convert int→float, promote to double for storage
                     let argReg = emitExpr(arg)
                     if argType.isSigned32Bit {
                         emitLine("sxtw \(argReg.x), \(argReg.w)")
                     }
-                    let fp = paramType == .float ? "s" : "d"
-                    emitLine("scvtf \(fp)\(argReg.regNum), \(argReg.x)")
-                    emitLine("str \(fp)\(argReg.regNum), [sp, #-16]!")
+                    if paramType == .float {
+                        emitLine("scvtf s\(argReg.regNum), \(argReg.x)")
+                        emitLine("fcvt d\(argReg.regNum), s\(argReg.regNum)")
+                    } else {
+                        emitLine("scvtf d\(argReg.regNum), \(argReg.x)")
+                    }
+                    emitLine("str d\(argReg.regNum), [sp, #-16]!")
                     evaluatedArgs.append(argReg)
                     floatArgs.insert(i)
                     regAlloc.free(argReg)
@@ -2462,13 +2496,25 @@ public final class Codegen {
 
                 if isFloatArg {
                     // Float/double arg goes in d0-d7
+                    // The value was saved as double; convert back to float if param is float.
+                    let paramTypes = functionParamTypes[funcName] ?? []
+                    let isFloatParam = i < paramTypes.count && paramTypes[i].unqualified == .float
                     if fpRegIdx < 8 {
                         emitLine("ldr d\(fpRegIdx), [sp, #\(tempOffset)]")
+                        if isFloatParam {
+                            emitLine("fcvt s\(fpRegIdx), d\(fpRegIdx)")
+                        }
                     } else {
                         // Overflow: float arg goes on stack
                         let stackOffset = (fpRegIdx - 8) * 8
-                        emitLine("ldr d9, [sp, #\(tempOffset)]")
-                        emitLine("str d9, [sp, #\(stackOffset)]")
+                        if isFloatParam {
+                            emitLine("ldr d9, [sp, #\(tempOffset)]")
+                            emitLine("fcvt s9, d9")
+                            emitLine("str s9, [sp, #\(stackOffset)]")
+                        } else {
+                            emitLine("ldr d9, [sp, #\(tempOffset)]")
+                            emitLine("str d9, [sp, #\(stackOffset)]")
+                        }
                     }
                     regAlloc.free(evaluatedArgs[i])
                     fpRegIdx += 1
