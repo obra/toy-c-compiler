@@ -2301,7 +2301,14 @@ public final class Codegen {
                 // Indirect call — evaluate the function expression to get a function pointer
                 // Use a register outside the arg registers (x0-x7) to avoid clobbering
                 // We'll use x16 (IP0) which is safe for inter-procedural calls
-                let fpReg = emitExpr(c.function)
+                // For *f (dereference of function pointer), just use f directly —
+                // dereferencing a function pointer is a no-op in C.
+                let fpReg: ARM64Reg
+                if case .unary(let u) = c.function, u.op == .dereference {
+                    fpReg = emitExpr(u.operand)
+                } else {
+                    fpReg = emitExpr(c.function)
+                }
                 // Move to x16 which is safe as a temporary call target
                 emitLine("mov x16, \(fpReg.x)")
                 regAlloc.free(fpReg)
