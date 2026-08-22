@@ -3780,16 +3780,16 @@ public final class Codegen {
                     }
                 } else { totalRegSlots += 1 }
             }
-            // For internal variadic: all variadic args go on the stack (not just overflow)
+            // For internal variadic: variadic args go on the stack (not just overflow)
             let numStackArgs: Int
-            if (isInternalVariadic || isIndirectVariadic) && evaluatedArgs.count > namedParamCount {
+            if isInternalVariadic && evaluatedArgs.count > namedParamCount {
                 numStackArgs = evaluatedArgs.count - namedParamCount
             } else {
                 numStackArgs = max(totalRegSlots - 8, 0)
             }
             // Compute actual stack size for variadic args (structs may need 16 bytes each)
             var stackArgSize = 0
-            if (isInternalVariadic || isIndirectVariadic) && evaluatedArgs.count > namedParamCount {
+            if isInternalVariadic && evaluatedArgs.count > namedParamCount {
                 var variadicSize = 0
                 for i in namedParamCount..<evaluatedArgs.count {
                     let argType = exprType(c.arguments[i]).unqualified
@@ -3803,7 +3803,7 @@ public final class Codegen {
 
             // Now restore ALL args from temp stack and move to target registers
             var namedCount = min(evaluatedArgs.count, 8)
-            if isInternalVariadic || isIndirectVariadic {
+            if isInternalVariadic {
                 namedCount = min(namedParamCount, evaluatedArgs.count)
             }
 
@@ -3873,7 +3873,7 @@ public final class Codegen {
                 let regsNeeded = isWide ? 2 : (largeChunks > 0 ? largeChunks : 1)
 
                 // For internal variadic: named params go in registers, variadic args go on stack
-                let isVariadicArg = (isInternalVariadic || isIndirectVariadic) && i >= namedParamCount
+                let isVariadicArg = isInternalVariadic && i >= namedParamCount
                 if isVariadicArg {
                     let argSize = exprType(c.arguments[i]).unqualified.sizeInBytes ?? 8
                     let slotSize = (argSize + 7) & ~7  // round up to 8
@@ -4023,7 +4023,7 @@ public final class Codegen {
                 regIdx += regsNeeded
             }
             // Re-allocate the target registers
-            let totalRegArgs = (isInternalVariadic || isIndirectVariadic) ? min(namedParamCount, 8) : min(regIdx, 8)
+            let totalRegArgs = isInternalVariadic ? min(namedParamCount, 8) : min(regIdx, 8)
             for _ in 0..<totalRegArgs {
                 _ = regAlloc.alloc() // consume the register slot
             }
