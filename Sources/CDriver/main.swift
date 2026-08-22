@@ -36,7 +36,7 @@ struct CompilerMain {
             case "-D":
                 i += 1
                 if i < args.count {
-                    let parts = args[i].split(separator: "=", maxSplits: 1)
+                    let parts = args[i].split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                     let name = String(parts[0])
                     let value = parts.count > 1 ? String(parts[1]) : "1"
                     predefines[name] = value
@@ -45,7 +45,7 @@ struct CompilerMain {
                 if arg.hasPrefix("-D") && arg.count > 2 {
                     // Combined form: -Dname=value or -Dname
                     let def = String(arg.dropFirst(2))
-                    let parts = def.split(separator: "=", maxSplits: 1)
+                    let parts = def.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                     let name = String(parts[0])
                     let value = parts.count > 1 ? String(parts[1]) : "1"
                     predefines[name] = value

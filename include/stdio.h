@@ -36,5 +36,8 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
 int fgetc(FILE *stream);
 int getc(FILE *stream);
 char *fgets(char *s, int size, FILE *stream);
+int fflush(FILE *stream);
+int fseek(FILE *stream, long offset, int whence);
+long ftell(FILE *stream);
 
 #endif /* _STDIO_H */

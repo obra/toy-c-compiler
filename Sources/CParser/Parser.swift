@@ -2033,7 +2033,30 @@ public final class Parser {
         let type: CType
         if isLongLong { type = isUnsigned ? .ulongLong : .longLong }
         else if isLong { type = isUnsigned ? .ulong : .long }
-        else { type = isUnsigned ? .uint : .int }
+        else {
+            // C standard integer literal type rules:
+            // For decimal: int -> long -> long long (all signed)
+            // For hex/octal/binary: int -> unsigned int -> long -> unsigned long -> long long -> unsigned long long
+            let uv = UInt64(bitPattern: value)
+            if isUnsigned {
+                if uv <= UInt64(UInt32.max) { type = .uint }
+                else if uv <= UInt64(UInt64(Int.max)) { type = .long }
+                else if uv <= UInt64(UInt64.max) { type = .ulong }
+                else { type = .ulong }
+            } else if s.hasPrefix("0x") || s.hasPrefix("0X") || s.hasPrefix("0b") || s.hasPrefix("0B") || (s.hasPrefix("0") && s.count > 1) {
+                // Hex/octal/binary: can be unsigned
+                if uv <= UInt64(Int32.max) { type = .int }
+                else if uv <= UInt64(UInt32.max) { type = .uint }
+                else if uv <= UInt64(Int64.max) { type = .long }
+                else if uv <= UInt64(UInt64.max) { type = .ulong }
+                else { type = .longLong }
+            } else {
+                // Decimal: only signed types
+                if uv <= UInt64(Int32.max) { type = .int }
+                else if uv <= UInt64(Int64.max) { type = .long }
+                else { type = .longLong }
+            }
+        }
 
         return (value, isUnsigned, type)
     }
