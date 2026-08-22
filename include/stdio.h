@@ -7,6 +7,7 @@
 #define FILENAME_MAX 1024
 #define FOPEN_MAX 20
 #define BUFSIZ 1024
+#define EOF (-1)
 
 typedef struct __sFILE FILE;
 
@@ -33,5 +34,7 @@ int fclose(FILE *fp);
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
 int fgetc(FILE *stream);
+int getc(FILE *stream);
+char *fgets(char *s, int size, FILE *stream);
 
 #endif /* _STDIO_H */
