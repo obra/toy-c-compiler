@@ -218,21 +218,38 @@ public final class Codegen {
                 let t = type.unqualified
                 if case .structType(let rec) = t {
                     // Struct initializer: emit each value at its field's offset,
-                    // filling gaps with .zero
+                    // filling gaps with .zero. When a field is an array, consume
+                    // multiple values from the flat init list.
                     let fields = rec.fields
                     var currentOffset = 0
-                    for (i, v) in il.values.enumerated() {
-                        if i < fields.count {
-                            let fieldOffset = fields[i].offset
-                            // Emit padding before this field if needed
-                            if fieldOffset > currentOffset {
-                                emitLine(".zero \(fieldOffset - currentOffset)")
+                    var valueIdx = 0
+                    for field in fields {
+                        let fieldOffset = field.offset
+                        // Emit padding before this field if needed
+                        if fieldOffset > currentOffset {
+                            emitLine(".zero \(fieldOffset - currentOffset)")
+                        }
+                        let fieldType = field.type.unqualified
+                        if case .array(let elemType, let count) = fieldType {
+                            // Array field: consume values for array elements
+                            for _ in 0..<count {
+                                if valueIdx < il.values.count {
+                                    emitInitializer(il.values[valueIdx], size: elemType.sizeInBytes ?? 8, type: elemType)
+                                    valueIdx += 1
+                                } else {
+                                    emitLine(".zero \(elemType.sizeInBytes ?? 8)")
+                                }
                             }
-                            emitInitializer(v, size: fields[i].type.sizeInBytes ?? 8, type: fields[i].type)
-                            currentOffset = fieldOffset + (fields[i].type.sizeInBytes ?? 8)
+                            currentOffset = fieldOffset + (field.type.sizeInBytes ?? count * (elemType.sizeInBytes ?? 8))
                         } else {
-                            emitInitializer(v, size: 8)
-                            currentOffset += 8
+                            // Scalar or struct field: consume one value
+                            if valueIdx < il.values.count {
+                                emitInitializer(il.values[valueIdx], size: field.type.sizeInBytes ?? 8, type: field.type)
+                                valueIdx += 1
+                            } else {
+                                emitLine(".zero \(field.type.sizeInBytes ?? 8)")
+                            }
+                            currentOffset = fieldOffset + (field.type.sizeInBytes ?? 8)
                         }
                     }
                     // Emit trailing padding to reach full struct size
