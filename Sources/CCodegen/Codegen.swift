@@ -4155,6 +4155,13 @@ public final class Codegen {
                 // Check if it's a known function
                 return .int
             }
+            // For function pointer calls (e.g., x->func(), (*fp)()),
+            // determine the return type from the function pointer's type
+            let funcType = exprType(c.function).unqualified
+            if case .function(_, let ret, _) = funcType { return ret }
+            if case .pointer(let to) = funcType {
+                if case .function(_, let ret, _) = to.unqualified { return ret }
+            }
             return .int
         case .subscript_(let s):
             let bt = exprType(s.base)
