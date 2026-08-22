@@ -1513,6 +1513,25 @@ public final class Codegen {
                                         } else {
                                             emitLine("fcvtzs \(reg.x), \(srcFp)\(reg.regNum)")
                                         }
+                                    } else if initType.isInteger && varType.isInteger && initType != varType {
+                                        // int-to-int conversion: sign-extend or zero-extend as needed
+                                        let srcSize = initType.sizeInBytes ?? 4
+                                        let dstSize = varType.sizeInBytes ?? 8
+                                        if srcSize < dstSize {
+                                            if initType.isUnsigned {
+                                                if srcSize == 4 {
+                                                    emitLine("mov w\(reg.regNum), w\(reg.regNum)")
+                                                }
+                                            } else {
+                                                if srcSize == 4 {
+                                                    emitLine("sxtw \(reg.x), \(reg.w)")
+                                                } else if srcSize == 2 {
+                                                    emitLine("sxth \(reg.x), w\(reg.regNum)")
+                                                } else if srcSize == 1 {
+                                                    emitLine("sxtb \(reg.x), w\(reg.regNum)")
+                                                }
+                                            }
+                                        }
                                     }
                                     storeLocal(vd.name, reg, type: vd.type)
                                 }
@@ -3140,6 +3159,28 @@ public final class Codegen {
                 emitLine("fcvtzs \(valueReg.w), \(srcFp)\(valueReg.regNum)")
             } else {
                 emitLine("fcvtzs \(valueReg.x), \(srcFp)\(valueReg.regNum)")
+            }
+        } else if valueType.isInteger && targetType.isInteger && valueType != targetType {
+            // int-to-int conversion: sign-extend or zero-extend as needed
+            let srcSize = valueType.sizeInBytes ?? 4
+            let dstSize = targetType.sizeInBytes ?? 8
+            if srcSize < dstSize {
+                if valueType.isUnsigned {
+                    // Zero-extend (e.g., unsigned int → long long)
+                    if srcSize == 4 {
+                        emitLine("mov w\(valueReg.regNum), w\(valueReg.regNum)")
+                    }
+                    // For 1/2 byte sources, the load already zero-extends
+                } else {
+                    // Sign-extend signed types (e.g., int → long long)
+                    if srcSize == 4 {
+                        emitLine("sxtw \(valueReg.x), \(valueReg.w)")
+                    } else if srcSize == 2 {
+                        emitLine("sxth \(valueReg.x), w\(valueReg.regNum)")
+                    } else if srcSize == 1 {
+                        emitLine("sxtb \(valueReg.x), w\(valueReg.regNum)")
+                    }
+                }
             }
         }
         storeExprResult(a.target, valueReg)
