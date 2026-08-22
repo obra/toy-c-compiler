@@ -641,6 +641,8 @@ public final class Codegen {
         gotoLabels = [:]
         frameSize = 0
         labelCounter = 0
+        // Save static local map so function-specific statics don't leak to other functions
+        let savedStaticLocals = staticLocalGlobals
 
         emitLine("")
         emitLine(".globl _\(fd.name)")
@@ -741,6 +743,9 @@ public final class Codegen {
         output = output.replacingOccurrences(
             of: "sub sp, sp, #0  ; FRAME_SIZE_PLACEHOLDER",
             with: frameInstr)
+
+        // Restore static local map so function-specific statics don't leak
+        staticLocalGlobals = savedStaticLocals
     }
 
     private func emitEpilogue() {
