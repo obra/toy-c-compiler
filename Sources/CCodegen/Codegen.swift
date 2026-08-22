@@ -1582,15 +1582,9 @@ public final class Codegen {
                     // Move result to x0
                     let reg = emitExpr(v)
                     if reg != .x0 {
-                        // Use the function's declared return type to determine register width.
-                        // The expression type might differ (e.g., int 0 vs void* return type),
-                        // which would cause pointer truncation if we use w0 instead of x0.
-                        let funcRetType = functionReturnTypes[currentFuncName]?.unqualified ?? retType
-                        if funcRetType.sizeInBytes == 4 && !funcRetType.isPointer {
-                            emitLine("mov w0, w\(reg.regNum)")
-                        } else {
-                            emitLine("mov x0, \(reg.x)")
-                        }
+                        // Always use 64-bit x0 for the return value. Callers read x0
+                        // (not w0), so using w0 would leave garbage in the upper bits.
+                        emitLine("mov x0, \(reg.x)")
                     }
                     regAlloc.free(reg)
                 }
@@ -1895,22 +1889,26 @@ public final class Codegen {
             case .if(let ifStmt):
                 // Emit if statement with case labels injected inside
                 let condReg = emitExpr(ifStmt.condition)
+                regAlloc.reset()
                 let elseLabel = newLabel()
                 emitLine("cbz \(condReg.x), \(elseLabel)")
-                regAlloc.free(condReg)
                 if case .compound(let thenComp) = ifStmt.thenStmt {
                     emitCompoundWithCases(thenComp, keyPrefix: "\(idx).t")
                 } else {
                     emitStmt(ifStmt.thenStmt)
                 }
+                regAlloc.reset()
                 if let elseStmt = ifStmt.elseStmt {
-                    emitLine("b \(endLabel)")
+                    let ifEndLabel = newLabel()
+                    emitLine("b \(ifEndLabel)")
                     emitLine("\(elseLabel):")
                     if case .compound(let elseComp) = elseStmt {
                         emitCompoundWithCases(elseComp, keyPrefix: "\(idx).e")
                     } else {
                         emitStmt(elseStmt)
                     }
+                    regAlloc.reset()
+                    emitLine("\(ifEndLabel):")
                 } else {
                     emitLine("\(elseLabel):")
                 }
