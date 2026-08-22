@@ -107,18 +107,30 @@ public final class Sema {
         case .varDecl(let vd):
             let type = resolveType(vd.type)
             globalScope.insert(.variable(name: vd.name, type: type, isGlobal: true))
+            // Register enum constants from inline enum definitions in the variable's type
+            registerEnumConstantsFromType(type)
 
         case .typedefDecl(let td):
             let type = resolveType(td.type)
             typedefs[td.name] = type
             globalScope.insert(.typedef(name: td.name, type: type))
+            // If the typedef wraps an enum with inline cases, register the enum constants
+            if case .enumType(let en) = type.unqualified {
+                for c in en.cases {
+                    enumConstants[c.name] = Int64(c.value)
+                    globalScope.insert(.enum(name: c.name, value: Int64(c.value), type: .int))
+                }
+            }
 
         case .structDecl(let sd):
             // Register the struct type
             records[sd.name ?? ""] = sd.record
+            // Register enum constants from inline enum definitions in struct fields
+            registerEnumConstantsFromRecord(sd.record)
 
         case .unionDecl(let ud):
             records[ud.name ?? ""] = ud.record
+            registerEnumConstantsFromRecord(ud.record)
 
         case .enumDecl(let ed):
             // Register enum constants
@@ -129,6 +141,28 @@ public final class Sema {
 
         case .staticAssert:
             break
+        }
+    }
+
+    /// Walk record (struct/union) fields and register enum constants from inline enum definitions
+    private func registerEnumConstantsFromRecord(_ rec: RecordType) {
+        for field in rec.fields {
+            registerEnumConstantsFromType(field.type)
+        }
+    }
+
+    /// Recursively find and register enum constants from inline enum types
+    private func registerEnumConstantsFromType(_ type: CType) {
+        let t = type.unqualified
+        if case .enumType(let en) = t {
+            for c in en.cases {
+                enumConstants[c.name] = Int64(c.value)
+                globalScope.insert(.enum(name: c.name, value: Int64(c.value), type: .int))
+            }
+        } else if case .structType(let rec) = t {
+            registerEnumConstantsFromRecord(rec)
+        } else if case .array(let elem, _) = t {
+            registerEnumConstantsFromType(elem)
         }
     }
 
@@ -238,6 +272,17 @@ public final class Sema {
                     currentScope.insert(.variable(name: vd.name, type: type, isGlobal: false))
                     if let init_ = vd.initializer {
                         _ = analyzeExpr(init_)
+                    }
+                } else if case .typedefDecl(let td) = d {
+                    let type = resolveType(td.type)
+                    typedefs[td.name] = type
+                    currentScope.insert(.typedef(name: td.name, type: type))
+                    // Register enum constants from inline enum definitions
+                    if case .enumType(let en) = type.unqualified {
+                        for c in en.cases {
+                            enumConstants[c.name] = Int64(c.value)
+                            currentScope.insert(.enum(name: c.name, value: Int64(c.value), type: .int))
+                        }
                     }
                 }
             }

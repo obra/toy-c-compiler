@@ -29,6 +29,7 @@ public final class Preprocessor {
         "__MACH__": "1",
         "__arm64__": "1",
         "__aarch64__": "1",
+        "__LP64__": "1",
         "__LITTLE_ENDIAN__": "1",
         "__arm__": "1",
         "__APPLE_CC__": "1",

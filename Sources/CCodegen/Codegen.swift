@@ -2262,6 +2262,15 @@ public final class Codegen {
                 return .int
             case .addressOf:
                 return .pointer(to: exprType(u.operand))
+            case .not:
+                return .int  // logical NOT always returns int per C standard
+            case .neg, .pos, .bitNot:
+                // Integer promotion: char/short → int
+                let t = exprType(u.operand).unqualified
+                if t == .char || t == .schar || t == .uchar || t == .short || t == .ushort {
+                    return .int
+                }
+                return t
             default:
                 return exprType(u.operand)
             }
