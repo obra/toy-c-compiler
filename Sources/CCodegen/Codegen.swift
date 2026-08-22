@@ -1564,8 +1564,11 @@ public final class Codegen {
                     // Move result to x0
                     let reg = emitExpr(v)
                     if reg != .x0 {
-                        // For 32-bit types, use w register to truncate to 32 bits
-                        if retType.sizeInBytes == 4 {
+                        // Use the function's declared return type to determine register width.
+                        // The expression type might differ (e.g., int 0 vs void* return type),
+                        // which would cause pointer truncation if we use w0 instead of x0.
+                        let funcRetType = functionReturnTypes[currentFuncName]?.unqualified ?? retType
+                        if funcRetType.sizeInBytes == 4 && !funcRetType.isPointer {
                             emitLine("mov w0, w\(reg.regNum)")
                         } else {
                             emitLine("mov x0, \(reg.x)")
