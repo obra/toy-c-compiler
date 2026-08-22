@@ -22,6 +22,15 @@ public final class Parser {
     /// from identifiers in declarations).
     private var typedefNames: Set<String> = []
 
+    /// Completed struct/union definitions by tag name (for looking up when
+    /// `struct Tag` is referenced without a body after the definition).
+    private var completedRecords: [String: RecordType] = [:]
+
+    /// Maps typedef names to their resolved base types (e.g., "u8" → .uchar).
+    /// Used so that when a typedef name is used as a type specifier, we know
+    /// the actual size/alignment for struct field offset computation.
+    private var typedefTypes: [String: CType] = [:]
+
     /// Last parsed function params (with names) — used by parseExternalDecl.
     private var lastFuncParams: [Param] = []
     private var lastFuncVariadic: Bool = false
@@ -226,6 +235,10 @@ public final class Parser {
             if isPunct("{") && type.isFunction {
                 // Function definition — parse the body and return immediately
                 // (no semicolon after a function definition)
+                // Save params BEFORE parsing body — body may contain function pointer
+                // declarations that overwrite lastFuncParams via parseFunctionParams
+                let savedParams = lastFuncParams
+                let savedVariadic = lastFuncVariadic
                 let body = try parseCompoundStmt()
                 // Extract the return type from the function type
                 let returnType: CType
@@ -235,16 +248,30 @@ public final class Parser {
                     returnType = type
                 }
                 let funcDecl = FuncDecl(name: name, returnType: returnType,
-                                        params: lastFuncParams,
-                                        variadic: lastFuncVariadic,
+                                        params: savedParams,
+                                        variadic: savedVariadic,
                                         body: body, storageClass: storageClass, isInline: isInline, loc: loc)
                 return .funcDecl(funcDecl)
             }
 
             // Optional initializer
             var initExpr: Expr? = nil
+            var actualType = type
             if match(kind: .punct, spelling: "=") {
                 initExpr = try parseInitializer(type: type)
+                // If the type is an incomplete array and initializer is an init list,
+                // infer the array size from the number of elements
+                if case .incompleteArray(let elem) = type.unqualified,
+                   case .initList(let il) = initExpr! {
+                    actualType = .array(of: elem, count: il.values.count)
+                }
+                // If the type is an incomplete char array and initializer is a string literal,
+                // infer the array size from the string length + 1 (null terminator)
+                if case .incompleteArray(let elem) = type.unqualified,
+                   elem.isChar,
+                   case .stringLiteral(let sl) = initExpr! {
+                    actualType = .array(of: elem, count: sl.value.count + 1)
+                }
             }
 
             // Function prototype (no body) — create a FuncDecl instead of VarDecl
@@ -263,7 +290,7 @@ public final class Parser {
                     firstDecl = .funcDecl(fd)
                 }
             } else {
-                let varDecl = VarDecl(name: name, type: type, initializer: initExpr,
+                let varDecl = VarDecl(name: name, type: actualType, initializer: initExpr,
                                       storageClass: storageClass, isGlobal: true, loc: loc)
                 if firstDecl == nil {
                     firstDecl = .varDecl(varDecl)
@@ -309,6 +336,7 @@ public final class Parser {
         repeat {
             let (name, type, declLoc) = try parseDeclarator(baseType)
             typedefNames.insert(name)
+            typedefTypes[name] = type
             let td = TypedefDecl(name: name, type: type, loc: declLoc)
             if firstDecl == nil { firstDecl = .typedefDecl(td) }
         } while match(kind: .punct, spelling: ",")
@@ -412,7 +440,19 @@ public final class Parser {
             } else if isTypedefName() {
                 // Typedef name used as type specifier
                 let name = current().spelling
-                typedefBase = CType.typedef(name: name, base: .int) // base will be resolved by sema
+                // Use the actual resolved type if known, otherwise default to .int
+                var base = typedefTypes[name] ?? .int
+                // If the typedef points to an incomplete struct/union, try to
+                // find the completed definition (the typedef may have been
+                // parsed before the struct body was defined).
+                if case .structType(let rec) = base, rec.fields.isEmpty, let tag = rec.name.isEmpty ? nil : rec.name,
+                   let completed = completedRecords[tag] {
+                    base = .structType(completed)
+                } else if case .unionType(let rec) = base, rec.fields.isEmpty, let tag = rec.name.isEmpty ? nil : rec.name,
+                          let completed = completedRecords[tag] {
+                    base = .unionType(completed)
+                }
+                typedefBase = CType.typedef(name: name, base: base)
                 advance()
             } else if current().kind == .identifier && isForwardTypedef() {
                 // Unknown identifier used as a type in a typedef context
@@ -497,40 +537,90 @@ public final class Parser {
         if isPunct("{") {
             advance() // {
             var fields: [RecordField] = []
-            var offset = 0
             var maxAlign = 1
 
-            while !isPunct("}") && !isAtEnd() {
-                // Parse field declaration(s)
-                let (baseType, _, _, _) = try parseDeclSpecifiers()
-
-                repeat {
-                    let (fieldName, fieldType, _) = try parseDeclarator(baseType)
-                    var bitWidth: Int? = nil
-                    if match(kind: .punct, spelling: ":") {
-                        // Bitfield
-                        let widthExpr = try parseConditionalExpr()
-                        bitWidth = Int(evalIntConst(widthExpr))
-                    }
-                    let fieldSize = fieldType.sizeInBytes ?? 0
-                    let fieldAlign = fieldType.alignOf ?? 1
-                    maxAlign = max(maxAlign, fieldAlign)
-                    // Align offset
-                    offset = (offset + fieldAlign - 1) & ~(fieldAlign - 1)
-                    fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: bitWidth, offset: offset))
-                    offset += fieldSize
-                } while match(kind: .punct, spelling: ",")
-
-                _ = try consume(kind: .punct, spelling: ";")
+            if isStruct {
+                // Struct: sequential layout with alignment padding and bitfield packing
+                var bitOffset = 0  // track position in bits for bitfield packing
+                while !isPunct("}") && !isAtEnd() {
+                    let (baseType, _, _, _) = try parseDeclSpecifiers()
+                    repeat {
+                        let (fieldName, fieldType, _) = try parseDeclarator(baseType)
+                        var bitWidth: Int? = nil
+                        if match(kind: .punct, spelling: ":") {
+                            let widthExpr = try parseConditionalExpr()
+                            bitWidth = Int(evalIntConst(widthExpr))
+                        }
+                        if let bw = bitWidth {
+                            // Bitfield: pack into allocation unit of the declared type
+                            let typeSize = fieldType.sizeInBytes ?? 0
+                            let typeAlign = fieldType.alignOf ?? 1
+                            let unitBits = typeSize * 8
+                            let alignBits = typeAlign * 8
+                            maxAlign = max(maxAlign, typeAlign)
+                            // Find current allocation unit boundary
+                            let unitStart = (bitOffset / alignBits) * alignBits
+                            let posInUnit = bitOffset - unitStart
+                            // If bitfield doesn't fit in current unit, advance to next unit
+                            if posInUnit + bw > unitBits {
+                                bitOffset = unitStart + unitBits
+                            }
+                            let byteOff = bitOffset / 8
+                            let bitPosInUnit = bitOffset - (byteOff * 8)
+                            fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: bitWidth, offset: byteOff, bitOffset: bitPosInUnit))
+                            bitOffset += bw
+                        } else {
+                            // Non-bitfield: round bit offset up to byte, then align
+                            var byteOff = (bitOffset + 7) / 8
+                            let fieldAlign = fieldType.alignOf ?? 1
+                            let fieldSize = fieldType.sizeInBytes ?? 0
+                            maxAlign = max(maxAlign, fieldAlign)
+                            byteOff = (byteOff + fieldAlign - 1) & ~(fieldAlign - 1)
+                            fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: nil, offset: byteOff, bitOffset: 0))
+                            bitOffset = (byteOff + fieldSize) * 8
+                        }
+                    } while match(kind: .punct, spelling: ",")
+                    _ = try consume(kind: .punct, spelling: ";")
+                }
+                _ = try consume(kind: .punct, spelling: "}")
+                // Round up bitOffset to bytes, then to maxAlign
+                var totalBytes = (bitOffset + 7) / 8
+                totalBytes = (totalBytes + maxAlign - 1) & ~(maxAlign - 1)
+                let rec = RecordType(name: tag ?? "", fields: fields, size: totalBytes, alignment: maxAlign)
+                if let tag = tag {
+                    completedRecords[tag] = rec
+                }
+                return .structType(rec)
+            } else {
+                // Union: all fields at offset 0, size = max member size
+                var maxSize = 0
+                while !isPunct("}") && !isAtEnd() {
+                    let (baseType, _, _, _) = try parseDeclSpecifiers()
+                    repeat {
+                        let (fieldName, fieldType, _) = try parseDeclarator(baseType)
+                        let fieldSize = fieldType.sizeInBytes ?? 0
+                        let fieldAlign = fieldType.alignOf ?? 1
+                        maxAlign = max(maxAlign, fieldAlign)
+                        maxSize = max(maxSize, fieldSize)
+                        fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: nil, offset: 0))
+                    } while match(kind: .punct, spelling: ",")
+                    _ = try consume(kind: .punct, spelling: ";")
+                }
+                _ = try consume(kind: .punct, spelling: "}")
+                let totalSize = (maxSize + maxAlign - 1) & ~(maxAlign - 1)
+                let rec = RecordType(name: tag ?? "", fields: fields, size: totalSize, alignment: maxAlign)
+                if let tag = tag {
+                    completedRecords[tag] = rec
+                }
+                return .unionType(rec)
             }
-            _ = try consume(kind: .punct, spelling: "}")
-
-            let totalSize = (offset + maxAlign - 1) & ~(maxAlign - 1)
-            let rec = RecordType(name: tag ?? "", fields: fields, size: totalSize, alignment: maxAlign)
-            return isStruct ? .structType(rec) : .unionType(rec)
         }
 
         // Forward declaration or reference: struct Tag (no body)
+        // If we've previously seen the definition, return the completed record.
+        if let tag = tag, let completed = completedRecords[tag] {
+            return isStruct ? .structType(completed) : .unionType(completed)
+        }
         // Create an incomplete record (will be completed when definition is seen)
         let rec = RecordType(name: tag ?? "", fields: [], size: nil, alignment: nil)
         return isStruct ? .structType(rec) : .unionType(rec)
@@ -629,6 +719,8 @@ public final class Parser {
                 }
                 // Skip qualifiers
                 while isKeyword("const") || isKeyword("volatile") { advance() }
+                // Save the base type (before pointer/array wrapping) for building the function type
+                let baseTypeForFunc = type
                 var innerType = type
                 for _ in 0..<pointerDepth {
                     innerType = .pointer(to: innerType)
@@ -659,10 +751,40 @@ public final class Parser {
                                                   variadic: funcVariadic)
                     return (name, funcType, nameLoc)
                 }
+                // Handle array suffixes inside the parens: (*name[3])
+                // Track how many array dimensions and their sizes
+                var arrayDims: [(count: Int?, isPointer: Bool)] = []
+                while isPunct("[") {
+                    advance()
+                    if isPunct("]") {
+                        advance()
+                        arrayDims.append((count: nil, isPointer: false))
+                    } else {
+                        let sizeExpr = try parseAssignmentExpr()
+                        _ = try consume(kind: .punct, spelling: "]")
+                        let size = evalIntConst(sizeExpr)
+                        arrayDims.append((count: Int(size), isPointer: false))
+                    }
+                }
                 _ = try consume(kind: .punct, spelling: ")")
                 // Now parse the function parameters: ( params )
-                let (params, variadic, retType) = try parseFunctionParams(innerType)
-                type = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                // The function return type is the base type (before pointer/array wrapping)
+                let (params, variadic, retType) = try parseFunctionParams(baseTypeForFunc)
+                // Build the function type
+                var funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                // Wrap with pointer(s)
+                for _ in 0..<pointerDepth {
+                    funcType = .pointer(to: funcType)
+                }
+                // Wrap with array dimensions (innermost first, so reverse)
+                for dim in arrayDims.reversed() {
+                    if let count = dim.count {
+                        funcType = .array(of: funcType, count: count)
+                    } else {
+                        funcType = .incompleteArray(of: funcType)
+                    }
+                }
+                type = funcType
                 // If we had an inner (, consume the matching ) for the outer (
                 if hadInnerParen {
                     _ = try consume(kind: .punct, spelling: ")")
@@ -873,8 +995,12 @@ public final class Parser {
             if isKeyword("continue") { let loc = advance().loc; _ = try consume(kind: .punct, spelling: ";"); return .continue(ContinueStmt(loc: loc)) }
             if isKeyword("return") { let loc = advance().loc; var val: Expr? = nil; if !isPunct(";") { val = try parseExpr() }; _ = try consume(kind: .punct, spelling: ";"); return .return(ReturnStmt(value: val, loc: loc)) }
             if isKeyword("goto") { let loc = advance().loc; let label = try consume(kind: .identifier).spelling; _ = try consume(kind: .punct, spelling: ";"); return .goto(GotoStmt(label: label, loc: loc)) }
-            // Declaration (starts with a type keyword)
-            return .decl(try parseDeclStmt())
+            if isKeyword("sizeof") {
+                // sizeof as expression statement — fall through to expression parsing
+            } else {
+                // Declaration (starts with a type keyword)
+                return .decl(try parseDeclStmt())
+            }
 
         case .identifier:
             // Could be a declaration (typedef name) or an expression
@@ -902,16 +1028,32 @@ public final class Parser {
             return DeclStmt(decls: [d], loc: loc)
         }
 
+        // Handle typedef inside function body
+        if isKeyword("typedef") {
+            let d = try parseTypedef()
+            return DeclStmt(decls: [d], loc: loc)
+        }
+
         let (baseType, storageClass, _, _) = try parseDeclSpecifiers()
         var decls: [Decl] = []
 
         repeat {
             let (name, type, dloc) = try parseDeclarator(baseType)
             var initExpr: Expr? = nil
+            var actualType = type
             if match(kind: .punct, spelling: "=") {
                 initExpr = try parseInitializer(type: type)
+                if case .incompleteArray(let elem) = type.unqualified,
+                   case .initList(let il) = initExpr! {
+                    actualType = .array(of: elem, count: il.values.count)
+                }
+                if case .incompleteArray(let elem) = type.unqualified,
+                   elem.isChar,
+                   case .stringLiteral(let sl) = initExpr! {
+                    actualType = .array(of: elem, count: sl.value.count + 1)
+                }
             }
-            decls.append(.varDecl(VarDecl(name: name, type: type, initializer: initExpr,
+            decls.append(.varDecl(VarDecl(name: name, type: actualType, initializer: initExpr,
                                           storageClass: storageClass, isGlobal: false, loc: dloc)))
         } while match(kind: .punct, spelling: ",")
 
@@ -1152,6 +1294,11 @@ public final class Parser {
                 let (baseType, _, _, _) = try parseDeclSpecifiers()
                 let (_, castType, _) = try parseDeclarator(baseType)
                 _ = try consume(kind: .punct, spelling: ")")
+                // Compound literal: (type) { init-list }
+                if isPunct("{") {
+                    let initList = try parseInitList()
+                    return .compoundLiteral(CompoundLiteralExpr(type: castType, initList: initList, loc: current().loc))
+                }
                 let operand = try parseCastExpr()
                 return .cast(CastExpr(type: castType, expr: operand, loc: current().loc))
             }
@@ -1372,40 +1519,54 @@ public final class Parser {
                 case "n": result += "\n"
                 case "t": result += "\t"
                 case "r": result += "\r"
-                case "0": result += "\0"
                 case "\\": result += "\\"
                 case "'": result += "'"
                 case "\"": result += "\""
                 case "x":
                     // Hex escape
-                    let hexStart = s.index(i, offsetBy: 2)
+                    let hexStart = s.index(after: s.index(after: i))
                     var hexStr = ""
                     var j = hexStart
                     while j < s.endIndex && s[j].isHexDigit && hexStr.count < 2 {
                         hexStr.append(s[j]); j = s.index(after: j)
                     }
                     if let val = UInt8(hexStr, radix: 16) {
-                        result.append(Character(UnicodeScalar(val)))
+                        if val < 128 {
+                            result.append(Character(UnicodeScalar(val)))
+                        } else {
+                            // For bytes >= 128, keep as octal escape to avoid UTF-8 multi-byte encoding
+                            result += String(format: "\\%03o", val)
+                        }
                     }
-                    i = s.index(before: j)
+                    // Advance past \xHH (skip \ and the hex digits)
+                    i = j
+                    continue
                 default:
-                    // Octal escape
-                    if next.isNumber {
+                    // Octal escape (including \0, \0XX, \1XX, etc.)
+                    if next >= "0" && next <= "7" {
                         var octStart = s.index(after: i)
                         var octStr = ""
                         var j = octStart
-                        while j < s.endIndex && s[j].isNumber && octStr.count < 3 {
+                        while j < s.endIndex && s[j] >= "0" && s[j] <= "7" && octStr.count < 3 {
                             octStr.append(s[j]); j = s.index(after: j)
                         }
                         if let val = UInt8(octStr, radix: 8) {
-                            result.append(Character(UnicodeScalar(val)))
+                            if val < 128 {
+                                result.append(Character(UnicodeScalar(val)))
+                            } else {
+                                // For bytes >= 128, keep as octal escape to avoid UTF-8 multi-byte encoding
+                                result += String(format: "\\%03o", val)
+                            }
                         }
-                        i = s.index(before: j)
+                        // Advance past \OOO (skip \ and the octal digits)
+                        i = j
+                        continue
                     } else {
                         result.append(next)
                     }
                 }
-                i = s.index(after: i)
+                // For simple escapes (\n, \t, etc.): advance past \ and the escape char
+                i = s.index(after: i)  // skip the escape char
             } else {
                 result.append(s[i])
             }

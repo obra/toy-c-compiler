@@ -13,8 +13,6 @@ private let cKeywords: Set<String> = [
     "_Alignof", "_Atomic", "_Generic", "_Noreturn",
     "_Static_assert", "_Thread_local",
     "__asm", "__asm__", "__attribute__", "__attribute",
-    "__builtin_va_start", "__builtin_va_end", "__builtin_va_arg",
-    "__builtin_va_copy", "__builtin_offsetof",
     "__typeof", "__typeof__", "__extension__", "__inline",
     "__inline__", "__const", "__const__", "__volatile",
     "__volatile__", "__restrict", "__restrict__", "__signed",

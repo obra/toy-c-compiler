@@ -58,7 +58,7 @@ public final class Sema {
     private var typedefs: [String: CType] = [:]
     private var records: [String: RecordType] = [:]
     private var enums: [String: EnumType] = [:]
-    private var enumConstants: [String: Int64] = [:]
+    public private(set) var enumConstants: [String: Int64] = [:]
     private var functionReturnType: CType = .int
     private var inFunction: Bool = false
 

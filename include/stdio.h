@@ -4,11 +4,19 @@
 
 #include <stddef.h>
 
+#define FILENAME_MAX 1024
+#define FOPEN_MAX 20
+#define BUFSIZ 1024
+
 typedef struct __sFILE FILE;
 
-extern FILE *stdin;
-extern FILE *stdout;
-extern FILE *stderr;
+/* On macOS, stdin/stdout/stderr are macros that expand to __stdinp etc. */
+extern FILE *__stdinp;
+extern FILE *__stdoutp;
+extern FILE *__stderrp;
+#define stdin __stdinp
+#define stdout __stdoutp
+#define stderr __stderrp
 
 int printf(const char *format, ...);
 int fprintf(FILE *stream, const char *format, ...);

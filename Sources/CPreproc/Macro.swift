@@ -74,92 +74,151 @@ public final class MacroTable {
 public final class MacroExpander {
     private let table: MacroTable
     private let diags: DiagnosticEngine
+    private weak var sm: SourceManager?
 
-    public init(_ table: MacroTable, _ diags: DiagnosticEngine) {
+    public init(_ table: MacroTable, _ diags: DiagnosticEngine, sm: SourceManager? = nil) {
         self.table = table
         self.diags = diags
+        self.sm = sm
     }
 
     /// Expand all macros in the given token list, returning the fully expanded token list.
-    /// Uses hide sets on tokens for blue-painting (prevents infinite recursion).
+    /// Uses hide sets for blue-painting. Optimized with pending buffer.
     public func expand(_ tokens: [Token]) -> [Token] {
-        var input = tokens
         var output: [Token] = []
-        var i = 0
+        // pending: tokens to be processed (LIFO for rescanning). We reverse-insert.
+        var pending: [Token] = []
+        var input = tokens[...]
+        var pendingReversed: [Token] = []  // reversed pending for O(1) pop from end
 
-        while i < input.count {
-            let token = input[i]
+        func nextToken() -> Token? {
+            if !pendingReversed.isEmpty {
+                return pendingReversed.removeLast()
+            }
+            if !pending.isEmpty {
+                // Move from pending to reversed for efficient pop
+                pendingReversed = pending.reversed()
+                pending.removeAll(keepingCapacity: true)
+                return pendingReversed.removeLast()
+            }
+            if !input.isEmpty {
+                let t = input[input.startIndex]
+                input = input.dropFirst()
+                return t
+            }
+            return nil
+        }
 
+        /// Peek at the next non-eof token without consuming it.
+        func peekToken() -> Token? {
+            // Check pendingReversed (from end)
+            if let idx = pendingReversed.lastIndex(where: { $0.kind != .eof }) {
+                return pendingReversed[idx]
+            }
+            // Check pending (from start, since we haven't reversed yet)
+            if let idx = pending.firstIndex(where: { $0.kind != .eof }) {
+                return pending[idx]
+            }
+            // Check input
+            if let idx = input.firstIndex(where: { $0.kind != .eof }) {
+                return input[idx]
+            }
+            return nil
+        }
+
+        /// Consume tokens until we've consumed the matching ) for a function-like macro call.
+        /// Returns the argument token lists, or nil if not a valid call.
+        func parseFunctionCallArgs() -> [[Token]]? {
+            // First, consume the opening (
+            guard let first = nextToken(), first.kind == .punct, first.spelling == "(" else {
+                return nil
+            }
+
+            var args: [[Token]] = []
+            var current: [Token] = []
+            var depth = 0
+
+            while let t = nextToken() {
+                if t.kind == .eof { continue }
+                if t.kind == .punct {
+                    if t.spelling == "(" {
+                        depth += 1
+                        current.append(t)
+                    } else if t.spelling == ")" {
+                        if depth == 0 {
+                            if !current.isEmpty || !args.isEmpty {
+                                args.append(current)
+                            }
+                            return args
+                        }
+                        depth -= 1
+                        current.append(t)
+                    } else if t.spelling == "," && depth == 0 {
+                        args.append(current)
+                        current = []
+                    } else {
+                        current.append(t)
+                    }
+                } else {
+                    current.append(t)
+                }
+            }
+            return nil // Unterminated
+        }
+
+        while let token = nextToken() {
             guard token.kind == .identifier else {
                 output.append(token)
-                i += 1
                 continue
             }
 
-            // Blue-painting: if the token's hide set contains its own name, don't expand
+            // Handle __LINE__ and __FILE__ specially (context-dependent macros)
+            if token.spelling == "__LINE__" {
+                let line = sm.flatMap { $0.lineCol(token.loc).0 } ?? 0
+                output.append(Token(kind: .integerLiteral, spelling: "\(line)", loc: token.loc))
+                continue
+            }
+            if token.spelling == "__FILE__" {
+                let fname = sm.flatMap { token.loc.fileId >= 0 ? $0.name(of: token.loc.fileId) : nil } ?? ""
+                output.append(Token(kind: .stringLiteral, spelling: "\"\(fname)\"", loc: token.loc))
+                continue
+            }
+
             if token.hideSet.contains(token.spelling) {
                 output.append(token)
-                i += 1
                 continue
             }
 
             guard let macro = table.lookup(token.spelling) else {
                 output.append(token)
-                i += 1
                 continue
             }
 
             if macro.isFunctionLike {
-                // Look for opening paren
-                var j = i + 1
-                while j < input.count && input[j].kind == .eof {
-                    j += 1
-                }
-                if j < input.count && input[j].kind == .punct && input[j].spelling == "(" {
-                    guard let (args, nextIdx) = parseArgs(input, from: j) else {
-                        output.append(token)
-                        i += 1
-                        continue
-                    }
-                    // Compute the hide set: intersection of macro name token's hide set
-                    // and the closing paren token's hide set, plus the macro name itself.
-                    var newHideSet = token.hideSet
-                    if nextIdx > 0 && nextIdx <= input.count {
-                        // nextIdx - 1 is the closing paren
-                        let closeParen = input[nextIdx - 1]
-                        newHideSet = newHideSet.intersection(closeParen.hideSet)
-                    }
-                    newHideSet.insert(macro.name)
-
-                    let expanded = expandFunctionLike(macro, args: args, invocationLoc: token.loc, hideSet: newHideSet)
-                    // Replace input[i..<nextIdx] with expanded, rescan from i
-                    var newInput = Array(input[0..<i])
-                    newInput.append(contentsOf: expanded)
-                    if nextIdx < input.count {
-                        newInput.append(contentsOf: input[nextIdx...])
-                    }
-                    input = newInput
-                    // Don't advance i — rescan from current position
-                } else {
-                    // Function-like macro without parens — not expanded
+                // Peek for opening paren
+                guard let peek = peekToken(), peek.kind == .punct, peek.spelling == "(" else {
                     output.append(token)
-                    i += 1
                     continue
                 }
-            } else {
-                // Object-like macro
+                // Consume the ( and parse arguments
+                guard let args = parseFunctionCallArgs() else {
+                    output.append(token)
+                    continue
+                }
                 var newHideSet = token.hideSet
                 newHideSet.insert(macro.name)
-
-                let expanded = expandObjectLike(macro, invocationLoc: token.loc, hideSet: newHideSet)
-                // Replace input[i] with expanded, rescan from i
-                var newInput = Array(input[0..<i])
-                newInput.append(contentsOf: expanded)
-                if i + 1 < input.count {
-                    newInput.append(contentsOf: input[(i+1)...])
+                let expanded = expandFunctionLike(macro, args: args, invocationLoc: token.loc, hideSet: newHideSet)
+                // Prepend expanded for rescanning (reverse into pendingReversed)
+                for t in expanded.reversed() {
+                    pendingReversed.append(t)
                 }
-                input = newInput
-                // Don't advance i — rescan from current position
+            } else {
+                var newHideSet = token.hideSet
+                newHideSet.insert(macro.name)
+                let expanded = expandObjectLike(macro, invocationLoc: token.loc, hideSet: newHideSet)
+                for t in expanded.reversed() {
+                    pendingReversed.append(t)
+                }
             }
         }
 

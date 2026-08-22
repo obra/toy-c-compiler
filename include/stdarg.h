@@ -1,21 +1,18 @@
-/* Minimal stdarg.h for our C compiler */
+/* stdarg.h - variadic argument support for our C compiler */
 #ifndef _STDARG_H
 #define _STDARG_H
 
-typedef struct {
-    char *gp_offset;
-    char *fp_offset;
-    void *overflow_arg_area;
-    void *reg_save_area;
-} __va_list_struct;
+/* va_list is a pointer to the variadic args buffer. */
+typedef char *va_list[1];
 
-typedef __va_list_struct va_list[1];
+/* va_start: call builtin that saves arg registers and returns pointer */
+extern void *__builtin_va_start(void);
+#define va_start(ap, last) (*(ap) = (char*)__builtin_va_start())
 
-/* For our compiler, we don't fully support varargs in user code.
-   These macros are simplified stubs. */
-#define va_start(ap, last) ((void)0)
+/* va_arg: load 8 bytes from current position and advance by 8. */
+#define va_arg(ap, type) (*(type*)((*(ap) += 8) - 8))
+
 #define va_end(ap) ((void)0)
-#define va_arg(ap, type) ((type)0)
-#define va_copy(dest, src) ((dest) = (src))
+#define va_copy(dest, src) (*(dest) = *(src))
 
 #endif /* _STDARG_H */

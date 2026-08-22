@@ -67,11 +67,12 @@ struct CompilerMain {
             let fileId = try sm.load(input)
             let preprocessor = Preprocessor(sm, includePaths: includePaths, predefines: predefines)
             let tokens = try preprocessor.preprocess(fileId)
+
             let parser = Parser(tokens, diags: diags)
             let decls = try parser.parse()
             let sema = Sema(diags)
             let tast = try sema.analyze(decls)
-            let codegen = Codegen()
+            let codegen = Codegen(enumConstants: sema.enumConstants)
             let asm = codegen.generate(tast)
 
             if diags.hasErrors {

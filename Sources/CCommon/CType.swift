@@ -66,6 +66,31 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         return isInteger || isFloating
     }
 
+    /// True for 32-bit signed integer types that need sxtw before 64-bit arithmetic.
+    /// These types are loaded with ldr wN (zero-extended) but need sign extension
+    /// for correct 64-bit operations (e.g., array indexing with negative values).
+    public var isSigned32Bit: Bool {
+        switch self {
+        case .int, .short, .schar, .char, .enumType:
+            return true
+        case .qualified(let base, _, _, _):
+            return base.isSigned32Bit
+        case .typedef(_, let base):
+            return base.isSigned32Bit
+        default:
+            return false
+        }
+    }
+
+    public var isChar: Bool {
+        switch self {
+        case .char, .schar, .uchar: return true
+        case .qualified(let base, _, _, _): return base.isChar
+        case .typedef(_, let base): return base.isChar
+        default: return false
+        }
+    }
+
     public var isScalar: Bool {
         return isArithmetic || isPointer
     }
@@ -275,12 +300,14 @@ public struct RecordField: Equatable, Sendable {
     public let type: CType
     public let bitWidth: Int?    // nil = normal field; Int = bitfield width
     public let offset: Int       // byte offset within the record
+    public let bitOffset: Int    // bit offset within the containing allocation unit (for bitfields)
 
-    public init(name: String?, type: CType, bitWidth: Int? = nil, offset: Int = 0) {
+    public init(name: String?, type: CType, bitWidth: Int? = nil, offset: Int = 0, bitOffset: Int = 0) {
         self.name = name
         self.type = type
         self.bitWidth = bitWidth
         self.offset = offset
+        self.bitOffset = bitOffset
     }
 }
 

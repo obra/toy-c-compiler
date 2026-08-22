@@ -68,18 +68,18 @@ public final class Preprocessor {
         self.predefines = predefines
         self.diags = diags
         self.macroTable = MacroTable()
-        self.expander = MacroExpander(macroTable, diags)
+        self.expander = MacroExpander(macroTable, diags, sm: sm)
 
         // Install predefined macros
         for (name, value) in Preprocessor.predefinedMacros {
             let loc = SourceLoc.unknown
-            let tokens = lexTokens(value, fileId: -1, startOffset: 0)
+            let tokens = lexTokens(value, fileId: -1, startOffset: 0).filter { $0.kind != .eof }
             macroTable.define(Macro(name: name, isFunctionLike: false, isVariadic: false,
                                    params: [], body: tokens, loc: loc))
         }
         // Install user predefines (-D)
         for (name, value) in predefines {
-            let tokens = lexTokens(value, fileId: -1, startOffset: 0)
+            let tokens = lexTokens(value, fileId: -1, startOffset: 0).filter { $0.kind != .eof }
             macroTable.define(Macro(name: name, isFunctionLike: false, isVariadic: false,
                                    params: [], body: tokens, loc: SourceLoc.unknown))
         }
@@ -91,6 +91,11 @@ public final class Preprocessor {
         let rawTokens = lexTokens(Array(bytes), fileId: fileId, startOffset: 0)
         let result = try processTokens(rawTokens, currentFileId: fileId)
         return result
+    }
+
+    /// Check if a macro is defined (for debugging).
+    public func isMacroDefined(_ name: String) -> Bool {
+        return macroTable.isDefined(name)
     }
 
     // MARK: - Token processing (directives + expansion)
@@ -193,16 +198,29 @@ public final class Preprocessor {
                 continue
             }
 
-            // Non-directive token — only include if conditional is active
+            // Non-directive token — collect a batch until the next directive, then expand.
             if isActive() {
-                output.append(token)
+                var batch: [Token] = []
+                while i < tokens.count {
+                    let t = tokens[i]
+                    // Check if this is a directive (# at line start)
+                    if t.kind == .punct && t.spelling == "#" && isAtLineStart(output, tokens, i) {
+                        break
+                    }
+                    batch.append(t)
+                    i += 1
+                }
+                if !batch.isEmpty {
+                    let expanded = expander.expand(batch)
+                    output.append(contentsOf: expanded)
+                }
+                continue  // don't increment i — the outer loop handles the directive
+            } else {
+                i += 1
             }
-            i += 1
         }
 
-        // Now expand macros in the output
-        let expanded = expander.expand(output)
-        return expanded
+        return output
     }
 
     /// Check if the # token is at the start of a line (only whitespace/newlines before it on this line).
@@ -493,7 +511,8 @@ public final class Preprocessor {
         let bytes = sm.contents(of: fileId)
         let rawTokens = lexTokens(Array(bytes), fileId: fileId, startOffset: 0)
         let processed = try processTokens(rawTokens, currentFileId: fileId)
-        output.append(contentsOf: processed)
+        // Strip EOF tokens from included file — only the main file should have one
+        output.append(contentsOf: processed.filter { $0.kind != .eof })
     }
 
     // MARK: - Constant expression evaluation (for #if)
@@ -759,6 +778,10 @@ public final class Preprocessor {
             return parseIntLiteral(token.spelling)
         }
 
+        if token.kind == .charLiteral {
+            return Int64(parseCharLiteralValue(token.spelling))
+        }
+
         if token.kind == .identifier {
             // In #if, undefined identifiers evaluate to 0
             if token.spelling == "true" { return 1 }
@@ -766,6 +789,67 @@ public final class Preprocessor {
         }
 
         return 0
+    }
+
+    /// Parse a char literal spelling (e.g. "'A'", "'\\n'", "'\\301'") to its integer value.
+    private func parseCharLiteralValue(_ spelling: String) -> Int {
+        var s = spelling
+        // Strip prefix (L, u, U)
+        if s.hasPrefix("L") || s.hasPrefix("u") || s.hasPrefix("U") { s = String(s.dropFirst()) }
+        guard s.hasPrefix("'") && s.hasSuffix("'") else { return 0 }
+        s = String(s.dropFirst().dropLast())
+        if s.isEmpty { return 0 }
+        if s.hasPrefix("\\") {
+            return parseEscapeSeq(String(s.dropFirst()))
+        }
+        return Int(Array(s.utf8).first ?? 0)
+    }
+
+    /// Parse a C escape sequence (the part after the backslash) to its integer value.
+    private func parseEscapeSeq(_ s: String) -> Int {
+        if s.isEmpty { return 0 }
+        let chars = Array(s)
+        switch chars[0] {
+        case "n": return 10
+        case "t": return 9
+        case "r": return 13
+        case "0", "1", "2", "3", "4", "5", "6", "7":
+            // Octal escape: up to 3 octal digits
+            var result = 0
+            var i = 0
+            while i < 3 && i < chars.count {
+                let d = chars[i].asciiValue ?? 0
+                if d < 0x30 || d > 0x37 { break }  // not an octal digit
+                result = result * 8 + Int(d - 0x30)
+                i += 1
+            }
+            return result
+        case "x":
+            // Hex escape: \x followed by hex digits
+            var result = 0
+            var i = 1
+            while i < chars.count {
+                let c = chars[i]
+                let val: Int
+                if c >= "0" && c <= "9" { val = Int(c.asciiValue! - 0x30) }
+                else if c >= "a" && c <= "f" { val = Int(c.asciiValue! - 0x61) + 10 }
+                else if c >= "A" && c <= "F" { val = Int(c.asciiValue! - 0x41) + 10 }
+                else { break }
+                result = result * 16 + val
+                i += 1
+            }
+            return result
+        case "\\": return 0x5C
+        case "'": return 0x27
+        case "\"": return 0x22
+        case "0": return 0
+        case "a": return 7
+        case "b": return 8
+        case "f": return 12
+        case "v": return 11
+        case "e": return 27
+        default: return Int(chars[0].asciiValue ?? 0)
+        }
     }
 
     /// Parse an integer literal string to Int64.
