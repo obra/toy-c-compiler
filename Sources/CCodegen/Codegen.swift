@@ -1582,9 +1582,14 @@ public final class Codegen {
                     // Move result to x0
                     let reg = emitExpr(v)
                     if reg != .x0 {
-                        // Always use 64-bit x0 for the return value. Callers read x0
-                        // (not w0), so using w0 would leave garbage in the upper bits.
-                        emitLine("mov x0, \(reg.x)")
+                        // For 32-bit return types, use mov w0 (truncates to 32 bits,
+                        // zero-extending to 64-bit). For 64-bit types (long, pointer),
+                        // use mov x0 to preserve the full value.
+                        if (retType.isSigned32Bit || retType == .uint || retType == .ushort || retType == .uchar || retType == .bool) && !retType.isPointer {
+                            emitLine("mov w0, \(reg.w)")
+                        } else {
+                            emitLine("mov x0, \(reg.x)")
+                        }
                     }
                     regAlloc.free(reg)
                 }
