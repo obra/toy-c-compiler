@@ -3533,12 +3533,18 @@ public final class Codegen {
             var namedParamCount = isInternalVariadic ? (functionParamCounts[funcName] ?? 0) : 0
 
             // For indirect variadic calls (function pointer to a variadic function),
-            // we use the standard ARM64 ABI (all args in registers, overflow on stack).
-            // The stack-based variadic convention is ONLY for internal variadic functions
-            // (our own printf implementation that reads variadic args from x29+16).
-            // External variadic functions (like fcntl) called through function pointers
-            // expect the standard ABI, so isIndirectVariadic must be false.
+            // detect the variadic-ness from the function pointer type.
             var isIndirectVariadic = false
+            if funcName.isEmpty {
+                var funcType = exprType(c.function).unqualified
+                if case .unary(let u) = c.function, u.op == .dereference {
+                    funcType = exprType(u.operand).unqualified
+                }
+                if case .pointer(let to) = funcType, case .function(let params, _, let variadic) = to.unqualified {
+                    isIndirectVariadic = variadic
+                    namedParamCount = params.count
+                }
+            }
 
             // For indirect calls (function pointer), evaluate the function expression first
             // and save it in a register that won't be clobbered by arg evaluation.
