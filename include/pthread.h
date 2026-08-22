@@ -36,9 +36,9 @@ typedef struct {
     char __opaque[8];
 } pthread_once_t;
 
-#define PTHREAD_MUTEX_INITIALIZER { 0 }
-#define PTHREAD_COND_INITIALIZER { 0 }
-#define PTHREAD_ONCE_INIT { 0 }
+#define PTHREAD_MUTEX_INITIALIZER { 0x32AAABA7, {0} }
+#define PTHREAD_COND_INITIALIZER { 0x3CB0B1BB, {0} }
+#define PTHREAD_ONCE_INIT { 0x30D1BB1 }
 
 #define PTHREAD_MUTEX_RECURSIVE 2
 

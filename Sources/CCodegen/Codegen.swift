@@ -1020,8 +1020,8 @@ public final class Codegen {
         emitLine("mov x29, sp")
 
         // For variadic functions: the caller pushes variadic args on the stack
-        // (macOS ARM64 ABI). The args are above the saved fp/lr, at x29 + 16.
-        // We don't need to save x1-x7 — just point va_start to x29+16.
+        // (our internal variadic calling convention). The args are above the
+        // saved fp/lr, at x29 + 16. We don't need to save x1-x7.
         if fd.variadic {
             vaSaveAreaOffset = 16  // x29 + 16 = where caller pushed variadic args
         } else {
@@ -4153,6 +4153,9 @@ public final class Codegen {
             let tu = t.unqualified
             let fu = f.unqualified
             if tu == fu { return t }
+            // One side is a pointer, the other is 0 (null pointer constant)
+            if tu.isPointer && fu.isInteger { return t }
+            if fu.isPointer && tu.isInteger { return f }
             if tu.isPointer && fu.isPointer {
                 if case .pointer(let to) = tu, to.unqualified == .void { return t }
                 if case .pointer(let to) = fu, to.unqualified == .void { return f }

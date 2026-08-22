@@ -42,7 +42,14 @@ struct CompilerMain {
                     predefines[name] = value
                 }
             default:
-                if !arg.hasPrefix("-") {
+                if arg.hasPrefix("-D") && arg.count > 2 {
+                    // Combined form: -Dname=value or -Dname
+                    let def = String(arg.dropFirst(2))
+                    let parts = def.split(separator: "=", maxSplits: 1)
+                    let name = String(parts[0])
+                    let value = parts.count > 1 ? String(parts[1]) : "1"
+                    predefines[name] = value
+                } else if !arg.hasPrefix("-") {
                     inputPath = arg
                 }
             }
