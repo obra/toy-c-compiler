@@ -25,6 +25,7 @@ public final class Codegen {
     private var functionReturnTypes: [String: CType] = [:]  // function name → return type
     private var variadicFunctions: Set<String> = []  // functions with variadic params (...)
     private var functionParamCounts: [String: Int] = [:]  // function name → number of named params
+    private var functionParamTypes: [String: [CType]] = [:]  // function name → param types
     private var staticLocalGlobals: [String: String] = [:]  // local name → mangled global name
     private var staticLocalInits: [(name: String, type: CType, init_: Expr)] = []  // pending static initializers
     private var breakLabels: [String] = []      // stack of break targets
@@ -68,6 +69,7 @@ public final class Codegen {
                     variadicFunctions.insert(fd.name)
                 }
                 functionParamCounts[fd.name] = fd.params.count
+                functionParamTypes[fd.name] = fd.params.map { $0.type }
             }
         }
 
@@ -697,7 +699,7 @@ public final class Codegen {
             }
 
             if regIndex < 8 {
-                // Parameters come in x0-x7, store them on the stack
+                // Parameters come in x0-x7 (int) or d0-d7 (float), store them on the stack
                 ensureLocalSpace(size: regWidth * 8)
                 let offset = -(localOffset)
                 localVarOffsets[param.name ?? "_param_\(i)"] = offset
@@ -705,6 +707,10 @@ public final class Codegen {
                 if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
+                } else if pt.isFloating {
+                    // Float/double parameter arrives in d0-d7
+                    let fpReg = pt == .float ? "s\(regIndex)" : "d\(regIndex)"
+                    emitStoreFP(fpReg, offset)
                 } else if regWidth == 2 {
                     // Struct parameter: store 2 registers
                     emitStoreFP(argRegs[regIndex].x, offset)
@@ -877,6 +883,25 @@ public final class Codegen {
                                 regAlloc.free(addrReg)
                             } else {
                                 let reg = emitExpr(init_)
+                                // Convert type if needed (e.g., double→float, int→float)
+                                let initType = exprType(init_).unqualified
+                                let varType = vd.type.unqualified
+                                if initType.isFloating && varType.isFloating {
+                                    convertFloat(reg, from: initType, to: vd.type)
+                                } else if initType.isInteger && varType.isFloating {
+                                    if initType.isSigned32Bit {
+                                        emitLine("sxtw \(reg.x), \(reg.w)")
+                                    }
+                                    let fp = varType == .float ? "s" : "d"
+                                    emitLine("scvtf \(fp)\(reg.regNum), \(reg.x)")
+                                } else if initType.isFloating && varType.isInteger {
+                                    let srcFp = initType == .float ? "s" : "d"
+                                    if varType.isSigned32Bit {
+                                        emitLine("fcvtzs \(reg.w), \(srcFp)\(reg.regNum)")
+                                    } else {
+                                        emitLine("fcvtzs \(reg.x), \(srcFp)\(reg.regNum)")
+                                    }
+                                }
                                 storeLocal(vd.name, reg, type: vd.type)
                             }
                         }
@@ -900,9 +925,18 @@ public final class Codegen {
         case .return(let rs):
             if let v = rs.value {
                 let reg = emitExpr(v)
-                // Move result to x0
-                if reg != .x0 {
-                    emitLine("mov x0, \(reg.x)")
+                let retType = exprType(v).unqualified
+                if retType.isFloating {
+                    // Float/double return value goes in d0
+                    let fpReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+                    if reg != .x0 {
+                        emitLine("fmov d0, \(fpReg)")
+                    }
+                } else {
+                    // Move result to x0
+                    if reg != .x0 {
+                        emitLine("mov x0, \(reg.x)")
+                    }
                 }
             } else {
                 emitLine("mov w0, #0")
@@ -1169,10 +1203,20 @@ public final class Codegen {
             emitLine("mov \(reg.x), #\(bl.value ? 1 : 0)")
             return reg
 
-        case .floatLiteral:
-            // TODO: FP support
+        case .floatLiteral(let f):
+            // Load IEEE 754 bit pattern into an integer register, then transfer
+            // to the FP register (dN for double, sN for float).
             let reg = regAlloc.alloc() ?? .x9
-            emitLine("mov \(reg.x), #0  ; float not supported yet")
+            if f.type.unqualified == .float {
+                let bits = UInt64(Float(f.value).bitPattern)
+                emitLoadImm(reg.x, Int64(bitPattern: bits))
+                emitLine("fmov s\(reg.regNum), w\(reg.regNum)")
+            } else {
+                // double (or longDouble treated as double)
+                let bits = f.value.bitPattern
+                emitLoadImm(reg.x, Int64(bitPattern: bits))
+                emitLine("fmov d\(reg.regNum), \(reg.x)")
+            }
             return reg
 
         case .stringLiteral(let sl):
@@ -1224,7 +1268,12 @@ public final class Codegen {
                 if let t = localVarTypes[id.name], case .array = t.unqualified {
                     return reg
                 }
-                emitLine("ldr \(reg.x), [\(reg.x)]")
+                // Type-aware load for static local
+                if let t = localVarTypes[id.name] {
+                    emitLoad(reg, type: t)
+                } else {
+                    emitLine("ldr \(reg.x), [\(reg.x)]")
+                }
                 return reg
             } else if globalLabels.contains(id.name) {
                 let reg = regAlloc.alloc() ?? .x9
@@ -1236,7 +1285,12 @@ public final class Codegen {
                     if let gt = globalVarTypes[id.name], case .array = gt.unqualified {
                         return reg
                     }
-                    emitLine("ldr \(reg.x), [\(reg.x)]")
+                    // Type-aware load for external global
+                    if let gt = globalVarTypes[id.name] {
+                        emitLoad(reg, type: gt)
+                    } else {
+                        emitLine("ldr \(reg.x), [\(reg.x)]")
+                    }
                 } else {
                     emitLine("adrp \(reg.x), _\(id.name)@PAGE")
                     emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
@@ -1244,8 +1298,13 @@ public final class Codegen {
                     if let gt = globalVarTypes[id.name], case .array = gt.unqualified {
                         return reg
                     }
-                    // Otherwise, load the value from the global address
-                    emitLine("ldr \(reg.x), [\(reg.x)]")
+                    // Type-aware load for global
+                    if let gt = globalVarTypes[id.name] {
+                        emitLoad(reg, type: gt)
+                    } else {
+                        // Otherwise, load the value from the global address
+                        emitLine("ldr \(reg.x), [\(reg.x)]")
+                    }
                 }
                 return reg
             } else if functionNames.contains(id.name) {
@@ -1295,6 +1354,48 @@ public final class Codegen {
             return emitConditionalExpr(c)
 
         case .cast(let c):
+            // Handle int↔float conversions. Other casts just evaluate the inner expr.
+            let fromType = exprType(c.expr).unqualified
+            let toType = c.type.unqualified
+            if fromType.isFloating && toType.isFloating {
+                // float ↔ double conversion
+                let reg = emitExpr(c.expr)
+                if fromType == .float && (toType == .double || toType == .longDouble) {
+                    // float → double: fcvt dN, sN
+                    emitLine("fcvt d\(reg.regNum), s\(reg.regNum)")
+                } else if (fromType == .double || fromType == .longDouble) && toType == .float {
+                    // double → float: fcvt sN, dN
+                    emitLine("fcvt s\(reg.regNum), d\(reg.regNum)")
+                }
+                return reg
+            }
+            if fromType.isInteger && toType.isFloating {
+                // int → float/double: scvtf
+                let reg = emitExpr(c.expr)
+                // Sign-extend 32-bit signed ints to 64 bits first
+                if fromType.isSigned32Bit {
+                    emitLine("sxtw \(reg.x), \(reg.w)")
+                }
+                if toType == .float {
+                    emitLine("scvtf s\(reg.regNum), \(reg.x)")
+                } else {
+                    emitLine("scvtf d\(reg.regNum), \(reg.x)")
+                }
+                return reg
+            }
+            if fromType.isFloating && toType.isInteger {
+                // float/double → int: fcvtzs
+                let reg = emitExpr(c.expr)
+                let srcReg = fromType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+                if toType.isSigned32Bit {
+                    // Convert to 32-bit int: fcvtzs wN, sN/dN
+                    emitLine("fcvtzs \(reg.w), \(srcReg)")
+                } else {
+                    // Convert to 64-bit int: fcvtzs xN, sN/dN
+                    emitLine("fcvtzs \(reg.x), \(srcReg)")
+                }
+                return reg
+            }
             return emitExpr(c.expr)
 
         case .sizeof(let s):
@@ -1372,12 +1473,93 @@ public final class Codegen {
             return emitExpr(b.right)
 
         default:
+            // Determine the operand types to decide between integer and FP operations.
+            // For arithmetic, the result type reflects the (possibly promoted) float type.
+            // For comparisons, the result is int but the operands may be float.
+            let leftType = exprType(b.left).unqualified
+            let rightType = exprType(b.right).unqualified
+            let isFloatOp = leftType.isFloating || rightType.isFloating
+            // For arithmetic, result type determines s vs d register width.
+            let resultType = exprType(.binary(b)).unqualified
+            let isFloatResult = resultType.isFloating
+
             let leftReg = emitExpr(b.left)
             let rightReg = emitExpr(b.right)
 
+            if isFloatOp {
+                // Floating-point arithmetic: use d registers (or s for float).
+                // For comparisons the result goes into an integer register.
+                let isFloat = isFloatResult ? (resultType == .float) :
+                              (leftType == .float && rightType == .float)
+
+                // Implicit conversion: if one operand is int and the other is float,
+                // convert the int operand to float (C usual arithmetic conversions).
+                if !leftType.isFloating {
+                    // left is int, convert to float
+                    if leftType.isSigned32Bit {
+                        emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                    }
+                    if isFloat {
+                        emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)")
+                    } else {
+                        emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)")
+                    }
+                } else if leftType == .float && !isFloat {
+                    // left is float but result is double: promote to double
+                    emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
+                } else if leftType == .double && isFloat {
+                    // left is double but result is float: demote to float
+                    emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
+                }
+                if !rightType.isFloating {
+                    // right is int, convert to float
+                    if rightType.isSigned32Bit {
+                        emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    }
+                    if isFloat {
+                        emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)")
+                    } else {
+                        emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)")
+                    }
+                } else if rightType == .float && !isFloat {
+                    emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
+                } else if rightType == .double && isFloat {
+                    emitLine("fcvt s\(rightReg.regNum), d\(rightReg.regNum)")
+                }
+
+                let lReg = isFloat ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                let rReg = isFloat ? "s\(rightReg.regNum)" : "d\(rightReg.regNum)"
+                switch b.op {
+                case .add: emitLine("fadd \(lReg), \(lReg), \(rReg)")
+                case .sub: emitLine("fsub \(lReg), \(lReg), \(rReg)")
+                case .mul: emitLine("fmul \(lReg), \(lReg), \(rReg)")
+                case .div: emitLine("fdiv \(lReg), \(lReg), \(rReg)")
+                case .eq:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), eq")
+                case .ne:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), ne")
+                case .lt:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), lt")
+                case .le:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), le")
+                case .gt:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), gt")
+                case .ge:
+                    emitLine("fcmp \(lReg), \(rReg)")
+                    emitLine("cset \(leftReg.x), ge")
+                default:
+                    break
+                }
+                regAlloc.free(rightReg)
+                return leftReg
+            }
+
             // Determine if this is a signed 32-bit comparison
-            let leftType = exprType(b.left).unqualified
-            let rightType = exprType(b.right).unqualified
             let is32BitSigned: Bool = {
                 switch leftType {
                 case .int, .short, .schar, .char, .enumType:
@@ -1603,10 +1785,16 @@ public final class Codegen {
         }
 
         let operandReg = emitExpr(u.operand)
+        let operandType = exprType(u.operand).unqualified
 
         switch u.op {
         case .neg:
-            emitLine("neg \(operandReg.x), \(operandReg.x)")
+            if operandType.isFloating {
+                let fpReg = operandType == .float ? "s\(operandReg.regNum)" : "d\(operandReg.regNum)"
+                emitLine("fneg \(fpReg), \(fpReg)")
+            } else {
+                emitLine("neg \(operandReg.x), \(operandReg.x)")
+            }
         case .pos:
             break
         case .not:
@@ -1675,11 +1863,48 @@ public final class Codegen {
                 }
             }
 
+            // Implicit conversion: if target is float but rhs is int, convert rhs.
+            if targetType.isFloating && !valueType.isFloating {
+                if valueType.isSigned32Bit {
+                    emitLine("sxtw \(rhsReg.x), \(rhsReg.w)")
+                }
+                let fp = targetType == .float ? "s" : "d"
+                emitLine("scvtf \(fp)\(rhsReg.regNum), \(rhsReg.x)")
+            } else if targetType == .double && valueType == .float {
+                emitLine("fcvt d\(rhsReg.regNum), s\(rhsReg.regNum)")
+            } else if targetType == .float && valueType == .double {
+                emitLine("fcvt s\(rhsReg.regNum), d\(rhsReg.regNum)")
+            }
+
             switch binaryOp {
-            case .add: emitLine("add \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .sub: emitLine("sub \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .mul: emitLine("mul \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .div: emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+            case .add:
+                if targetType.isFloating {
+                    let fp = targetType == .float ? "s" : "d"
+                    emitLine("fadd \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                } else {
+                    emitLine("add \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
+            case .sub:
+                if targetType.isFloating {
+                    let fp = targetType == .float ? "s" : "d"
+                    emitLine("fsub \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                } else {
+                    emitLine("sub \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
+            case .mul:
+                if targetType.isFloating {
+                    let fp = targetType == .float ? "s" : "d"
+                    emitLine("fmul \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                } else {
+                    emitLine("mul \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
+            case .div:
+                if targetType.isFloating {
+                    let fp = targetType == .float ? "s" : "d"
+                    emitLine("fdiv \(fp)\(currentReg.regNum), \(fp)\(currentReg.regNum), \(fp)\(rhsReg.regNum)")
+                } else {
+                    emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
             case .mod:
                 // result = current - (current / rhs) * rhs
                 let temp = regAlloc.alloc() ?? .x9
@@ -1735,6 +1960,26 @@ public final class Codegen {
             return .x9  // return a dummy register
         }
         let valueReg = emitExpr(a.value)
+        // Convert float type if needed (e.g., double→float for assignment to float var)
+        let valueType = exprType(a.value).unqualified
+        if valueType.isFloating && targetType.isFloating {
+            convertFloat(valueReg, from: valueType, to: targetType)
+        } else if valueType.isInteger && targetType.isFloating {
+            // int → float/double
+            if valueType.isSigned32Bit {
+                emitLine("sxtw \(valueReg.x), \(valueReg.w)")
+            }
+            let fp = targetType == .float ? "s" : "d"
+            emitLine("scvtf \(fp)\(valueReg.regNum), \(valueReg.x)")
+        } else if valueType.isFloating && targetType.isInteger {
+            // float/double → int
+            let srcFp = valueType == .float ? "s" : "d"
+            if targetType.isSigned32Bit {
+                emitLine("fcvtzs \(valueReg.w), \(srcFp)\(valueReg.regNum)")
+            } else {
+                emitLine("fcvtzs \(valueReg.x), \(srcFp)\(valueReg.regNum)")
+            }
+        }
         storeExprResult(a.target, valueReg)
         return valueReg
     }
@@ -1830,11 +2075,18 @@ public final class Codegen {
 
         // Save the value register to the stack before computing the target address,
         // because emitAddr may reuse the same register and clobber the value.
-        emitLine("str \(reg.x), [sp, #-16]!")
+        // For float/double values, save/restore via the FP register (dN/sN).
+        let targetType = exprType(target).unqualified
+        let isFloatVal = targetType.isFloating
+        if isFloatVal {
+            let fpReg = targetType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+            emitLine("str \(fpReg), [sp, #-16]!")
+        } else {
+            emitLine("str \(reg.x), [sp, #-16]!")
+        }
         let addrReg = emitAddr(target)
 
         // Check if this is a struct assignment (needs multi-byte copy)
-        let targetType = exprType(target).unqualified
         if case .structType = targetType, let size = targetType.sizeInBytes, size > 8 {
             // Struct assignment: copy size bytes from the source pointer to the target address.
             // The source pointer was saved on the stack. We must load it into a register
@@ -1868,6 +2120,13 @@ public final class Codegen {
                 emitLine("ldrb \(tmpReg.w), [\(srcReg.x), #\(offset)]")
                 emitLine("strb \(tmpReg.w), [\(addrReg.x), #\(offset)]")
             }
+        } else if isFloatVal {
+            // Restore the float value from the stack into a scratch FP register.
+            // x16/x17 map to d16/d17 (or s16/s17) for FP scratch.
+            let fpScratch: ARM64Reg = (addrReg == .x16) ? .x17 : .x16
+            let fpLoad = targetType == .float ? "s\(fpScratch.regNum)" : "d\(fpScratch.regNum)"
+            emitLine("ldr \(fpLoad), [sp, #0]")
+            emitStoreToAddr(addrReg, fpScratch, type: targetType)
         } else {
             // Restore the value from the stack into a register that is NOT addrReg.
             // Use x16 if addrReg != x16, otherwise use x17.
@@ -1940,9 +2199,22 @@ public final class Codegen {
 
             // Evaluate variadic args, saving each to temp stack immediately
             var variadicArgRegs: [ARM64Reg] = []
+            var variadicArgIsFloat: [Bool] = []  // track float args for correct store/load
             for i in namedCount..<c.arguments.count {
+                let argType = exprType(c.arguments[i]).unqualified
+                let isFloatArg = argType.isFloating
+                variadicArgIsFloat.append(isFloatArg)
                 let argReg = emitExpr(c.arguments[i])
-                emitLine("str \(argReg.x), [sp, #-16]!")
+                if isFloatArg {
+                    // Variadic functions promote float to double (default argument promotion).
+                    // Always save as double (8 bytes) so the load-back is correct.
+                    if argType == .float {
+                        emitLine("fcvt d\(argReg.regNum), s\(argReg.regNum)")
+                    }
+                    emitLine("str d\(argReg.regNum), [sp, #-16]!")
+                } else {
+                    emitLine("str \(argReg.x), [sp, #-16]!")
+                }
                 variadicArgRegs.append(argReg)
                 regAlloc.free(argReg)
             }
@@ -1969,8 +2241,13 @@ public final class Codegen {
             // arg[namedCount+i] is at sp + totalSize + (numVariadicArgs - 1 - i) * 16
             for i in 0..<numVariadicArgs {
                 let tempOffset = totalSize + (numVariadicArgs - 1 - i) * 16
-                emitLine("ldr x9, [sp, #\(tempOffset)]")
-                emitLine("str x9, [sp, #\(i * 8)]")
+                if variadicArgIsFloat[i] {
+                    emitLine("ldr d9, [sp, #\(tempOffset)]")
+                    emitLine("str d9, [sp, #\(i * 8)]")
+                } else {
+                    emitLine("ldr x9, [sp, #\(tempOffset)]")
+                    emitLine("str x9, [sp, #\(i * 8)]")
+                }
             }
             // Place scratch spills above the variadic args
             for (idx, reg) in inUse.enumerated() {
@@ -2029,8 +2306,14 @@ public final class Codegen {
             // For struct-by-value args (9-16 bytes), evaluate to address then load 2 chunks.
             var evaluatedArgs: [ARM64Reg] = []
             var wideArgs: Set<Int> = []  // indices of args that use 2 register slots
+            var floatArgs: Set<Int> = []  // indices of float/double args (go in d0-d7)
+            let paramTypes = functionParamTypes[funcName] ?? []
             for (i, arg) in c.arguments.enumerated() {
                 let argType = exprType(arg).unqualified
+                // Use the declared parameter type to determine if the arg should be float.
+                // This handles implicit int→float conversion for function calls (e.g., sin(2)).
+                let paramType: CType? = i < paramTypes.count ? paramTypes[i].unqualified : nil
+                let isFloatParam = paramType?.isFloating ?? false
                 let argSize = argType.sizeInBytes ?? 8
                 if case .structType = argType, argSize > 8, argSize <= 16 {
                     // Struct by value (9-16 bytes): load two 8-byte chunks
@@ -2047,6 +2330,26 @@ public final class Codegen {
                     evaluatedArgs.append(addrReg)
                     wideArgs.insert(i)
                     regAlloc.free(addrReg)
+                } else if argType.isFloating {
+                    // Float/double arg: save the FP register value to temp stack
+                    let argReg = emitExpr(arg)
+                    let fpReg = argType == .float ? "s\(argReg.regNum)" : "d\(argReg.regNum)"
+                    emitLine("str \(fpReg), [sp, #-16]!")
+                    evaluatedArgs.append(argReg)
+                    floatArgs.insert(i)
+                    regAlloc.free(argReg)
+                } else if isFloatParam {
+                    // Int arg but float param: convert int→float and save as float
+                    let argReg = emitExpr(arg)
+                    if argType.isSigned32Bit {
+                        emitLine("sxtw \(argReg.x), \(argReg.w)")
+                    }
+                    let fp = paramType == .float ? "s" : "d"
+                    emitLine("scvtf \(fp)\(argReg.regNum), \(argReg.x)")
+                    emitLine("str \(fp)\(argReg.regNum), [sp, #-16]!")
+                    evaluatedArgs.append(argReg)
+                    floatArgs.insert(i)
+                    regAlloc.free(argReg)
                 } else {
                     let argReg = emitExpr(arg)
                     // Save the result on the stack to preserve it across subsequent arg evaluation
@@ -2127,10 +2430,13 @@ public final class Codegen {
             // Track current register index (wide args consume 2 registers)
             // Iterate forward (i=0 to N-1): arg[0] goes to x0, arg[1] to x1, etc.
             // arg[0] is at the highest temp offset (pushed first), arg[N-1] at lowest.
+            // Float args use a separate register file (d0-d7) with an independent index.
             var regIdx = 0
+            var fpRegIdx = 0
             for i in 0..<numArgs {
                 let tempOffset = tempBase + argSlotOffsets[i]
                 let isWide = wideArgs.contains(i)
+                let isFloatArg = floatArgs.contains(i)
                 let regsNeeded = isWide ? 2 : 1
 
                 // For internal variadic: named params go in registers, variadic args go on stack
@@ -2142,12 +2448,30 @@ public final class Codegen {
                         emitLine("str x9, [sp, #\(stackOffset)]")
                         emitLine("ldr x9, [sp, #\(tempOffset + 16)]")
                         emitLine("str x9, [sp, #\(stackOffset + 8)]")
+                    } else if isFloatArg {
+                        emitLine("ldr d9, [sp, #\(tempOffset)]")
+                        emitLine("str d9, [sp, #\(stackOffset)]")
                     } else {
                         emitLine("ldr x9, [sp, #\(tempOffset)]")
                         emitLine("str x9, [sp, #\(stackOffset)]")
                     }
                     regAlloc.free(evaluatedArgs[i])
                     regIdx += regsNeeded
+                    continue
+                }
+
+                if isFloatArg {
+                    // Float/double arg goes in d0-d7
+                    if fpRegIdx < 8 {
+                        emitLine("ldr d\(fpRegIdx), [sp, #\(tempOffset)]")
+                    } else {
+                        // Overflow: float arg goes on stack
+                        let stackOffset = (fpRegIdx - 8) * 8
+                        emitLine("ldr d9, [sp, #\(tempOffset)]")
+                        emitLine("str d9, [sp, #\(stackOffset)]")
+                    }
+                    regAlloc.free(evaluatedArgs[i])
+                    fpRegIdx += 1
                     continue
                 }
 
@@ -2228,10 +2552,17 @@ public final class Codegen {
             }
         }
 
-        // Result is in x0
+        // Result is in x0 (int) or d0 (float)
         let resultReg = regAlloc.alloc() ?? .x9
-        if resultReg != .x0 {
-            emitLine("mov \(resultReg.x), x0")
+        let callReturnType = exprType(.call(c)).unqualified
+        if callReturnType.isFloating {
+            if resultReg != .x0 {
+                emitLine("fmov d\(resultReg.regNum), d0")
+            }
+        } else {
+            if resultReg != .x0 {
+                emitLine("mov \(resultReg.x), x0")
+            }
         }
         return resultReg
     }
@@ -2251,17 +2582,26 @@ public final class Codegen {
             if let t = globalVarTypes[id.name] { return t }
             return .int
         case .binary(let b):
+            // Comparison and logical operators always return int (C standard)
+            switch b.op {
+            case .eq, .ne, .lt, .le, .gt, .ge, .logicAnd, .logicOr:
+                return .int
+            default: break
+            }
             // For pointer arithmetic, result type is the pointer type
             let lt = exprType(b.left)
             let rt = exprType(b.right)
             if lt.isPointer && rt.isInteger { return lt }
             if lt.isInteger && rt.isPointer { return rt }
             // Apply usual arithmetic conversions to determine result type.
-            // If either operand is long/longLong, result is at least that wide.
             let lu = lt.unqualified
             let ru = rt.unqualified
             if lu.isArithmetic && ru.isArithmetic {
-                // Rank: longLong > long > int > short > char
+                // Floating-point usual arithmetic conversions
+                if lu == .longDouble || ru == .longDouble { return .longDouble }
+                if lu == .double || ru == .double { return .double }
+                if lu == .float || ru == .float { return .float }
+                // Integer ranks: longLong > long > int > short > char
                 func rank(_ t: CType) -> Int {
                     switch t {
                     case .longLong, .ulongLong: return 4
@@ -2419,6 +2759,19 @@ public final class Codegen {
             }
         }
         return nil
+    }
+
+    /// Convert a float/double value in a register from one FP type to another.
+    /// Handles double→float (fcvt s, d) and float→double (fcvt d, s).
+    private func convertFloat(_ reg: ARM64Reg, from: CType, to: CType) {
+        let ft = from.unqualified
+        let tt = to.unqualified
+        if ft == tt { return }
+        if ft == .double && tt == .float {
+            emitLine("fcvt s\(reg.regNum), d\(reg.regNum)")
+        } else if ft == .float && (tt == .double || tt == .longDouble) {
+            emitLine("fcvt d\(reg.regNum), s\(reg.regNum)")
+        }
     }
 
     /// Emit the address of an lvalue expression (without loading its value).
@@ -2649,6 +3002,10 @@ public final class Codegen {
                 emitStoreHalfFP(reg.w, offset)
             case .int, .uint:
                 emitStoreWordFP(reg.w, offset)
+            case .float:
+                emitStoreFP("s\(reg.regNum)", offset)
+            case .double, .longDouble:
+                emitStoreFP("d\(reg.regNum)", offset)
             default:
                 emitStoreFP(reg.x, offset)
             }
