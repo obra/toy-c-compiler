@@ -20,6 +20,9 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     case float
     case double
     case longDouble  // approximated as double on ARM64
+    case complexFloat    // _Complex float
+    case complexDouble   // _Complex double
+    case complexLongDouble // _Complex long double (approximated as complex double)
     case pointer(to: CType)
     case array(of: CType, count: Int)
     case incompleteArray(of: CType)
@@ -51,7 +54,8 @@ public indirect enum CType: Equatable, Hashable, Sendable {
 
     public var isFloating: Bool {
         switch self {
-        case .float, .double, .longDouble:
+        case .float, .double, .longDouble,
+             .complexFloat, .complexDouble, .complexLongDouble:
             return true
         case .qualified(let base, _, _, _):
             return base.isFloating
@@ -63,7 +67,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     }
 
     public var isArithmetic: Bool {
-        return isInteger || isFloating
+        return isInteger || isFloating || isComplex
     }
 
     /// True for 32-bit signed integer types that need sxtw before 64-bit arithmetic.
@@ -91,8 +95,47 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         }
     }
 
+    /// True for unsigned integer types.
+    public var isUnsigned: Bool {
+        switch self {
+        case .bool, .uchar, .ushort, .uint, .ulong, .ulongLong: return true
+        case .qualified(let base, _, _, _): return base.isUnsigned
+        case .typedef(_, let base): return base.isUnsigned
+        default: return false
+        }
+    }
+
     public var isScalar: Bool {
         return isArithmetic || isPointer
+    }
+
+    /// True for complex floating-point types.
+    public var isComplex: Bool {
+        switch self {
+        case .complexFloat, .complexDouble, .complexLongDouble:
+            return true
+        case .qualified(let base, _, _, _):
+            return base.isComplex
+        case .typedef(_, let base):
+            return base.isComplex
+        default:
+            return false
+        }
+    }
+
+    /// For complex types, the corresponding real type.
+    public var complexRealType: CType {
+        switch self {
+        case .complexFloat: return .float
+        case .complexDouble: return .double
+        case .complexLongDouble: return .longDouble
+        case .qualified(let base, _, _, _):
+            return base.complexRealType
+        case .typedef(_, let base):
+            return base.complexRealType
+        default:
+            return self
+        }
     }
 
     public var isPointer: Bool {
@@ -196,6 +239,10 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 4
         case .long, .ulong, .longLong, .ulongLong, .double, .longDouble:
             return 8
+        case .complexFloat:
+            return 8   // 2 × float
+        case .complexDouble, .complexLongDouble:
+            return 16  // 2 × double
         case .pointer, .function:
             return 8
         case .array(let elem, let count):
@@ -227,6 +274,10 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 4
         case .long, .ulong, .longLong, .ulongLong, .double, .longDouble:
             return 8
+        case .complexFloat:
+            return 4   // aligned to float
+        case .complexDouble, .complexLongDouble:
+            return 8  // aligned to double
         case .pointer, .function:
             return 8
         case .array(let elem, _):

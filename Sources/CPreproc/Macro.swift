@@ -30,6 +30,8 @@ public final class MacroTable {
     private var macros: [String: Macro] = [:]
     /// Names currently being expanded (blue-painting / hide sets).
     private var expansionStack: [String] = []
+    /// Stack for #pragma push_macro / pop_macro
+    private var pragmaMacroStack: [String: [Macro?]] = [:]
 
     public init() {}
 
@@ -47,6 +49,21 @@ public final class MacroTable {
 
     public func lookup(_ name: String) -> Macro? {
         return macros[name]
+    }
+
+    public func pushMacro(_ name: String) {
+        pragmaMacroStack[name, default: []].append(macros[name])
+    }
+
+    public func popMacro(_ name: String) {
+        guard var stack = pragmaMacroStack[name], !stack.isEmpty else { return }
+        let saved = stack.removeLast()
+        pragmaMacroStack[name] = stack
+        if let macro = saved {
+            macros[name] = macro
+        } else {
+            macros.removeValue(forKey: name)
+        }
     }
 
     public func pushExpansion(_ name: String) {
@@ -80,6 +97,28 @@ public final class MacroExpander {
         self.table = table
         self.diags = diags
         self.sm = sm
+    }
+
+    /// Format current date as "Mmm dd yyyy" for __DATE__
+    private func formatCurrentDate() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM dd yyyy"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        var result = formatter.string(from: Date())
+        // Single-digit day: pad with leading space (e.g. "Jul  4 2024")
+        let parts = result.split(separator: " ")
+        if parts.count == 3, parts[1].count == 1 {
+            result = "\(parts[0])  \(parts[1]) \(parts[2])"
+        }
+        return result
+    }
+
+    /// Format current time as "HH:MM:SS" for __TIME__
+    private func formatCurrentTime() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: Date())
     }
 
     /// Expand all macros in the given token list, returning the fully expanded token list.
@@ -127,8 +166,8 @@ public final class MacroExpander {
         }
 
         /// Consume tokens until we've consumed the matching ) for a function-like macro call.
-        /// Returns the argument token lists, or nil if not a valid call.
-        func parseFunctionCallArgs() -> [[Token]]? {
+        /// Returns the argument token lists and the closing paren's hideSet, or nil if not a valid call.
+        func parseFunctionCallArgs() -> (args: [[Token]], closingHideSet: Set<String>)? {
             // First, consume the opening (
             guard let first = nextToken(), first.kind == .punct, first.spelling == "(" else {
                 return nil
@@ -149,7 +188,7 @@ public final class MacroExpander {
                             if !current.isEmpty || !args.isEmpty {
                                 args.append(current)
                             }
-                            return args
+                            return (args, t.hideSet)
                         }
                         depth -= 1
                         current.append(t)
@@ -183,6 +222,16 @@ public final class MacroExpander {
                 output.append(Token(kind: .stringLiteral, spelling: "\"\(fname)\"", loc: token.loc))
                 continue
             }
+            if token.spelling == "__DATE__" {
+                let dateStr = formatCurrentDate()
+                output.append(Token(kind: .stringLiteral, spelling: "\"\(dateStr)\"", loc: token.loc))
+                continue
+            }
+            if token.spelling == "__TIME__" {
+                let timeStr = formatCurrentTime()
+                output.append(Token(kind: .stringLiteral, spelling: "\"\(timeStr)\"", loc: token.loc))
+                continue
+            }
 
             if token.hideSet.contains(token.spelling) {
                 output.append(token)
@@ -201,11 +250,13 @@ public final class MacroExpander {
                     continue
                 }
                 // Consume the ( and parse arguments
-                guard let args = parseFunctionCallArgs() else {
+                guard let callResult = parseFunctionCallArgs() else {
                     output.append(token)
                     continue
                 }
-                var newHideSet = token.hideSet
+                let args = callResult.args
+                // HideSet = intersection of macro name's hideSet and closing paren's hideSet, plus macro name
+                var newHideSet = token.hideSet.intersection(callResult.closingHideSet)
                 newHideSet.insert(macro.name)
                 let expanded = expandFunctionLike(macro, args: args, invocationLoc: token.loc, hideSet: newHideSet)
                 // Prepend expanded for rescanning (reverse into pendingReversed)
@@ -356,8 +407,28 @@ public final class MacroExpander {
             if token.kind == .punct && token.spelling == "##" {
                 if i + 1 < body.count && !result.isEmpty {
                     let rightToken = body[i + 1]
+                    // Handle ##__VA_ARGS__ (GNU extension)
+                    if rightToken.kind == .identifier && rightToken.spelling == "__VA_ARGS__" && macro.isVariadic {
+                        let vaArgs = args?["__VA_ARGS__"] ?? []
+                        if vaArgs.isEmpty {
+                            // Empty __VA_ARGS__: GNU extension removes preceding comma
+                            let left = result.removeLast()
+                            if left.kind == .punct && left.spelling == "," {
+                                // Drop the comma
+                            } else {
+                                result.append(left)
+                            }
+                            i += 2
+                            continue
+                        } else {
+                            // Non-empty __VA_ARGS__: keep left token, substitute __VA_ARGS__ normally
+                            // (don't paste — just skip the ## and let __VA_ARGS__ be handled below)
+                            i += 1
+                            continue
+                        }
+                    }
                     let left = result.removeLast()
-                    let pasted = pasteTokens(left, rightToken, args: args, params: params, hideSet: hideSet)
+                    let pasted = pasteTokens(left, rightToken, args: args, params: params, hideSet: hideSet, isVariadic: macro.isVariadic)
                     result.append(pasted)
                     i += 2
                     continue
@@ -419,7 +490,9 @@ public final class MacroExpander {
     private func stringize(_ tokens: [Token]) -> String {
         var s = "\""
         for (i, token) in tokens.enumerated() {
-            if i > 0 {
+            // Insert a space only if the original source had whitespace before this token.
+            // The first token never gets a leading space.
+            if i > 0 && token.hasLeadingSpace {
                 s += " "
             }
             // Escape backslashes and quotes inside string/char literals
@@ -438,11 +511,20 @@ public final class MacroExpander {
 
     /// Paste two tokens together.
     private func pasteTokens(_ left: Token, _ right: Token, args: [String: [Token]]?,
-                             params: [String]?, hideSet: Set<String>) -> Token {
+                             params: [String]?, hideSet: Set<String>, isVariadic: Bool = false) -> Token {
         var rightSpelling = right.spelling
 
+        // If right is __VA_ARGS__, use its raw first token spelling
+        if right.kind == .identifier && right.spelling == "__VA_ARGS__" && isVariadic {
+            let argTokens = args?["__VA_ARGS__"] ?? []
+            if argTokens.isEmpty {
+                // Placemarker: pasting with empty gives the left token
+                return left.withHideSet(left.hideSet.union(hideSet))
+            }
+            rightSpelling = argTokens.first!.spelling
+        }
         // If right is a parameter, use its raw first token spelling
-        if right.kind == .identifier && params != nil && params!.contains(right.spelling) {
+        else if right.kind == .identifier && params != nil && params!.contains(right.spelling) {
             let argTokens = args?[right.spelling] ?? []
             if argTokens.isEmpty {
                 // Placemarker: pasting with empty gives the left token

@@ -38,17 +38,26 @@ public struct VarDecl: Equatable {
     public var type: CType
     public var initializer: Expr?
     public var storageClass: StorageClass
-    public let isGlobal: Bool
+    public var isGlobal: Bool
     public let loc: SourceLoc
+    /// VLA size expression (for variable-length arrays like `int arr[n]`).
+    /// When non-nil, the array dimension is a runtime expression, not a constant.
+    public var vlaSizeExpr: Expr?
+    /// Inner VLA size expressions for multi-dimensional VLAs (e.g., `int matrix[m][n]`).
+    /// The outer dimension goes in vlaSizeExpr; inner dimensions go here in order.
+    public var vlaInnerSizeExprs: [Expr]
 
     public init(name: String, type: CType, initializer: Expr? = nil,
-                storageClass: StorageClass = .none, isGlobal: Bool = false, loc: SourceLoc) {
+                storageClass: StorageClass = .none, isGlobal: Bool = false, loc: SourceLoc,
+                vlaSizeExpr: Expr? = nil, vlaInnerSizeExprs: [Expr] = []) {
         self.name = name
         self.type = type
         self.initializer = initializer
         self.storageClass = storageClass
         self.isGlobal = isGlobal
         self.loc = loc
+        self.vlaSizeExpr = vlaSizeExpr
+        self.vlaInnerSizeExprs = vlaInnerSizeExprs
     }
 }
 
@@ -335,6 +344,8 @@ public indirect enum Expr: ASTNode, Equatable {
     case sizeof(SizeofExpr)
     case compoundLiteral(CompoundLiteralExpr)
     case initList(InitListExpr)
+    case genericExpr(GenericExpr)
+    case stmtExpr(StmtExpr)
 
     public var loc: SourceLoc {
         switch self {
@@ -355,7 +366,42 @@ public indirect enum Expr: ASTNode, Equatable {
         case .sizeof(let e): return e.loc
         case .compoundLiteral(let e): return e.loc
         case .initList(let e): return e.loc
+        case .genericExpr(let e): return e.loc
+        case .stmtExpr(let e): return e.loc
         }
+    }
+}
+
+/// GCC statement expression: ({ ... })
+public struct StmtExpr: Equatable {
+    public let body: CompoundStmt
+    public let loc: SourceLoc
+    public init(body: CompoundStmt, loc: SourceLoc) {
+        self.body = body
+        self.loc = loc
+    }
+}
+
+/// C11 _Generic selection expression
+public struct GenericAssociation: Equatable {
+    public let typeName: CType?
+    public let isDefault: Bool
+    public let expr: Expr
+    public init(typeName: CType?, isDefault: Bool, expr: Expr) {
+        self.typeName = typeName
+        self.isDefault = isDefault
+        self.expr = expr
+    }
+}
+
+public struct GenericExpr: Equatable {
+    public let controllingExpr: Expr
+    public let associations: [GenericAssociation]
+    public let loc: SourceLoc
+    public init(controllingExpr: Expr, associations: [GenericAssociation], loc: SourceLoc) {
+        self.controllingExpr = controllingExpr
+        self.associations = associations
+        self.loc = loc
     }
 }
 
@@ -372,9 +418,10 @@ public struct IntegerLiteral: Equatable {
 public struct FloatLiteral: Equatable {
     public let value: Double
     public let type: CType
+    public let isImaginary: Bool
     public let loc: SourceLoc
-    public init(value: Double, type: CType = .double, loc: SourceLoc) {
-        self.value = value; self.type = type; self.loc = loc
+    public init(value: Double, type: CType = .double, isImaginary: Bool = false, loc: SourceLoc) {
+        self.value = value; self.type = type; self.isImaginary = isImaginary; self.loc = loc
     }
 }
 
@@ -586,6 +633,13 @@ public struct CompoundLiteralExpr: Equatable {
 
 public struct InitListExpr: Equatable {
     public var values: [Expr]
+    /// Optional field designators for each value (e.g., ".a.j" → ["a", "j"]).
+    /// When non-nil, the value should be placed at the designated field, not the next position.
+    public var designators: [[String]?]  // per-value: nil = positional, [field names] = designated
     public let loc: SourceLoc
-    public init(values: [Expr], loc: SourceLoc) { self.values = values; self.loc = loc }
+    public init(values: [Expr], designators: [[String]?] = [], loc: SourceLoc) {
+        self.values = values
+        self.designators = designators
+        self.loc = loc
+    }
 }

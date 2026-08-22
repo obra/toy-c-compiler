@@ -33,7 +33,20 @@ public final class Parser {
 
     /// Last parsed function params (with names) — used by parseExternalDecl.
     private var lastFuncParams: [Param] = []
+
+    /// VLA size expressions from the last parseDeclarator call (for variable-length arrays).
+    /// For multi-dimensional VLAs, this contains inner dimension expressions in order.
+    private var pendingVLASizeExprs: [Expr] = []
+    private var pendingVLASizeExpr: Expr? { pendingVLASizeExprs.last }
     private var lastFuncVariadic: Bool = false
+    /// Current function name (for __func__ predefined identifier).
+    private var currentFuncName: String? = nil
+    /// Enum constants defined so far (name → value), for constant expression evaluation.
+    private var parserEnumConstants: [String: Int64] = [:]
+    /// Stack of #pragma pack values (for struct alignment control).
+    private var packStack: [Int] = []
+    /// Current pack alignment (0 = use natural alignment).
+    private var currentPack: Int = 0
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
     private var pendingExternalDecls: [Decl] = []
 
@@ -48,6 +61,12 @@ public final class Parser {
     public func parse() throws -> [Decl] {
         var decls: [Decl] = []
         while !isAtEnd() {
+            // Handle #pragma pack directives
+            if current().kind == .pragma {
+                handlePragmaPack(current())
+                advance()
+                continue
+            }
             do {
                 if let decl = try parseExternalDecl() {
                     decls.append(decl)
@@ -68,6 +87,34 @@ public final class Parser {
             }
         }
         return decls
+    }
+
+    /// Handle #pragma pack directives.
+    private func handlePragmaPack(_ token: Token) {
+        let text = token.spelling
+        // Format: "pack push 1" or "pack pop" or "pack(1)" or "pack(push, 1)" etc.
+        if text.contains("push") {
+            // Extract pack value
+            let words = text.split(separator: " ").map(String.init)
+            // Look for a number in the pragma text
+            if let n = words.compactMap({ Int($0.filter { $0.isNumber }) }).first {
+                packStack.append(currentPack)
+                currentPack = n
+            } else {
+                packStack.append(currentPack)
+                // No explicit value — use default (which for push is usually the current value)
+            }
+        } else if text.contains("pop") {
+            if let prev = packStack.popLast() {
+                currentPack = prev
+            }
+        } else {
+            // #pragma pack(N) — set pack value directly
+            let words = text.split(separator: " ").map(String.init)
+            if let n = words.compactMap({ Int($0.filter { $0.isNumber }) }).first {
+                currentPack = n
+            }
+        }
     }
 
     // MARK: - Token helpers
@@ -125,6 +172,7 @@ public final class Parser {
         case .stringLiteral: return "string literal"
         case .punct: return "punctuator"
         case .eof: return "end of file"
+        case .pragma: return "pragma"
         }
     }
 
@@ -245,7 +293,10 @@ public final class Parser {
                 // declarations that overwrite lastFuncParams via parseFunctionParams
                 let savedParams = lastFuncParams
                 let savedVariadic = lastFuncVariadic
+                let savedFuncName = currentFuncName
+                currentFuncName = name
                 let body = try parseCompoundStmt()
+                currentFuncName = savedFuncName
                 // Extract the return type from the function type
                 let returnType: CType
                 if case .function(_, let ret, _) = type {
@@ -269,7 +320,28 @@ public final class Parser {
                 // infer the array size from the number of elements
                 if case .incompleteArray(let elem) = type.unqualified,
                    case .initList(let il) = initExpr! {
-                    actualType = .array(of: elem, count: il.values.count)
+                    // For arrays of structs with flat init lists, divide by fields per struct
+                    if case .structType(let rec) = elem.unqualified, !rec.fields.isEmpty {
+                        let fieldsPerStruct = countScalarFields(rec)
+                        if fieldsPerStruct > 0 {
+                            // Check if any values are brace-enclosed (initList) — each counts as one element
+                            let hasBraceElements = il.values.contains { v in
+                                if case .initList = v { return true }
+                                if case .compoundLiteral = v { return true }
+                                return false
+                            }
+                            if hasBraceElements {
+                                // Each initList is one element, each scalar is also one element
+                                actualType = .array(of: elem, count: il.values.count)
+                            } else {
+                                actualType = .array(of: elem, count: (il.values.count + fieldsPerStruct - 1) / fieldsPerStruct)
+                            }
+                        } else {
+                            actualType = .array(of: elem, count: il.values.count)
+                        }
+                    } else {
+                        actualType = .array(of: elem, count: il.values.count)
+                    }
                 }
                 // If the type is an incomplete char array and initializer is a string literal,
                 // infer the array size from the string length + 1 (null terminator)
@@ -413,6 +485,8 @@ public final class Parser {
                 case "signed": typeSpecifiers.append("signed"); advance()
                 case "unsigned": typeSpecifiers.append("unsigned"); advance()
                 case "_Bool": typeSpecifiers.append("_Bool"); advance()
+                case "_Complex": typeSpecifiers.append("_Complex"); advance()
+                case "_Imaginary": typeSpecifiers.append("_Imaginary"); advance()
 
                 case "struct":
                     structType = try parseStructOrUnion(isStruct: true)
@@ -448,7 +522,7 @@ public final class Parser {
                 default:
                     done = true
                 }
-            } else if isTypedefName() {
+            } else if isTypedefName() && typeSpecifiers.isEmpty && structType == nil && unionType == nil && enumType == nil && typedefBase == nil {
                 // Typedef name used as type specifier
                 let name = current().spelling
                 // Use the actual resolved type if known, otherwise default to .int
@@ -516,10 +590,26 @@ public final class Parser {
         let hasChar = specs.contains("char")
         let hasVoid = specs.contains("void")
         let hasBool = specs.contains("_Bool")
+        let hasComplex = specs.contains("_Complex")
+        let hasImaginary = specs.contains("_Imaginary")
 
         if hasVoid { return .void }
         if hasBool { return .bool }
         if hasChar { return isUnsigned ? .uchar : .char }
+        if hasComplex {
+            if hasFloat { return .complexFloat }
+            if longCount > 0 { return .complexLongDouble }
+            if hasDouble { return .complexDouble }
+            // _Complex with integer type is allowed but rare; default to complex double
+            return .complexDouble
+        }
+        if hasImaginary {
+            // Treat _Imaginary like _Complex with zero real part
+            if hasFloat { return .complexFloat }
+            if longCount > 0 { return .complexLongDouble }
+            if hasDouble { return .complexDouble }
+            return .complexDouble
+        }
         if hasDouble {
             if longCount > 0 { return .longDouble }
             return .double
@@ -537,12 +627,18 @@ public final class Parser {
     private func parseStructOrUnion(isStruct: Bool) throws -> CType {
         let kwLoc = advance().loc // struct/union keyword
 
+        // Skip __attribute__ between keyword and tag
+        skipAsmAndAttributes()
+
         // Optional tag name
         var tag: String? = nil
         if current().kind == .identifier {
             tag = current().spelling
             advance()
         }
+
+        // Skip __attribute__ between tag and body
+        skipAsmAndAttributes()
 
         // If there's a body { ... }
         if isPunct("{") {
@@ -585,8 +681,10 @@ public final class Parser {
                             var byteOff = (bitOffset + 7) / 8
                             let fieldAlign = fieldType.alignOf ?? 1
                             let fieldSize = fieldType.sizeInBytes ?? 0
-                            maxAlign = max(maxAlign, fieldAlign)
-                            byteOff = (byteOff + fieldAlign - 1) & ~(fieldAlign - 1)
+                            // Apply #pragma pack: effective alignment is min(natural, pack)
+                            let effectiveAlign = currentPack > 0 ? min(fieldAlign, currentPack) : fieldAlign
+                            maxAlign = max(maxAlign, effectiveAlign)
+                            byteOff = (byteOff + effectiveAlign - 1) & ~(effectiveAlign - 1)
                             fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: nil, offset: byteOff, bitOffset: 0))
                             bitOffset = (byteOff + fieldSize) * 8
                         }
@@ -666,6 +764,8 @@ public final class Parser {
                     nextValue = Int(evalIntConst(valExpr))
                 }
                 cases.append(EnumCase(name: name, value: nextValue))
+                // Register enum constant for use in subsequent constant expressions
+                parserEnumConstants[name] = Int64(nextValue)
                 nextValue += 1
                 if !match(kind: .punct, spelling: ",") {
                     break
@@ -712,6 +812,52 @@ public final class Parser {
             // Save position for backtracking
             let savePos = pos
             advance() // (
+            // Skip __attribute__ between ( and *
+            skipAsmAndAttributes()
+            // Handle () — abstract function type (e.g., `int ()` means function returning int)
+            if isPunct(")") {
+                advance() // )
+                // This is a function type with no params
+                type = .function(params: [], returnType: type, variadic: false)
+                // Check for suffix: (params) or [N]
+                while isPunct("(") || isPunct("[") {
+                    if isPunct("(") {
+                        let (params, variadic, retType) = try parseFunctionParams(type)
+                        type = .function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                    } else {
+                        let dim = try parseArrayDimension()
+                        if let c = dim.count { type = .array(of: type, count: c) }
+                        else { type = .incompleteArray(of: type) }
+                    }
+                }
+                return ("", type, SourceLoc.unknown)
+            }
+            // Handle (type ...) — abstract function declarator with params (e.g., `int (int x)`)
+            if current().kind == .keyword && isTypeKeyword(current().spelling) {
+                // Function type: int (int x) or int (int)
+                // We already consumed (, so parse params manually
+                var params: [Param] = []
+                var variadic = false
+                while !isPunct(")") && !isAtEnd() {
+                    if isPunct("...") { advance(); variadic = true; break }
+                    let (baseType, _, _, _) = try parseDeclSpecifiers()
+                    let (paramName, paramType, paramLoc) = try parseDeclarator(baseType)
+                    var actualType = paramType
+                    if case .array(let elem, _) = actualType.unqualified {
+                        actualType = .pointer(to: elem)
+                    } else if case .incompleteArray(let elem) = actualType.unqualified {
+                        actualType = .pointer(to: elem)
+                    } else if case .function = actualType.unqualified {
+                        actualType = .pointer(to: actualType)
+                    }
+                    params.append(Param(name: paramName.isEmpty ? nil : paramName, type: actualType, loc: paramLoc))
+                    if !match(kind: .punct, spelling: ",") { break }
+                }
+                _ = try consume(kind: .punct, spelling: ")")
+                type = .function(params: params.map { $0.type }, returnType: type, variadic: variadic)
+                return ("", type, SourceLoc.unknown)
+            }
+            // Handle (*[N])(params) — array of function pointers
             if isPunct("*") {
                 // Function pointer: (*name)(params) or (*(*name)(params))(params)
                 advance() // consume the first *
@@ -745,6 +891,39 @@ public final class Parser {
                 } else if isPunct(")") {
                     // Abstract: (*) — no name, just a pointer
                     nameLoc = current().loc
+                } else if isPunct("[") {
+                    // Abstract: (*[N]) — array of N pointers, no name
+                    nameLoc = current().loc
+                    // Parse array dimensions
+                    var arrayDims: [Int?] = []
+                    while isPunct("[") {
+                        arrayDims.append(try parseArrayDimension().count)
+                    }
+                    _ = try consume(kind: .punct, spelling: ")")
+                    // Check for function params: (*[N])(params)
+                    if isPunct("(") {
+                        let (params, variadic, retType) = try parseFunctionParams(baseTypeForFunc)
+                        var funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                        // Wrap with pointer(s)
+                        for _ in 0..<pointerDepth {
+                            funcType = .pointer(to: funcType)
+                        }
+                        // Wrap with array dimensions (outermost last)
+                        for d in arrayDims.reversed() {
+                            if let c = d { funcType = .array(of: funcType, count: c) }
+                            else { funcType = .incompleteArray(of: funcType) }
+                        }
+                        type = funcType
+                        return ("", type, nameLoc)
+                    }
+                    // Just a pointer (possibly array of pointers)
+                    var ptrType = innerType
+                    for d in arrayDims.reversed() {
+                        if let c = d { ptrType = .array(of: ptrType, count: c) }
+                        else { ptrType = .incompleteArray(of: ptrType) }
+                    }
+                    type = ptrType
+                    return ("", type, nameLoc)
                 } else {
                     throw ParseError.expected("identifier", current().spelling, current().loc)
                 }
@@ -753,6 +932,9 @@ public final class Parser {
                 if !name.isEmpty && isPunct("(") {
                     // Function returning function pointer: name(params)
                     let (funcParams, funcVariadic, funcRetType) = try parseFunctionParams(innerType)
+                    // Save the function's own params (before parsing return type params overwrites lastFuncParams)
+                    let savedFuncParams = lastFuncParams
+                    let savedFuncVariadic = lastFuncVariadic
                     _ = try consume(kind: .punct, spelling: ")")
                     // Now parse the return params: ( return_params )
                     let (retParams, retVariadic, retRetType) = try parseFunctionParams(funcRetType)
@@ -760,6 +942,9 @@ public final class Parser {
                                                   returnType: .function(params: retParams.map { $0.type },
                                                                         returnType: retRetType, variadic: retVariadic),
                                                   variadic: funcVariadic)
+                    // Restore the function's own params for the FuncDecl
+                    lastFuncParams = savedFuncParams
+                    lastFuncVariadic = savedFuncVariadic
                     return (name, funcType, nameLoc)
                 }
                 // Handle array suffixes inside the parens: (*name[3])
@@ -767,8 +952,17 @@ public final class Parser {
                 var arrayDims: [(count: Int?, isPointer: Bool)] = []
                 while isPunct("[") {
                     advance()
+                    // Skip qualifiers
+                    while isKeyword("const") || isKeyword("volatile") || isKeyword("restrict") ||
+                          isKeyword("static") {
+                        advance()
+                    }
                     if isPunct("]") {
                         advance()
+                        arrayDims.append((count: nil, isPointer: false))
+                    } else if isPunct("*") {
+                        advance()
+                        _ = try consume(kind: .punct, spelling: "]")
                         arrayDims.append((count: nil, isPointer: false))
                     } else {
                         let sizeExpr = try parseAssignmentExpr()
@@ -778,53 +972,98 @@ public final class Parser {
                     }
                 }
                 _ = try consume(kind: .punct, spelling: ")")
-                // Now parse the function parameters: ( params )
-                // The function return type is the base type (before pointer/array wrapping)
-                let (params, variadic, retType) = try parseFunctionParams(baseTypeForFunc)
-                // Build the function type
-                var funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
-                // Wrap with pointer(s)
-                for _ in 0..<pointerDepth {
-                    funcType = .pointer(to: funcType)
-                }
-                // Wrap with array dimensions (innermost first, so reverse)
-                for dim in arrayDims.reversed() {
-                    if let count = dim.count {
-                        funcType = .array(of: funcType, count: count)
-                    } else {
-                        funcType = .incompleteArray(of: funcType)
+                // After (*name), check what follows:
+                // ( params )  → function pointer: (*name)(int, double)
+                // [ N ]       → pointer to array: char (*p)[4]
+                // otherwise   → plain pointer
+                if isPunct("(") {
+                    // Function pointer: (*name)(params)
+                    let (params, variadic, retType) = try parseFunctionParams(baseTypeForFunc)
+                    var funcType = CType.function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                    // Wrap with pointer(s)
+                    for _ in 0..<pointerDepth {
+                        funcType = .pointer(to: funcType)
                     }
-                }
-                type = funcType
-                // If we had an inner (, consume the matching ) for the outer (
-                if hadInnerParen {
-                    _ = try consume(kind: .punct, spelling: ")")
-                }
-                // Don't return yet — there may be more suffixes (e.g., (void) for
-                // function pointer returning function pointer: void (*(*name)(params))(void))
-                // Fall through to the suffix loop below
-                // Set name and loc for the fall-through
-                let savedName = name
-                let savedLoc = nameLoc
-                // Continue to suffix parsing
-                while isPunct("[") || isPunct("(") {
-                    if isPunct("[") {
-                        advance()
-                        if isPunct("]") {
-                            advance()
-                            type = .incompleteArray(of: type)
+                    // Wrap with array dimensions from inside parens (outermost last)
+                    for dim in arrayDims.reversed() {
+                        if let count = dim.count {
+                            funcType = .array(of: funcType, count: count)
                         } else {
-                            let sizeExpr = try parseAssignmentExpr()
-                            _ = try consume(kind: .punct, spelling: "]")
-                            let size = evalIntConst(sizeExpr)
-                            type = .array(of: type, count: Int(size))
+                            funcType = .incompleteArray(of: funcType)
                         }
-                    } else if isPunct("(") {
-                        let (params2, variadic2, retType2) = try parseFunctionParams(type)
-                        type = .function(params: params2.map { $0.type }, returnType: retType2, variadic: variadic2)
                     }
+                    type = funcType
+                    if hadInnerParen {
+                        _ = try consume(kind: .punct, spelling: ")")
+                    }
+                    // Continue to suffix parsing (e.g., function returning function pointer)
+                    let savedName = name
+                    let savedLoc = nameLoc
+                    while isPunct("[") || isPunct("(") {
+                        if isPunct("[") {
+                            var dims: [Int?] = []
+                            while isPunct("[") {
+                                dims.append(try parseArrayDimension().count)
+                            }
+                            for d in dims.reversed() {
+                                if let c = d { type = .array(of: type, count: c) }
+                                else { type = .incompleteArray(of: type) }
+                            }
+                        } else if isPunct("(") {
+                            let (params2, variadic2, retType2) = try parseFunctionParams(type)
+                            type = .function(params: params2.map { $0.type }, returnType: retType2, variadic: variadic2)
+                        }
+                    }
+                    return (savedName, type, savedLoc)
+                } else {
+                    // Not a function pointer — pointer (possibly to array)
+                    // e.g., char (*p)[4] → p is pointer to array of 4 chars
+                    // Parse array suffixes after )
+                    var suffixDims: [Int?] = []
+                    while isPunct("[") {
+                        suffixDims.append(try parseArrayDimension().count)
+                    }
+                    // Build inner type: apply suffix dims to base type (right-to-left),
+                    // then wrap with pointer(s), then apply inner arrayDims as outer arrays
+                    var innerType = baseTypeForFunc
+                    for d in suffixDims.reversed() {
+                        if let c = d { innerType = .array(of: innerType, count: c) }
+                        else { innerType = .incompleteArray(of: innerType) }
+                    }
+                    for _ in 0..<pointerDepth {
+                        innerType = .pointer(to: innerType)
+                    }
+                    for dim in arrayDims.reversed() {
+                        if let count = dim.count {
+                            innerType = .array(of: innerType, count: count)
+                        } else {
+                            innerType = .incompleteArray(of: innerType)
+                        }
+                    }
+                    type = innerType
+                    if hadInnerParen {
+                        _ = try consume(kind: .punct, spelling: ")")
+                    }
+                    // Parse any more suffixes
+                    let savedName = name
+                    let savedLoc = nameLoc
+                    while isPunct("[") || isPunct("(") {
+                        if isPunct("[") {
+                            var dims2: [Int?] = []
+                            while isPunct("[") {
+                                dims2.append(try parseArrayDimension().count)
+                            }
+                            for d in dims2.reversed() {
+                                if let c = d { type = .array(of: type, count: c) }
+                                else { type = .incompleteArray(of: type) }
+                            }
+                        } else if isPunct("(") {
+                            let (params2, variadic2, retType2) = try parseFunctionParams(type)
+                            type = .function(params: params2.map { $0.type }, returnType: retType2, variadic: variadic2)
+                        }
+                    }
+                    return (savedName, type, savedLoc)
                 }
-                return (savedName, type, savedLoc)
             } else {
                 // Not a function pointer — restore and parse as normal declarator
                 pos = savePos
@@ -841,17 +1080,24 @@ public final class Parser {
         }
 
         // Suffix: array [N] or function (params)
+        // Collect all array dimensions first, then apply right-to-left
         while isPunct("[") || isPunct("(") {
             if isPunct("[") {
-                advance() // [
-                if isPunct("]") {
-                    advance() // ]
-                    type = .incompleteArray(of: type)
-                } else {
-                    let sizeExpr = try parseAssignmentExpr()
-                    _ = try consume(kind: .punct, spelling: "]")
-                    let size = evalIntConst(sizeExpr)
-                    type = .array(of: type, count: Int(size))
+                var dims: [Int?] = []
+                var vlaExprs: [Expr] = []
+                while isPunct("[") {
+                    let dim = try parseArrayDimension()
+                    dims.append(dim.count)
+                    if let vla = dim.vlaExpr {
+                        vlaExprs.append(vla)
+                    }
+                }
+                // VLA expressions: the last one is the outer dimension (stored in pendingVLASizeExprs).
+                // Inner dimensions are stored in reverse order (innermost first).
+                pendingVLASizeExprs = vlaExprs
+                for d in dims.reversed() {
+                    if let c = d { type = .array(of: type, count: c) }
+                    else { type = .incompleteArray(of: type) }
                 }
             } else if isPunct("(") {
                 let (params, variadic, retType) = try parseFunctionParams(type)
@@ -860,6 +1106,59 @@ public final class Parser {
         }
 
         return (name, type, loc)
+    }
+
+    /// Count the number of scalar fields in a struct (recursively).
+    private func countScalarFields(_ rec: RecordType) -> Int {
+        var count = 0
+        for field in rec.fields {
+            let ft = field.type.unqualified
+            if case .structType(let subRec) = ft {
+                count += countScalarFields(subRec)
+            } else if case .array(_, let arrCount) = ft {
+                count += arrCount
+            } else {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    /// Parse a single array dimension `[ ... ]`, skipping type qualifiers
+    /// (const, volatile, restrict, static) that may appear before the size.
+    /// Returns nil for `[]` (incomplete array) or the constant size.
+    private func parseArrayDimension() throws -> (count: Int?, vlaExpr: Expr?) {
+        _ = try consume(kind: .punct, spelling: "[")
+        // Skip qualifiers: static, const, volatile, restrict
+        while isKeyword("const") || isKeyword("volatile") || isKeyword("restrict") ||
+              isKeyword("static") || isKeyword("__restrict") || isKeyword("__restrict__") {
+            advance()
+        }
+        if isPunct("]") {
+            advance()
+            return (nil, nil)
+        }
+        // `[*]` means variable-length array (VLA) — decays to pointer in params
+        if isPunct("*") {
+            advance()
+            _ = try consume(kind: .punct, spelling: "]")
+            return (nil, nil)
+        }
+        // The size expression may be preceded by qualifiers (e.g., `[const 5]`)
+        // — already skipped above. Now parse the size expression.
+        let sizeExpr = try parseAssignmentExpr()
+        _ = try consume(kind: .punct, spelling: "]")
+        // Try to evaluate as constant
+        let constVal = evalIntConst(sizeExpr)
+        if constVal != 0 {
+            return (Int(constVal), nil)
+        }
+        // Check if it's actually constant 0 (valid) or a non-constant expression (VLA)
+        if case .integerLiteral = sizeExpr {
+            return (0, nil)  // [0] is a zero-size array (GCC extension)
+        }
+        // Non-constant expression: VLA
+        return (nil, sizeExpr)
     }
 
     /// Parse function parameters: ( int a, int b, ... )
@@ -873,6 +1172,8 @@ public final class Parser {
         if isKeyword("void") && next().kind == .punct && next().spelling == ")" {
             advance() // void
             _ = try consume(kind: .punct, spelling: ")")
+            lastFuncParams = []
+            lastFuncVariadic = false
             return ([], false, returnType)
         }
 
@@ -917,28 +1218,88 @@ public final class Parser {
         let loc = current().loc
         _ = try consume(kind: .punct, spelling: "{")
         var values: [Expr] = []
+        var designators: [[String]?] = []
 
-        // Handle designators: [index] = val or .field = val
-        while !isPunct("}") && !isAtEnd() {
-            // Skip designators (we just parse the value)
-            if isPunct("[") {
-                // Array designator [index]
-                advance()
-                _ = try parseAssignmentExpr()
-                _ = try consume(kind: .punct, spelling: "]")
-                _ = match(kind: .punct, spelling: "=")
-            } else if isPunct(".") {
-                // Field designator .field
-                advance()
-                _ = try consume(kind: .identifier)
-                _ = match(kind: .punct, spelling: "=")
+        // Handle designators: [index] = val, [start ... end] = val, .field = val,
+        // and nested designators like .a.j = 5 or [0].b = 3
+        outerLoop: while !isPunct("}") && !isAtEnd() {
+            // Parse designators (may be multiple: .a.j, [0].b, etc.)
+            var hasRangeDesignator = false
+            var singleArrayIndex: Int? = nil  // [index] = value (non-range)
+            var fieldDesignators: [String] = []  // e.g., ["a", "j"] for .a.j
+            while isPunct("[") || isPunct(".") {
+                if isPunct("[") {
+                    // Array designator [index] or [start ... end]
+                    advance()
+                    let startExpr = try parseAssignmentExpr()
+                    if isPunct("...") {
+                        advance()
+                        let endExpr = try parseAssignmentExpr()
+                        _ = try consume(kind: .punct, spelling: "]")
+                        _ = match(kind: .punct, spelling: "=")
+                        let rangeStart = Int(evalIntConst(startExpr))
+                        let rangeEnd = Int(evalIntConst(endExpr))
+                        if isPunct("{") {
+                            let val = try parseInitList()
+                            // Expand values array to fit range
+                            while values.count <= rangeEnd {
+                                values.append(.integerLiteral(IntegerLiteral(value: 0, type: .int, loc: loc)))
+                                designators.append(nil)
+                            }
+                            for i in rangeStart...rangeEnd {
+                                values[i] = val
+                                designators[i] = nil
+                            }
+                        } else {
+                            let val = try parseAssignmentExpr()
+                            while values.count <= rangeEnd {
+                                values.append(.integerLiteral(IntegerLiteral(value: 0, type: .int, loc: loc)))
+                                designators.append(nil)
+                            }
+                            for i in rangeStart...rangeEnd {
+                                values[i] = val
+                                designators[i] = nil
+                            }
+                        }
+                        hasRangeDesignator = true
+                        if !match(kind: .punct, spelling: ",") {
+                            break
+                        }
+                        continue outerLoop
+                    }
+                    _ = try consume(kind: .punct, spelling: "]")
+                    // Single [index] designator
+                    singleArrayIndex = Int(evalIntConst(startExpr))
+                } else if isPunct(".") {
+                    // Field designator .field
+                    advance()
+                    let fieldName = try consume(kind: .identifier).spelling
+                    fieldDesignators.append(fieldName)
+                }
             }
+            if hasRangeDesignator {
+                continue
+            }
+            _ = match(kind: .punct, spelling: "=")
 
             // Value can be a nested init list or an expression
+            let val: Expr
             if isPunct("{") {
-                values.append(try parseInitList())
+                val = try parseInitList()
             } else {
-                values.append(try parseAssignmentExpr())
+                val = try parseAssignmentExpr()
+            }
+            if let idx = singleArrayIndex {
+                // Place value at specified index, expanding with zeros if needed
+                while values.count <= idx {
+                    values.append(.integerLiteral(IntegerLiteral(value: 0, type: .int, loc: loc)))
+                    designators.append(nil)
+                }
+                values[idx] = val
+                designators[idx] = fieldDesignators.isEmpty ? nil : fieldDesignators
+            } else {
+                values.append(val)
+                designators.append(fieldDesignators.isEmpty ? nil : fieldDesignators)
             }
 
             if !match(kind: .punct, spelling: ",") {
@@ -946,7 +1307,7 @@ public final class Parser {
             }
         }
         _ = try consume(kind: .punct, spelling: "}")
-        return .initList(InitListExpr(values: values, loc: loc))
+        return .initList(InitListExpr(values: values, designators: designators, loc: loc))
     }
 
     // MARK: - Statements
@@ -1050,6 +1411,13 @@ public final class Parser {
 
         repeat {
             let (name, type, dloc) = try parseDeclarator(baseType)
+            // Collect VLA size expressions: outer dimension + inner dimensions
+            // vlaExprs is in parse order (left to right): [outer_dim, inner_dim1, ...]
+            // The outer dimension is first, inner dimensions follow.
+            let vlaExprs = pendingVLASizeExprs
+            pendingVLASizeExprs = []
+            let vlaExpr = vlaExprs.first  // outer dimension (first parsed)
+            let vlaInnerExprs = vlaExprs.count > 1 ? Array(vlaExprs.dropFirst()) : []
             var initExpr: Expr? = nil
             var actualType = type
             if match(kind: .punct, spelling: "=") {
@@ -1065,7 +1433,8 @@ public final class Parser {
                 }
             }
             decls.append(.varDecl(VarDecl(name: name, type: actualType, initializer: initExpr,
-                                          storageClass: storageClass, isGlobal: false, loc: dloc)))
+                                          storageClass: storageClass, isGlobal: false, loc: dloc,
+                                          vlaSizeExpr: vlaExpr, vlaInnerSizeExprs: vlaInnerExprs)))
         } while match(kind: .punct, spelling: ",")
 
         _ = try consume(kind: .punct, spelling: ";")
@@ -1294,11 +1663,13 @@ public final class Parser {
     private func parseCastExpr() throws -> Expr {
         // Cast: ( type-name ) unary-expr
         // Need to distinguish from parenthesized expression: ( expr )
-        // Heuristic: if the token after ( is a type keyword or a typedef name, it's a cast.
+        // Also handle ( __attribute__((...)) type-name ) expr
         if isPunct("(") {
             let nextTok = next()
-            if nextTok.kind == .keyword && isTypeKeyword(nextTok.spelling) ||
-               (nextTok.kind == .identifier && typedefNames.contains(nextTok.spelling)) {
+            let isCastStart = (nextTok.kind == .keyword && isTypeKeyword(nextTok.spelling)) ||
+                  (nextTok.kind == .keyword && (nextTok.spelling == "__attribute__" || nextTok.spelling == "__attribute")) ||
+                  (nextTok.kind == .identifier && typedefNames.contains(nextTok.spelling))
+            if isCastStart {
                 // Parse as cast
                 let savePos = pos
                 advance() // (
@@ -1308,7 +1679,13 @@ public final class Parser {
                 // Compound literal: (type) { init-list }
                 if isPunct("{") {
                     let initList = try parseInitList()
-                    return .compoundLiteral(CompoundLiteralExpr(type: castType, initList: initList, loc: current().loc))
+                    var resolvedType = castType
+                    // Infer array size from init list for incomplete arrays
+                    if case .incompleteArray(let elem) = castType.unqualified,
+                       case .initList(let il) = initList {
+                        resolvedType = .array(of: elem, count: il.values.count)
+                    }
+                    return .compoundLiteral(CompoundLiteralExpr(type: resolvedType, initList: initList, loc: current().loc))
                 }
                 let operand = try parseCastExpr()
                 return .cast(CastExpr(type: castType, expr: operand, loc: current().loc))
@@ -1321,7 +1698,7 @@ public final class Parser {
     private func isTypeKeyword(_ s: String) -> Bool {
         return ["void", "char", "short", "int", "long", "float", "double",
                 "signed", "unsigned", "const", "volatile", "struct", "union",
-                "enum", "_Bool", "restrict"].contains(s)
+                "enum", "_Bool", "restrict", "_Complex", "_Imaginary"].contains(s)
     }
 
     private func parseUnaryExpr() throws -> Expr {
@@ -1363,6 +1740,59 @@ public final class Parser {
             // sizeof expr
             let e = try parseUnaryExpr()
             return .sizeof(SizeofExpr(expr: e, typeName: nil, loc: loc))
+        }
+
+        // _Generic(expr, type: expr, ..., default: expr)
+        if isKeyword("_Generic") {
+            let loc = advance().loc
+            _ = try consume(kind: .punct, spelling: "(")
+            let controllingExpr = try parseAssignmentExpr()
+            _ = try consume(kind: .punct, spelling: ",")
+            var associations: [GenericAssociation] = []
+            while !isPunct(")") && !isAtEnd() {
+                var typeName: CType? = nil
+                var isDefault = false
+                if isKeyword("default") {
+                    advance()
+                    isDefault = true
+                } else {
+                    let (baseType, _, _, _) = try parseDeclSpecifiers()
+                    let (_, t, _) = try parseDeclarator(baseType)
+                    typeName = t
+                }
+                _ = try consume(kind: .punct, spelling: ":")
+                let e = try parseAssignmentExpr()
+                associations.append(GenericAssociation(typeName: typeName, isDefault: isDefault, expr: e))
+                if !match(kind: .punct, spelling: ",") {
+                    break
+                }
+            }
+            _ = try consume(kind: .punct, spelling: ")")
+            let ge = Expr.genericExpr(GenericExpr(controllingExpr: controllingExpr, associations: associations, loc: loc))
+            // Fall through to parsePostfixExpr for () and [] suffixes
+            var expr = ge
+            while true {
+                if isPunct("(") {
+                    let callLoc = advance().loc
+                    var args: [Expr] = []
+                    if !isPunct(")") {
+                        args.append(try parseAssignmentExpr())
+                        while match(kind: .punct, spelling: ",") {
+                            args.append(try parseAssignmentExpr())
+                        }
+                    }
+                    _ = try consume(kind: .punct, spelling: ")")
+                    expr = .call(CallExpr(function: expr, arguments: args, loc: callLoc))
+                } else if isPunct("[") {
+                    let subLoc = advance().loc
+                    let index = try parseExpr()
+                    _ = try consume(kind: .punct, spelling: "]")
+                    expr = .subscript_(SubscriptExpr(base: expr, index: index, loc: subLoc))
+                } else {
+                    break
+                }
+            }
+            return expr
         }
 
         return try parsePostfixExpr()
@@ -1410,6 +1840,12 @@ public final class Parser {
     private func parsePrimaryExpr() throws -> Expr {
         let token = current()
 
+        // Skip __extension__ in expression context
+        if token.kind == .keyword && (token.spelling == "__extension__" || token.spelling == "__typeof" || token.spelling == "__typeof__") {
+            advance()
+            return try parsePrimaryExpr()
+        }
+
         switch token.kind {
         case .integerLiteral:
             advance()
@@ -1419,8 +1855,14 @@ public final class Parser {
         case .floatLiteral:
             advance()
             let val = parseDoubleLiteral(token.spelling)
-            let type: CType = token.spelling.hasSuffix("f") || token.spelling.hasSuffix("F") ? .float : .double
-            return .floatLiteral(FloatLiteral(value: val, type: type, loc: token.loc))
+            // Determine type: f/F suffix = float, i/I/j/J suffix = imaginary (treat as double for now)
+            let isFloat = token.spelling.hasSuffix("f") || token.spelling.hasSuffix("F")
+            let isImaginary = token.spelling.hasSuffix("i") || token.spelling.hasSuffix("I") ||
+                              token.spelling.hasSuffix("j") || token.spelling.hasSuffix("J") ||
+                              token.spelling.hasSuffix("fi") || token.spelling.hasSuffix("Fi") ||
+                              token.spelling.hasSuffix("li") || token.spelling.hasSuffix("Li")
+            let type: CType = isFloat ? .float : .double
+            return .floatLiteral(FloatLiteral(value: val, type: type, isImaginary: isImaginary, loc: token.loc))
 
         case .charLiteral:
             advance()
@@ -1428,7 +1870,66 @@ public final class Parser {
             return .charLiteral(CharLiteral(value: val, type: .int, loc: token.loc))
 
         case .stringLiteral:
-            // Concatenate adjacent string literals
+            // Check for wide string prefix L"..."
+            let isWide = token.spelling.hasPrefix("L")
+            if isWide {
+                // For wide strings, extract raw content between quotes and decode UTF-8
+                // Don't process C escape sequences (except standard ones)
+                var rawContent = token.spelling
+                // Strip L prefix
+                if rawContent.hasPrefix("L") { rawContent = String(rawContent.dropFirst()) }
+                // Strip quotes
+                if rawContent.hasPrefix("\"") && rawContent.hasSuffix("\"") {
+                    rawContent = String(rawContent.dropFirst().dropLast())
+                }
+                // Process standard escape sequences but preserve UTF-8 multibyte chars
+                var processed = ""
+                var i = rawContent.startIndex
+                while i < rawContent.endIndex {
+                    if rawContent[i] == "\\" && rawContent.index(after: i) < rawContent.endIndex {
+                        let next = rawContent[rawContent.index(after: i)]
+                        switch next {
+                        case "n": processed += "\n"
+                        case "t": processed += "\t"
+                        case "r": processed += "\r"
+                        case "\\": processed += "\\"
+                        case "'": processed += "'"
+                        case "\"": processed += "\""
+                        case "0": processed += "\0"
+                        default: processed += "\\"
+                        processed.append(next)
+                        }
+                        i = rawContent.index(i, offsetBy: 2)
+                    } else {
+                        processed.append(rawContent[i])
+                        i = rawContent.index(after: i)
+                    }
+                }
+                advance()
+                // Concatenate adjacent wide string literals
+                while current().kind == .stringLiteral {
+                    var nextRaw = current().spelling
+                    if nextRaw.hasPrefix("L") { nextRaw = String(nextRaw.dropFirst()) }
+                    if nextRaw.hasPrefix("\"") && nextRaw.hasSuffix("\"") {
+                        nextRaw = String(nextRaw.dropFirst().dropLast())
+                    }
+                    processed += nextRaw
+                    advance()
+                }
+                // Decode UTF-8 into Unicode code points
+                var codePoints: [UInt32] = []
+                for scalar in processed.unicodeScalars {
+                    codePoints.append(scalar.value)
+                }
+                codePoints.append(0) // null terminator
+                let type = CType.array(of: .int, count: codePoints.count)
+                var wideStr = ""
+                for cp in codePoints {
+                    wideStr += String(format: "%08x", cp)
+                }
+                return .stringLiteral(StringLiteral(value: "WIDE:" + wideStr, type: type, loc: token.loc))
+            }
+            // Regular string: concatenate adjacent string literals
             var str = parseStringLiteralValue(token.spelling)
             advance()
             while current().kind == .stringLiteral {
@@ -1439,11 +1940,37 @@ public final class Parser {
             return .stringLiteral(StringLiteral(value: str, type: type, loc: token.loc))
 
         case .identifier:
+            // __func__ predefined identifier: expands to a string literal with the function name
+            if token.spelling == "__func__" || token.spelling == "__FUNCTION__" {
+                advance()
+                let funcName = currentFuncName ?? ""
+                let type = CType.array(of: .char, count: funcName.utf8.count + 1)
+                return .stringLiteral(StringLiteral(value: funcName, type: type, loc: token.loc))
+            }
             advance()
             return .identifier(Identifier(name: token.spelling, loc: token.loc))
 
         case .punct:
             if isPunct("(") {
+                // Statement expression: ({ ... })
+                if next().kind == .punct && next().spelling == "{" {
+                    advance() // (
+                    let stmts = try parseCompoundStmt()
+                    _ = try consume(kind: .punct, spelling: ")")
+                    return .stmtExpr(StmtExpr(body: stmts, loc: token.loc))
+                }
+                // Check for cast: ( type-name ) ... or ( __attribute__ ... type ) ...
+                let nextTok = next()
+                let isCastStart = (nextTok.kind == .keyword && isTypeKeyword(nextTok.spelling)) ||
+                  (nextTok.kind == .keyword && (nextTok.spelling == "__attribute__" || nextTok.spelling == "__attribute")) ||
+                  (nextTok.kind == .identifier && typedefNames.contains(nextTok.spelling))
+                if isCastStart {
+                    // Try to parse as cast via parseCastExpr
+                    if let castExpr = try? parseCastExpr() {
+                        return castExpr
+                    }
+                }
+                // Regular parenthesized expression
                 advance() // (
                 let e = try parseExpr()
                 _ = try consume(kind: .punct, spelling: ")")
@@ -1477,13 +2004,30 @@ public final class Parser {
 
         let value: Int64
         if s.hasPrefix("0x") || s.hasPrefix("0X") {
-            value = Int64(s.dropFirst(2), radix: 16) ?? 0
+            // Parse as UInt64 to handle values > Int64.max, then reinterpret
+            if let uv = UInt64(s.dropFirst(2), radix: 16) {
+                value = Int64(bitPattern: uv)
+            } else {
+                value = 0
+            }
         } else if s.hasPrefix("0b") || s.hasPrefix("0B") {
-            value = Int64(s.dropFirst(2), radix: 2) ?? 0
+            if let uv = UInt64(s.dropFirst(2), radix: 2) {
+                value = Int64(bitPattern: uv)
+            } else {
+                value = 0
+            }
         } else if s.hasPrefix("0") && s.count > 1 {
-            value = Int64(s.dropFirst(), radix: 8) ?? 0
+            if let uv = UInt64(s.dropFirst(), radix: 8) {
+                value = Int64(bitPattern: uv)
+            } else {
+                value = 0
+            }
         } else {
-            value = Int64(s) ?? 0
+            if let uv = UInt64(s) {
+                value = Int64(bitPattern: uv)
+            } else {
+                value = Int64(s) ?? 0
+            }
         }
 
         let type: CType
@@ -1496,7 +2040,15 @@ public final class Parser {
 
     private func parseDoubleLiteral(_ spelling: String) -> Double {
         var s = spelling
+        // Strip imaginary suffix first (i, I, j, J), possibly combined with f/l
+        if s.hasSuffix("i") || s.hasSuffix("I") || s.hasSuffix("j") || s.hasSuffix("J") {
+            s = String(s.dropLast())
+        }
         if s.hasSuffix("f") || s.hasSuffix("F") || s.hasSuffix("l") || s.hasSuffix("L") {
+            s = String(s.dropLast())
+        }
+        // May have another imaginary suffix after f/l (e.g., "1.0fi")
+        if s.hasSuffix("i") || s.hasSuffix("I") || s.hasSuffix("j") || s.hasSuffix("J") {
             s = String(s.dropLast())
         }
         return Double(s) ?? 0.0
@@ -1617,6 +2169,12 @@ public final class Parser {
             return l.value
         case .charLiteral(let l):
             return Int64(l.value)
+        case .identifier(let id):
+            // Look up enum constants
+            if let val = parserEnumConstants[id.name] {
+                return val
+            }
+            return 0
         case .binary(let b):
             let l = evalIntConst(b.left)
             let r = evalIntConst(b.right)

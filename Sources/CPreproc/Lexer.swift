@@ -25,6 +25,7 @@ public final class Lexer {
     private let fileId: Int
     private var pos: Int
     private var tokens: [Token] = []
+    private var pendingSpace = false
 
     public init(_ bytes: [UInt8], fileId: Int, startOffset: Int = 0) {
         self.bytes = bytes
@@ -40,29 +41,34 @@ public final class Lexer {
             // Line continuation: backslash-newline → skip both
             if b == 0x5C && pos + 1 < bytes.count && bytes[pos + 1] == 0x0A {
                 pos += 2
+                pendingSpace = true
                 continue
             }
             // Also handle \r\n
             if b == 0x5C && pos + 2 < bytes.count && bytes[pos + 1] == 0x0D && bytes[pos + 2] == 0x0A {
                 pos += 3
+                pendingSpace = true
                 continue
             }
 
             // Skip whitespace
             if isWhitespace(b) {
                 pos += 1
+                pendingSpace = true
                 continue
             }
 
             // Skip line comment
             if b == 0x2F && pos + 1 < bytes.count && bytes[pos + 1] == 0x2F { // //
                 skipLineComment()
+                pendingSpace = true
                 continue
             }
 
             // Skip block comment
             if b == 0x2F && pos + 1 < bytes.count && bytes[pos + 1] == 0x2A { // /*
                 skipBlockComment()
+                pendingSpace = true
                 continue
             }
 
@@ -108,11 +114,17 @@ public final class Lexer {
             lexPunctuator()
         }
 
-        tokens.append(Token(kind: .eof, spelling: "", loc: SourceLoc(fileId: fileId, offset: pos)))
+        tokens.append(Token(kind: .eof, spelling: "", loc: SourceLoc(fileId: fileId, offset: pos), hasLeadingSpace: pendingSpace))
         return tokens
     }
 
     // MARK: - Helpers
+
+    private func consumeSpace() -> Bool {
+        let s = pendingSpace
+        pendingSpace = false
+        return s
+    }
 
     private func currentLoc() -> SourceLoc {
         return SourceLoc(fileId: fileId, offset: pos)
@@ -173,7 +185,7 @@ public final class Lexer {
         }
         let spelling = bytesToString(start, pos)
         let kind: TokenKind = cKeywords.contains(spelling) ? .keyword : .identifier
-        tokens.append(Token(kind: kind, spelling: spelling, loc: SourceLoc(fileId: fileId, offset: start)))
+        tokens.append(Token(kind: kind, spelling: spelling, loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
     }
 
     // MARK: - Number (integer or float)
@@ -197,7 +209,7 @@ public final class Lexer {
                 }
                 lexIntegerSuffix()
                 tokens.append(Token(kind: .integerLiteral, spelling: bytesToString(start, pos),
-                                    loc: SourceLoc(fileId: fileId, offset: start)))
+                                    loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
                 return
             }
         }
@@ -234,18 +246,25 @@ public final class Lexer {
         }
 
         if isFloat {
-            // Float suffix
+            // Float suffix: f F l L, and imaginary suffix: i I j J (C99/GNU)
             if pos < bytes.count && (bytes[pos] == 0x66 || bytes[pos] == 0x46 || bytes[pos] == 0x6C || bytes[pos] == 0x4C) {
                 // f F l L
                 pos += 1
+                // Optional imaginary suffix after f/l: fi, Fi, li, Li, etc.
+                if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
+                    pos += 1
+                }
+            } else if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
+                // i I j J — imaginary suffix
+                pos += 1
             }
             tokens.append(Token(kind: .floatLiteral, spelling: bytesToString(start, pos),
-                                loc: SourceLoc(fileId: fileId, offset: start)))
+                                loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
         } else {
             // Integer suffix
             lexIntegerSuffix()
             tokens.append(Token(kind: .integerLiteral, spelling: bytesToString(start, pos),
-                                loc: SourceLoc(fileId: fileId, offset: start)))
+                                loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
         }
     }
 
@@ -280,17 +299,25 @@ public final class Lexer {
         }
 
         if isFloat {
-            // Float suffix
+            // Float suffix: f F l L, and imaginary suffix: i I j J (C99/GNU)
             if pos < bytes.count && (bytes[pos] == 0x66 || bytes[pos] == 0x46 || bytes[pos] == 0x6C || bytes[pos] == 0x4C) {
+                // f F l L
+                pos += 1
+                // Optional imaginary suffix after f/l: fi, Fi, li, Li, etc.
+                if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
+                    pos += 1
+                }
+            } else if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
+                // i I j J — imaginary suffix
                 pos += 1
             }
             tokens.append(Token(kind: .floatLiteral, spelling: bytesToString(start, pos),
-                                loc: SourceLoc(fileId: fileId, offset: start)))
+                                loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
         } else {
             // Integer suffix
             lexIntegerSuffix()
             tokens.append(Token(kind: .integerLiteral, spelling: bytesToString(start, pos),
-                                loc: SourceLoc(fileId: fileId, offset: start)))
+                                loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
         }
     }
 
@@ -337,7 +364,7 @@ public final class Lexer {
             pos += 1
         }
         tokens.append(Token(kind: .charLiteral, spelling: bytesToString(start, pos),
-                            loc: SourceLoc(fileId: fileId, offset: start)))
+                            loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
     }
 
     // MARK: - String literal
@@ -365,7 +392,7 @@ public final class Lexer {
             pos += 1
         }
         tokens.append(Token(kind: .stringLiteral, spelling: bytesToString(start, pos),
-                            loc: SourceLoc(fileId: fileId, offset: start)))
+                            loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
     }
 
     // MARK: - Punctuator
@@ -388,7 +415,7 @@ public final class Lexer {
             if Lexer.multiCharPuncts.contains(three) {
                 pos += 3
                 tokens.append(Token(kind: .punct, spelling: three,
-                                    loc: SourceLoc(fileId: fileId, offset: start)))
+                                    loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
                 return
             }
         }
@@ -397,7 +424,7 @@ public final class Lexer {
             if Lexer.multiCharPuncts.contains(two) {
                 pos += 2
                 tokens.append(Token(kind: .punct, spelling: two,
-                                    loc: SourceLoc(fileId: fileId, offset: start)))
+                                    loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
                 return
             }
         }
@@ -406,7 +433,7 @@ public final class Lexer {
         let ch = bytesToString(pos, pos + 1)
         pos += 1
         tokens.append(Token(kind: .punct, spelling: ch,
-                            loc: SourceLoc(fileId: fileId, offset: start)))
+                            loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
     }
 
     // MARK: - Utility

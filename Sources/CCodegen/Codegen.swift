@@ -18,6 +18,9 @@ public final class Codegen {
     private var regAlloc = RegAlloc()
     private var currentFuncName = ""
     private var localVarTypes: [String: CType] = [:]
+    private var vlaBasePointers: Set<String> = []  // local vars that are VLA base pointers
+    private var vlaInnerDims: [String: [String]] = [:]  // VLA name → inner dimension local var names (excludes outer)
+    private var vlaAllDims: [String: [String]] = [:]   // VLA name → ALL dimension local var names (outer first, for sizeof)
     private var globalVarTypes: [String: CType] = [:]
     private var knownRecords: [String: RecordType] = [:]
     private var functionNames: Set<String> = []   // names of all declared functions
@@ -49,7 +52,22 @@ public final class Codegen {
         for d in decls {
             if case .varDecl(let vd) = d {
                 globalLabels.insert(vd.name)
-                globalVarTypes[vd.name] = vd.type
+                var varType = vd.type
+                // If it's an incomplete array with an initializer, compute the element count
+                if case .incompleteArray(let elemType) = varType.unqualified, let init_ = vd.initializer {
+                    if case .initList(let il) = init_ {
+                        if case .structType(let rec) = elemType.unqualified {
+                            // Array of structs: count = total values / values per struct
+                            let fieldsPerStruct = countScalarFields(rec)
+                            let count = (il.values.count + fieldsPerStruct - 1) / max(fieldsPerStruct, 1)
+                            varType = .array(of: elemType, count: count)
+                        } else {
+                            // Array of scalars: count = number of values
+                            varType = .array(of: elemType, count: il.values.count)
+                        }
+                    }
+                }
+                globalVarTypes[vd.name] = varType
                 if vd.storageClass == .extern && vd.initializer == nil {
                     externGlobals.insert(vd.name)
                 } else {
@@ -199,6 +217,15 @@ public final class Codegen {
                     emitInitializer(expr, size: size, type: base)
                 case .typedef(_, let base):
                     emitInitializer(expr, size: size, type: base)
+                case .structType(let rec), .unionType(let rec):
+                    // Emit based on struct/union size
+                    let s = rec.size ?? size
+                    switch s {
+                    case 1: emitLine(".byte \(l.value & 0xFF)")
+                    case 2: emitLine(".short \(l.value & 0xFFFF)")
+                    case 3, 4: emitLine(".long \(l.value & 0xFFFFFFFF)")
+                    default: emitLine(".quad \(l.value)")
+                    }
                 default:
                     emitLine(".quad \(l.value)")
                 }
@@ -225,29 +252,179 @@ public final class Codegen {
                     let fields = rec.fields
                     var currentOffset = 0
                     var valueIdx = 0
+                    // Build designator map for designated initializers
+                    // (multiple designators can target the same struct field, e.g. .inner.x and .inner.y)
+                    var designatedFields: [String: [Int]] = [:]
+                    for (vi, desig) in il.designators.enumerated() {
+                        if let names = desig, let firstName = names.first {
+                            designatedFields[firstName, default: []].append(vi)
+                        }
+                    }
+                    let hasDesignators = !designatedFields.isEmpty
                     for field in fields {
                         let fieldOffset = field.offset
+                        let fieldName = field.name ?? ""
+                        // Handle designated initializers
+                        if hasDesignators {
+                            var designatedIndices: [Int] = []
+                            if !fieldName.isEmpty, let indices = designatedFields[fieldName] {
+                                designatedIndices = indices
+                            } else if fieldName.isEmpty {
+                                for (vi, desig) in il.designators.enumerated() {
+                                    if let names = desig, let firstName = names.first {
+                                        if fieldHasMember(field.type, firstName) {
+                                            designatedIndices.append(vi)
+                                        }
+                                    }
+                                }
+                            }
+                            if !designatedIndices.isEmpty {
+                                for idx in designatedIndices {
+                                // Emit padding before this field
+                                if fieldOffset > currentOffset {
+                                    emitLine(".zero \(fieldOffset - currentOffset)")
+                                }
+                                let v = il.values[idx]
+                                let fieldType = field.type.unqualified
+                                let nestedNames: [String] = {
+                                    if let names = il.designators[idx] {
+                                        return Array(names.dropFirst())
+                                    }
+                                    return []
+                                }()
+                                if !nestedNames.isEmpty {
+                                    // Nested designator: compute offset and emit scalar
+                                    var nestedType = field.type
+                                    var nestedOffset = 0
+                                    for name in nestedNames {
+                                        if case .structType(let r) = nestedType.unqualified {
+                                            for nf in r.fields {
+                                                if (nf.name ?? "") == name || ((nf.name ?? "").isEmpty && fieldHasMember(nf.type, name)) {
+                                                    nestedOffset += nf.offset
+                                                    nestedType = nf.type
+                                                    break
+                                                }
+                                            }
+                                        } else if case .unionType(let r) = nestedType.unqualified {
+                                            for nf in r.fields {
+                                                if (nf.name ?? "") == name || ((nf.name ?? "").isEmpty && fieldHasMember(nf.type, name)) {
+                                                    nestedOffset += nf.offset
+                                                    nestedType = nf.type
+                                                    break
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Emit padding for nested offset
+                                    if nestedOffset > 0 {
+                                        emitLine(".zero \(nestedOffset)")
+                                    }
+                                    emitInitializer(v, size: nestedType.sizeInBytes ?? 8, type: nestedType)
+                                    let fieldTotalSize = field.type.sizeInBytes ?? 0
+                                    let emitted = nestedOffset + (nestedType.sizeInBytes ?? 0)
+                                    if fieldTotalSize > emitted {
+                                        emitLine(".zero \(fieldTotalSize - emitted)")
+                                    }
+                                } else if case .initList = v {
+                                    emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                } else if case .compoundLiteral(let cl) = v {
+                                    emitInitializer(cl.initList, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                } else {
+                                    emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                }
+                                currentOffset = fieldOffset + (field.type.sizeInBytes ?? 0)
+                                } // end for idx in designatedIndices
+                                continue
+                            }
+                            // No designator for this field — emit zeros
+                            if fieldOffset > currentOffset {
+                                emitLine(".zero \(fieldOffset - currentOffset)")
+                            }
+                            let fieldSize = field.type.sizeInBytes ?? 0
+                            if fieldSize > 0 {
+                                emitLine(".zero \(fieldSize)")
+                            }
+                            currentOffset = fieldOffset + fieldSize
+                            continue
+                        }
                         // Emit padding before this field if needed
                         if fieldOffset > currentOffset {
                             emitLine(".zero \(fieldOffset - currentOffset)")
                         }
                         let fieldType = field.type.unqualified
+                        let fieldSize = field.type.sizeInBytes ?? 0
+                        if fieldSize == 0 {
+                            // Empty struct field: consume the value but emit nothing
+                            if valueIdx < il.values.count {
+                                valueIdx += 1
+                            }
+                            currentOffset = fieldOffset
+                            continue
+                        }
                         if case .array(let elemType, let count) = fieldType {
-                            // Array field: consume values for array elements
-                            for _ in 0..<count {
-                                if valueIdx < il.values.count {
-                                    emitInitializer(il.values[valueIdx], size: elemType.sizeInBytes ?? 8, type: elemType)
-                                    valueIdx += 1
+                            // Check if the current value is a string literal for a char array
+                            if valueIdx < il.values.count, elemType.isChar,
+                               case .stringLiteral(let sl) = il.values[valueIdx] {
+                                // Emit string literal inline for char array
+                                valueIdx += 1
+                                let bytes = sl.value
+                                if bytes.count <= count {
+                                    emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
+                                    let emitted = bytes.count + 1
+                                    if count > emitted {
+                                        emitLine(".zero \(count - emitted)")
+                                    }
                                 } else {
-                                    emitLine(".zero \(elemType.sizeInBytes ?? 8)")
+                                    emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
+                                }
+                            } else if valueIdx < il.values.count, case .initList(let subIl) = il.values[valueIdx] {
+                                // Nested init list for array field
+                                valueIdx += 1
+                                var emitted = 0
+                                for subV in subIl.values {
+                                    emitInitializer(subV, size: elemType.sizeInBytes ?? 8, type: elemType)
+                                    emitted += 1
+                                }
+                                if emitted < count {
+                                    emitLine(".zero \((count - emitted) * (elemType.sizeInBytes ?? 8))")
+                                }
+                            } else {
+                                // Array field: consume values for array elements
+                                for _ in 0..<count {
+                                    if valueIdx < il.values.count {
+                                        emitInitializer(il.values[valueIdx], size: elemType.sizeInBytes ?? 8, type: elemType)
+                                        valueIdx += 1
+                                    } else {
+                                        emitLine(".zero \(elemType.sizeInBytes ?? 8)")
+                                    }
                                 }
                             }
                             currentOffset = fieldOffset + (field.type.sizeInBytes ?? count * (elemType.sizeInBytes ?? 8))
                         } else {
-                            // Scalar or struct field: consume one value
+                            // Scalar, struct, or other non-array field: consume one value
                             if valueIdx < il.values.count {
-                                emitInitializer(il.values[valueIdx], size: field.type.sizeInBytes ?? 8, type: field.type)
-                                valueIdx += 1
+                                let v = il.values[valueIdx]
+                                if case .initList = v {
+                                    // Nested init list for this field — recurse
+                                    valueIdx += 1
+                                    emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                } else if case .compoundLiteral = v {
+                                    // Compound literal — emit its init list
+                                    valueIdx += 1
+                                    if case .compoundLiteral(let cl) = v {
+                                        emitInitializer(cl.initList, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                    }
+                                } else if case .structType(let subRec) = fieldType {
+                                    // Flat init for a struct field: consume values for sub-fields
+                                    emitFlatStructInit(il.values, idx: &valueIdx, rec: subRec)
+                                } else if case .stringLiteral = v, field.type.sizeInBytes ?? 0 > 0 {
+                                    // String literal for a field (e.g., char array or char field)
+                                    valueIdx += 1
+                                    emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                } else {
+                                    valueIdx += 1
+                                    emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                }
                             } else {
                                 emitLine(".zero \(field.type.sizeInBytes ?? 8)")
                             }
@@ -259,21 +436,97 @@ public final class Codegen {
                     if totalSize > currentOffset {
                         emitLine(".zero \(totalSize - currentOffset)")
                     }
+                } else if case .unionType(let rec) = t {
+                    // Union initializer: initialize the first field (or first named field)
+                    // Check for field designators (e.g., .b = 8, .a = 7 for anonymous struct member)
+                    var hasFieldDesignators = false
+                    for desig in il.designators {
+                        if desig != nil { hasFieldDesignators = true; break }
+                    }
+                    if hasFieldDesignators, let firstField = rec.fields.first {
+                        // Designated init for a union: designators refer to the first
+                        // (anonymous) struct member's fields. Create a synthetic initList
+                        // with the designators and recurse into the struct type.
+                        let syntheticIl = Expr.initList(InitListExpr(values: il.values, designators: il.designators, loc: il.loc))
+                        emitInitializer(syntheticIl, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                    } else if let firstField = rec.fields.first {
+                        if il.values.count > 0 {
+                            let v = il.values[0]
+                            if case .initList = v {
+                                // Nested init list for the first field
+                                emitInitializer(v, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                            } else if case .compoundLiteral(let cl) = v {
+                                emitInitializer(cl.initList, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                            } else if case .array = firstField.type.unqualified {
+                                // First field is an array: treat the entire initList as
+                                // the array initializer (not just values[0])
+                                emitInitializer(expr, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                            } else {
+                                // Scalar value for the first field
+                                emitInitializer(v, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                            }
+                        }
+                        // Pad to union size
+                        let emitted = firstField.type.sizeInBytes ?? 0
+                        let totalUSize = rec.size ?? emitted
+                        if totalUSize > emitted {
+                            emitLine(".zero \(totalUSize - emitted)")
+                        }
+                    }
                 } else if case .array(let elemType, let count) = t {
                     // Array initializer: use element type
-                    var emitted = 0
-                    for v in il.values {
-                        emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
-                        emitted += 1
+                    if case .structType(let subRec) = elemType.unqualified {
+                        // Flat init for array of structs: consume values per struct element
+                        var valueIdx = 0
+                        var emitted = 0
+                        while valueIdx < il.values.count && emitted < count {
+                            let v = il.values[valueIdx]
+                            if case .initList = v {
+                                // Brace-enclosed init for one element
+                                valueIdx += 1
+                                emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
+                            } else if case .compoundLiteral(let cl) = v {
+                                valueIdx += 1
+                                emitInitializer(cl.initList, size: elemType.sizeInBytes ?? 8, type: elemType)
+                            } else {
+                                // Flat init: consume values for one struct element
+                                emitFlatStructInit(il.values, idx: &valueIdx, rec: subRec)
+                            }
+                            emitted += 1
+                        }
+                        // Fill remaining elements with zero
+                        if emitted < count {
+                            emitLine(".zero \((count - emitted) * (elemType.sizeInBytes ?? 8))")
+                        }
+                    } else {
+                        var emitted = 0
+                        for v in il.values {
+                            emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
+                            emitted += 1
+                        }
+                        if emitted < count {
+                            emitLine(".zero \((count - emitted) * (elemType.sizeInBytes ?? 8))")
+                        }
                     }
-                    // Fill remaining elements with zero
-                    if emitted < count {
-                        let remaining = count - emitted
-                        emitLine(".zero \(remaining * (elemType.sizeInBytes ?? 8))")
+                } else if case .incompleteArray(let elemType) = t {
+                    // Incomplete array: count determined by number of init values
+                    if case .structType(let subRec) = elemType.unqualified {
+                        // Flat init for array of structs: consume values per struct element
+                        var valueIdx = 0
+                        while valueIdx < il.values.count {
+                            emitFlatStructInit(il.values, idx: &valueIdx, rec: subRec)
+                        }
+                    } else {
+                        for v in il.values {
+                            emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
+                        }
                     }
                 } else {
-                    for v in il.values {
-                        emitInitializer(v, size: 8)
+                    // Scalar type with brace-enclosed initializer: emit first value
+                    if il.values.count > 0 {
+                        emitInitializer(il.values[0], size: size, type: type)
+                    } else {
+                        emitLine(".zero \(size)")
                     }
                 }
             } else {
@@ -282,8 +535,19 @@ public final class Codegen {
                 }
             }
         case .stringLiteral(let sl):
-            // String literal in initializer
-            if let type = type, case .array(let elemType, let count) = type.unqualified,
+            // Check for wide string literal
+            if sl.value.hasPrefix("WIDE:") {
+                // Wide string: emit each code point as a 4-byte .long
+                let hexPart = String(sl.value.dropFirst(5))
+                var i = hexPart.startIndex
+                while i < hexPart.endIndex {
+                    let end = hexPart.index(i, offsetBy: 8, limitedBy: hexPart.endIndex) ?? hexPart.endIndex
+                    if let cp = UInt32(hexPart[i..<end], radix: 16) {
+                        emitLine(".long \(cp)")
+                    }
+                    i = end
+                }
+            } else if let type = type, case .array(let elemType, let count) = type.unqualified,
                elemType.isChar {
                 // Initializing a char array — emit string bytes inline
                 let bytes = sl.value
@@ -357,6 +621,9 @@ public final class Codegen {
         case .cast(let c):
             // Cast in initializer — just emit the underlying value
             emitInitializer(c.expr, size: size, type: type)
+        case .compoundLiteral(let cl):
+            // Compound literal in initializer — emit its init list
+            emitInitializer(cl.initList, size: size, type: type)
         case .identifier(let id):
             // Function name, global/static variable, or external symbol in initializer
             if functionNames.contains(id.name) {
@@ -385,6 +652,61 @@ public final class Codegen {
             } else {
                 // Default: zero-fill
                 emitLine(".zero \(max(size, 8))")
+            }
+        }
+    }
+
+    /// Consume values from a flat init list for a struct field.
+    /// Used when a struct field is initialized without braces, e.g.,
+    /// `struct U gu = {3, 5, 6, 7, 8, 4, "huhu", 43}` where `s` is a struct.
+    private func emitFlatStructInit(_ allValues: [Expr], idx: inout Int, rec: RecordType) {
+        for field in rec.fields {
+            let fieldSize = field.type.sizeInBytes ?? 0
+            if fieldSize == 0 { continue }
+            let fieldOffset = field.offset
+            // Emit padding if needed (caller handles padding for top-level; for nested flat,
+            // we assume values map to consecutive fields)
+            _ = fieldOffset
+            if idx < allValues.count {
+                let v = allValues[idx]
+                if case .initList = v {
+                    // Nested init list — recurse
+                    idx += 1
+                    emitInitializer(v, size: fieldSize, type: field.type)
+                } else if case .stringLiteral = v, case .array(let elemType, let count) = field.type.unqualified, elemType.isChar {
+                    // String literal for char array field — emit inline bytes
+                    idx += 1
+                    if case .stringLiteral(let sl) = v {
+                        let bytes = sl.value
+                        if bytes.count <= count {
+                            emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
+                            let emitted = bytes.count + 1
+                            if count > emitted {
+                                emitLine(".zero \(count - emitted)")
+                            }
+                        } else {
+                            emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
+                        }
+                    }
+                } else if case .structType(let subRec) = field.type.unqualified {
+                    // Another level of flat struct init
+                    emitFlatStructInit(allValues, idx: &idx, rec: subRec)
+                } else if case .array(let elemType, let count) = field.type.unqualified {
+                    // Array field: consume values for each element
+                    for _ in 0..<count {
+                        if idx < allValues.count {
+                            emitInitializer(allValues[idx], size: elemType.sizeInBytes ?? 8, type: elemType)
+                            idx += 1
+                        } else {
+                            emitLine(".zero \(elemType.sizeInBytes ?? 8)")
+                        }
+                    }
+                } else {
+                    idx += 1
+                    emitInitializer(v, size: fieldSize, type: field.type)
+                }
+            } else {
+                emitLine(".zero \(fieldSize)")
             }
         }
     }
@@ -581,10 +903,31 @@ public final class Codegen {
 
     private func emitStringLiterals() {
         guard !stringLiterals.isEmpty else { return }
-        emitLine(".section __TEXT,__cstring")
-        for sl in stringLiterals {
-            emitLine("\(sl.label):")
-            emitLine(".asciz \"\(escapeString(sl.value))\"")
+        // Emit wide strings first (with 4-byte alignment), then regular strings
+        let wideStrings = stringLiterals.filter { $0.value.hasPrefix("WIDE:") }
+        let regStrings = stringLiterals.filter { !$0.value.hasPrefix("WIDE:") }
+        if !wideStrings.isEmpty {
+            emitLine(".section __TEXT,__const")
+            emitLine(".p2align 2")
+            for sl in wideStrings {
+                emitLine("\(sl.label):")
+                let hexPart = String(sl.value.dropFirst(5))
+                var i = hexPart.startIndex
+                while i < hexPart.endIndex {
+                    let end = hexPart.index(i, offsetBy: 8, limitedBy: hexPart.endIndex) ?? hexPart.endIndex
+                    if let cp = UInt32(hexPart[i..<end], radix: 16) {
+                        emitLine(".long \(cp)")
+                    }
+                    i = end
+                }
+            }
+        }
+        if !regStrings.isEmpty {
+            emitLine(".section __TEXT,__cstring")
+            for sl in regStrings {
+                emitLine("\(sl.label):")
+                emitLine(".asciz \"\(escapeString(sl.value))\"")
+            }
         }
     }
 
@@ -657,6 +1000,10 @@ public final class Codegen {
         currentFuncName = fd.name
         localOffset = 0
         localVarOffsets = [:]
+        localVarTypes = [:]
+        vlaBasePointers = []
+        vlaInnerDims = [:]
+        vlaAllDims = [:]
         gotoLabels = [:]
         frameSize = 0
         labelCounter = 0
@@ -688,18 +1035,80 @@ public final class Codegen {
         // Add parameters to local variables
         // Track how many registers each parameter consumes (1 for most types, 2 for 9-16 byte structs)
         var regIndex = 0  // current register index (x0, x1, ...)
+        var fpRegIndex = 0  // current FP register index (d0, d1, ...)
+        var stackParamIdx = 0  // tracks stack-passed param slots
         for (i, param) in fd.params.enumerated() {
             let pt = param.type.unqualified
             let paramSize = pt.sizeInBytes ?? 8
+            // Check if this is an HFA (Homogeneous Floating-point Aggregate)
+            let hfaInfo = isHFA(pt)
+            let isHFA = hfaInfo != nil
+            let hfaCount = hfaInfo?.count ?? 0  // number of FP registers
+            let hfaIsFloat = hfaInfo?.isFloat ?? false  // true=float, false=double
+
             let regWidth: Int
-            if case .structType = pt, paramSize > 8, paramSize <= 16 {
+            if isHFA {
+                regWidth = hfaCount
+            } else if case .structType = pt, paramSize > 8, paramSize <= 16 {
                 regWidth = 2
+            } else if case .structType = pt, paramSize > 16 {
+                // Large struct: entirely on stack, rounded up to 8-byte slots
+                regWidth = (paramSize + 7) / 8
             } else {
                 regWidth = 1
             }
 
-            if regIndex < 8 {
+            if isHFA && fpRegIndex + hfaCount <= 8 {
+                // HFA: passed in FP registers (s0-s7 or d0-d7)
+                let memberSize = hfaIsFloat ? 4 : 8
+                ensureLocalSpace(size: hfaCount * memberSize)
+                let offset = -(localOffset)
+                localVarOffsets[param.name ?? "_param_\(i)"] = offset
+                for j in 0..<hfaCount {
+                    let fpReg = hfaIsFloat ? "s\(fpRegIndex + j)" : "d\(fpRegIndex + j)"
+                    if hfaIsFloat {
+                        // Float member: store as 4 bytes
+                        if offset + j * memberSize >= -256 && offset + j * memberSize <= 255 {
+                            emitLine("str \(fpReg), [x29, #\(offset + j * memberSize)]")
+                        } else {
+                            emitLoadImm("x16", Int64(offset + j * memberSize))
+                            emitLine("str \(fpReg), [x29, x16]")
+                        }
+                    } else {
+                        emitStoreFP(fpReg, offset + j * memberSize)
+                    }
+                }
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
+                fpRegIndex += hfaCount
+                regIndex += hfaCount  // HFA also consumes integer register slots
+            } else if isHFA {
+                // HFA overflow: entire HFA passed on the stack
+                // Read from caller's stack at [x29, #16 + (regIndex-8)*8]
+                let memberSize = hfaIsFloat ? 4 : 8
+                ensureLocalSpace(size: hfaCount * memberSize)
+                let offset = -(localOffset)
+                localVarOffsets[param.name ?? "_param_\(i)"] = offset
+                for j in 0..<hfaCount {
+                    let stackSrcOffset = 16 + (stackParamIdx + j) * 8
+                    if hfaIsFloat {
+                        emitLoadFP("s9", stackSrcOffset)
+                        if offset + j * memberSize >= -256 && offset + j * memberSize <= 255 {
+                            emitLine("str s9, [x29, #\(offset + j * memberSize)]")
+                        } else {
+                            emitLoadImm("x16", Int64(offset + j * memberSize))
+                            emitLine("str s9, [x29, x16]")
+                        }
+                    } else {
+                        emitLoadFP("d9", stackSrcOffset)
+                        emitStoreFP("d9", offset + j * memberSize)
+                    }
+                }
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
+                regIndex += hfaCount
+                stackParamIdx += hfaCount
+            } else if !isHFA && regIndex < 8 && regWidth <= 2 {
                 // Parameters come in x0-x7 (int) or d0-d7 (float), store them on the stack
+                // Large structs (regWidth > 2) always go on the stack path below.
                 ensureLocalSpace(size: regWidth * 8)
                 let offset = -(localOffset)
                 localVarOffsets[param.name ?? "_param_\(i)"] = offset
@@ -711,38 +1120,45 @@ public final class Codegen {
                     // Float/double parameter arrives in d0-d7
                     let fpReg = pt == .float ? "s\(regIndex)" : "d\(regIndex)"
                     emitStoreFP(fpReg, offset)
-                } else if regWidth == 2 {
-                    // Struct parameter: store 2 registers
+                } else if case .structType = pt {
+                    // Struct parameter: store register(s) to stack
                     emitStoreFP(argRegs[regIndex].x, offset)
-                    if regIndex + 1 < 8 {
-                        emitStoreFP(argRegs[regIndex + 1].x, offset + 8)
+                    if regWidth == 2 {
+                        if regIndex + 1 < 8 {
+                            // Both chunks fit in registers
+                            emitStoreFP(argRegs[regIndex + 1].x, offset + 8)
+                        } else {
+                            // Second chunk is on the stack (split across regs/stack)
+                            let stackSrcOffset = 16 + stackParamIdx * 8
+                            emitLoadFP("x9", stackSrcOffset)
+                            emitStoreFP("x9", offset + 8)
+                            stackParamIdx += 1
+                        }
                     }
                 }
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 regIndex += regWidth
             } else {
                 // Parameters beyond x0-x7 are passed on the stack by the caller.
-                // They are at [x29, #16 + (regIndex-8)*8] (above saved fp/lr).
-                let stackSrcOffset = 16 + (regIndex - 8) * 8
+                // They are at [x29, #16 + stackParamIdx*8] (above saved fp/lr).
+                let stackSrcOffset = 16 + stackParamIdx * 8
                 ensureLocalSpace(size: regWidth * 8)
                 let localOff = -(localOffset)
                 localVarOffsets[param.name ?? "_param_\(i)"] = localOff
                 // Load from caller's stack and store to our local frame
-                emitLoadFP("x9", stackSrcOffset)
-                emitStoreFP("x9", localOff)
-                if regWidth == 2 {
-                    emitLoadFP("x9", stackSrcOffset + 8)
-                    emitStoreFP("x9", localOff + 8)
+                for j in 0..<regWidth {
+                    emitLoadFP("x9", stackSrcOffset + j * 8)
+                    emitStoreFP("x9", localOff + j * 8)
                 }
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 regIndex += regWidth
+                stackParamIdx += regWidth
             }
         }
 
         // Emit body
         if let body = fd.body {
-            emitCompoundStmt(body)
-        }
+            emitCompoundStmt(body)        }
 
         // Epilogue (default return)
         emitLine("mov w0, #0  ; default return")
@@ -836,9 +1252,107 @@ public final class Codegen {
                             localVarTypes[vd.name] = vd.type
                         }
                     } else {
-                        allocLocal(name: vd.name, type: vd.type)
-                        if let init_ = vd.initializer {
+                        // Check for VLA (variable-length array)
+                        if let vlaExpr = vd.vlaSizeExpr,
+                           case .incompleteArray(let elemType) = vd.type.unqualified {
+                            // VLA: evaluate size expression, multiply by element size,
+                            // allocate on stack, store base pointer in a local variable.
+                            // For multi-dimensional VLAs, find the leaf element type (e.g., int for int[m][n]).
+                            var leafType = elemType
+                            while case .incompleteArray(let inner) = leafType.unqualified {
+                                leafType = inner
+                            }
+                            let elemSize = leafType.unqualified.sizeInBytes ?? 1
+                            // Allocate a local variable to hold the base pointer
+                            allocLocal(name: vd.name, type: .pointer(to: elemType))
+
+                            // For multi-dimensional VLAs, evaluate inner dimensions and
+                            // compute the total element size (outer_size * inner_size * ... * elemSize).
+                            // Store inner dimension sizes in local variables for subscript stride.
+                            var innerDimNames: [String] = []
+                            // Store outer dimension in a local var for runtime sizeof(VLA)
+                            let outerDimName = "\(vd.name)_vla_dim_outer"
+                            allocLocal(name: outerDimName, type: .int)
+                            var totalSizeReg = emitExpr(vlaExpr)
+                            if exprType(vlaExpr).unqualified.isSigned32Bit {
+                                emitLine("sxtw \(totalSizeReg.x), \(totalSizeReg.w)")
+                            }
+                            storeLocal(outerDimName, totalSizeReg, type: .int)
+                            for (idx, innerExpr) in vd.vlaInnerSizeExprs.enumerated() {
+                                let dimName = "\(vd.name)_vla_dim\(idx)"
+                                allocLocal(name: dimName, type: .int)
+                                let innerReg = emitExpr(innerExpr)
+                                if exprType(innerExpr).unqualified.isSigned32Bit {
+                                    emitLine("sxtw \(innerReg.x), \(innerReg.w)")
+                                }
+                                storeLocal(dimName, innerReg, type: .int)
+                                regAlloc.free(innerReg)
+                                // Multiply total size by inner dimension
+                                emitLine("mul \(totalSizeReg.x), \(totalSizeReg.x), \(innerReg.x)")
+                                innerDimNames.append(dimName)
+                            }
+                            // Store inner dims for subscript stride (excludes outer)
+                            if !innerDimNames.isEmpty {
+                                vlaInnerDims[vd.name] = innerDimNames
+                            }
+                            // Store all dims for runtime sizeof (outer first)
+                            vlaAllDims[vd.name] = [outerDimName] + innerDimNames
+
+                            let sizeReg = totalSizeReg
+                            // Multiply by element size
+                            if elemSize > 1 {
+                                if elemSize == 2 { emitLine("lsl \(sizeReg.x), \(sizeReg.x), #1") }
+                                else if elemSize == 4 { emitLine("lsl \(sizeReg.x), \(sizeReg.x), #2") }
+                                else if elemSize == 8 { emitLine("lsl \(sizeReg.x), \(sizeReg.x), #3") }
+                                else {
+                                    emitLoadImm("x16", Int64(elemSize))
+                                    emitLine("mul \(sizeReg.x), \(sizeReg.x), x16")
+                                }
+                            }
+                            // Align to 16 bytes
+                            emitLine("add \(sizeReg.x), \(sizeReg.x), #15")
+                            emitLine("and \(sizeReg.x), \(sizeReg.x), #0xFFFFFFFFFFFFFFF0")
+                            // Allocate on stack
+                            emitLine("sub sp, sp, \(sizeReg.x)")
+                            // Store the base pointer (sp after allocation)
+                            emitLine("mov \(sizeReg.x), sp")
+                            storeLocal(vd.name, sizeReg, type: .pointer(to: elemType))
+                            regAlloc.free(sizeReg)
+                            // Mark this local as a VLA base pointer
+                            vlaBasePointers.insert(vd.name)
+                        } else {
+                            allocLocal(name: vd.name, type: vd.type)
+                            if let init_ = vd.initializer {
                             if case .stringLiteral(let sl) = init_,
+                               sl.value.hasPrefix("WIDE:"),
+                               case .array(let elemType, let count) = vd.type.unqualified,
+                               elemType.isInteger {
+                                // wchar_t arr[] = L"string" — copy 4-byte ints to local array
+                                let addrReg = regAlloc.alloc() ?? .x9
+                                if let offset = localVarOffsets[vd.name] {
+                                    if offset >= -256 && offset <= 255 {
+                                        emitLine("add \(addrReg.x), x29, #\(offset)")
+                                    } else {
+                                        emitLoadImm("x16", Int64(offset))
+                                        emitLine("add \(addrReg.x), x29, x16")
+                                    }
+                                    let label = addStringLiteral(sl.value)
+                                    let srcReg = regAlloc.alloc() ?? .x9
+                                    emitLine("adrp \(srcReg.x), \(label)@PAGE")
+                                    emitLine("add \(srcReg.x), \(srcReg.x), \(label)@PAGEOFF")
+                                    for i in 0..<count {
+                                        if i > 0 {
+                                            emitLine("ldr w16, [\(srcReg.x), #\(i * 4)]")
+                                            emitLine("str w16, [\(addrReg.x), #\(i * 4)]")
+                                        } else {
+                                            emitLine("ldr w16, [\(srcReg.x)]")
+                                            emitLine("str w16, [\(addrReg.x)]")
+                                        }
+                                    }
+                                    regAlloc.free(srcReg)
+                                }
+                                regAlloc.free(addrReg)
+                            } else if case .stringLiteral(let sl) = init_,
                                case .array(let elemType, let count) = vd.type.unqualified,
                                elemType.isChar {
                                 // char arr[] = "string" — copy bytes to local array
@@ -881,30 +1395,113 @@ public final class Codegen {
                                     emitLocalInit(addrReg, init_, type: vd.type)
                                 }
                                 regAlloc.free(addrReg)
-                            } else {
-                                let reg = emitExpr(init_)
-                                // Convert type if needed (e.g., double→float, int→float)
-                                let initType = exprType(init_).unqualified
-                                let varType = vd.type.unqualified
-                                if initType.isFloating && varType.isFloating {
-                                    convertFloat(reg, from: initType, to: vd.type)
-                                } else if initType.isInteger && varType.isFloating {
-                                    if initType.isSigned32Bit {
-                                        emitLine("sxtw \(reg.x), \(reg.w)")
-                                    }
-                                    let fp = varType == .float ? "s" : "d"
-                                    emitLine("scvtf \(fp)\(reg.regNum), \(reg.x)")
-                                } else if initType.isFloating && varType.isInteger {
-                                    let srcFp = initType == .float ? "s" : "d"
-                                    if varType.isSigned32Bit {
-                                        emitLine("fcvtzs \(reg.w), \(srcFp)\(reg.regNum)")
+                            } else if case .call = init_, case .structType = vd.type.unqualified {
+                                // Function call returning a struct: read return registers
+                                // and store to the local variable's address.
+                                // Resolve the struct type through knownRecords (in case vd.type has an incomplete record)
+                                var resolvedType = vd.type
+                                if case .structType(let rec) = vd.type.unqualified, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                                    resolvedType = .structType(completed)
+                                }
+                                let structSize = resolvedType.unqualified.sizeInBytes ?? 0
+                                if let offset = localVarOffsets[vd.name] {
+                                    if let hfaInfo = isHFA(resolvedType) {
+                                        // HFA return: read from s0-s3 or d0-d3
+                                        _ = emitExpr(init_)  // make the call
+                                        // Store FP return registers to local var
+                                        let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                                        for j in 0..<hfaInfo.count {
+                                            let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                                            if offset + memberOff >= -256 && offset + memberOff <= 255 {
+                                                emitLine("str \(fpPrefix)\(j), [x29, #\(offset + memberOff)]")
+                                            } else {
+                                                emitLoadImm("x16", Int64(offset + memberOff))
+                                                emitLine("str \(fpPrefix)\(j), [x29, x16]")
+                                            }
+                                        }
+                                    } else if structSize <= 16 {
+                                        // Small/medium struct: read from x0 (and x1)
+                                        _ = emitExpr(init_)  // make the call
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("str x0, [x29, #\(offset)]")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("str x0, [x29, x16]")
+                                        }
+                                        if structSize > 8 {
+                                            let off2 = offset + 8
+                                            if off2 >= -256 && off2 <= 255 {
+                                                emitLine("str x1, [x29, #\(off2)]")
+                                            } else {
+                                                emitLoadImm("x16", Int64(off2))
+                                                emitLine("str x1, [x29, x16]")
+                                            }
+                                        }
                                     } else {
-                                        emitLine("fcvtzs \(reg.x), \(srcFp)\(reg.regNum)")
+                                        // Large struct: pass x8 pointer, callee writes to it
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("add x8, x29, #\(offset)")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("add x8, x29, x16")
+                                        }
+                                        _ = emitExpr(init_)  // make the call
                                     }
                                 }
-                                storeLocal(vd.name, reg, type: vd.type)
+                            } else {
+                                let varType = vd.type.unqualified
+                                // For struct types initialized from a non-call expression (e.g., va_arg),
+                                // emitExpr returns the address of the struct data.
+                                // Copy the struct from that address to the local variable.
+                                if case .structType = varType, let structSize = varType.sizeInBytes, structSize > 0 {
+                                    // For struct-to-struct copy, get the source address (not value)
+                                    let srcAddr: ARM64Reg
+                                    if case .identifier = init_ {
+                                        // Use emitAddr for identifiers to get the struct's address
+                                        srcAddr = emitAddr(init_)
+                                    } else {
+                                        srcAddr = emitExpr(init_)
+                                    }
+                                    let dstAddr = regAlloc.alloc() ?? .x9
+                                    if let offset = localVarOffsets[vd.name] {
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("add \(dstAddr.x), x29, #\(offset)")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("add \(dstAddr.x), x29, x16")
+                                        }
+                                    }
+                                    emitStructCopyToField(dstAddr.x, srcAddr, structSize)
+                                    regAlloc.free(dstAddr)
+                                } else if varType.isComplex, let offset = localVarOffsets[vd.name] {
+                                    // _Complex variable initialization
+                                    let isFloat = (varType == .complexFloat)
+                                    emitComplexExpr(init_, storeAtOffset: offset, isFloat: isFloat)
+                                } else {
+                                    let reg = emitExpr(init_)
+                                    // Convert type if needed (e.g., double→float, int→float)
+                                    let initType = exprType(init_).unqualified
+                                    if initType.isFloating && varType.isFloating {
+                                        convertFloat(reg, from: initType, to: vd.type)
+                                    } else if initType.isInteger && varType.isFloating {
+                                        if initType.isSigned32Bit {
+                                            emitLine("sxtw \(reg.x), \(reg.w)")
+                                        }
+                                        let fp = varType == .float ? "s" : "d"
+                                        emitLine("scvtf \(fp)\(reg.regNum), \(reg.x)")
+                                    } else if initType.isFloating && varType.isInteger {
+                                        let srcFp = initType == .float ? "s" : "d"
+                                        if varType.isSigned32Bit {
+                                            emitLine("fcvtzs \(reg.w), \(srcFp)\(reg.regNum)")
+                                        } else {
+                                            emitLine("fcvtzs \(reg.x), \(srcFp)\(reg.regNum)")
+                                        }
+                                    }
+                                    storeLocal(vd.name, reg, type: vd.type)
+                                }
                             }
                         }
+                        }  // end VLA else
                     }
                 }
             }
@@ -924,19 +1521,57 @@ public final class Codegen {
 
         case .return(let rs):
             if let v = rs.value {
-                let reg = emitExpr(v)
                 let retType = exprType(v).unqualified
-                if retType.isFloating {
+                if case .structType = retType {
+                    // Struct return: depends on size and HFA status
+                    let structSize = retType.sizeInBytes ?? 0
+                    if let hfaInfo = isHFA(retType) {
+                        // HFA return: load members into FP registers (s0-s3 or d0-d3)
+                        let srcAddr = emitAddr(v)
+                        let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                        for j in 0..<hfaInfo.count {
+                            let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                            emitLine("ldr \(fpPrefix)\(j), [\(srcAddr.x), #\(memberOff)]")
+                        }
+                        regAlloc.free(srcAddr)
+                    } else if structSize <= 8 {
+                        // Small struct (≤8 bytes): return in x0
+                        let srcAddr = emitAddr(v)
+                        emitLine("ldr x0, [\(srcAddr.x)]")
+                        regAlloc.free(srcAddr)
+                    } else if structSize <= 16 {
+                        // Medium struct (9-16 bytes): return in x0, x1
+                        let srcAddr = emitAddr(v)
+                        emitLine("ldr x0, [\(srcAddr.x)]")
+                        emitLine("ldr x1, [\(srcAddr.x), #8]")
+                        regAlloc.free(srcAddr)
+                    } else {
+                        // Large struct (>16 bytes): copy to indirect return pointer (x8)
+                        // The caller passes a pointer in x8 to the return location.
+                        let srcAddr = emitAddr(v)
+                        // Use emitStructCopyToField which uses x15 as scratch
+                        emitStructCopyToField("x8", srcAddr, structSize)
+                        regAlloc.free(srcAddr)
+                    }
+                } else if retType.isFloating {
                     // Float/double return value goes in d0
+                    let reg = emitExpr(v)
                     let fpReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
                     if reg != .x0 {
                         emitLine("fmov d0, \(fpReg)")
                     }
                 } else {
                     // Move result to x0
+                    let reg = emitExpr(v)
                     if reg != .x0 {
-                        emitLine("mov x0, \(reg.x)")
+                        // For 32-bit types, use w register to truncate to 32 bits
+                        if retType.sizeInBytes == 4 {
+                            emitLine("mov w0, w\(reg.regNum)")
+                        } else {
+                            emitLine("mov x0, \(reg.x)")
+                        }
                     }
+                    regAlloc.free(reg)
                 }
             } else {
                 emitLine("mov w0, #0")
@@ -1109,14 +1744,15 @@ public final class Codegen {
                     }
                 }
             } else if case .compound(let comp) = stmt {
-                for (innerIdx, innerStmt) in comp.statements.enumerated() {
-                    if case .case = innerStmt {
-                        if case .case(let cs) = innerStmt {
-                            caseLabelMap["\(idx).\(innerIdx)"] = emitCaseComparison(cs.value)
-                        }
-                    } else if case .default = innerStmt {
-                        defaultLabel = newLabel()
-                    }
+                // Scan for case labels at this level and recursively in nested statements
+                scanAndEmitCaseLabels(comp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx)", emitCaseComparison: emitCaseComparison)
+            } else if case .if(let ifStmt) = stmt {
+                // Case labels inside if blocks at switch top level
+                if case .compound(let thenComp) = ifStmt.thenStmt {
+                    scanAndEmitCaseLabels(thenComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx).t", emitCaseComparison: emitCaseComparison)
+                }
+                if let elseStmt = ifStmt.elseStmt, case .compound(let elseComp) = elseStmt {
+                    scanAndEmitCaseLabels(elseComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx).e", emitCaseComparison: emitCaseComparison)
                 }
             } else if case .default = stmt {
                 defaultLabel = newLabel()
@@ -1128,6 +1764,32 @@ public final class Codegen {
             emitLine("b \(dl)")
         } else {
             emitLine("b \(endLabel)")
+        }
+
+        // Recursively scan for case/default labels in a compound statement
+        func scanAndEmitCaseLabels(_ comp: CompoundStmt, caseLabelMap: inout [String: String], defaultLabel: inout String?, keyPrefix: String, emitCaseComparison: (Expr) -> String) {
+            for (innerIdx, innerStmt) in comp.statements.enumerated() {
+                let key = "\(keyPrefix).\(innerIdx)"
+                if case .case(let cs) = innerStmt {
+                    caseLabelMap[key] = emitCaseComparison(cs.value)
+                    // Recursively scan the case body
+                    if let s = cs.stmt, case .compound(let innerComp) = s {
+                        scanAndEmitCaseLabels(innerComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: key, emitCaseComparison: emitCaseComparison)
+                    }
+                } else if case .default = innerStmt {
+                    defaultLabel = newLabel()
+                } else if case .compound(let innerComp) = innerStmt {
+                    scanAndEmitCaseLabels(innerComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: key, emitCaseComparison: emitCaseComparison)
+                } else if case .if(let ifStmt) = innerStmt {
+                    // Case labels inside if blocks — scan both branches
+                    if case .compound(let thenComp) = ifStmt.thenStmt {
+                        scanAndEmitCaseLabels(thenComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(key).t", emitCaseComparison: emitCaseComparison)
+                    }
+                    if let elseStmt = ifStmt.elseStmt, case .compound(let elseComp) = elseStmt {
+                        scanAndEmitCaseLabels(elseComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(key).e", emitCaseComparison: emitCaseComparison)
+                    }
+                }
+            }
         }
 
         // Second pass: emit the body with case/default labels
@@ -1145,9 +1807,37 @@ public final class Codegen {
                 // For nested .case/.default inside compound statements, emit the body directly
                 // (emitStmt skips them since they're "handled inside emitSwitchStmt")
                 if case .case(let cs) = innerStmt {
-                    if let s = cs.stmt { emitStmt(s) }
+                    if let s = cs.stmt {
+                        if case .compound(let comp) = s {
+                            emitCompoundWithCases(comp, keyPrefix: key)
+                        } else {
+                            emitStmt(s)
+                        }
+                    }
                 } else if case .default(let ds) = innerStmt {
                     if let s = ds.stmt { emitStmt(s) }
+                } else if case .if(let ifStmt) = innerStmt {
+                    // Emit if statement, but inject case labels inside its body
+                    let condReg = emitExpr(ifStmt.condition)
+                    let elseLabel = newLabel()
+                    emitLine("cbz \(condReg.x), \(elseLabel)")
+                    regAlloc.free(condReg)
+                    if case .compound(let thenComp) = ifStmt.thenStmt {
+                        emitCompoundWithCases(thenComp, keyPrefix: "\(key).t")
+                    } else {
+                        emitStmt(ifStmt.thenStmt)
+                    }
+                    if let elseStmt = ifStmt.elseStmt {
+                        emitLine("b \(endLabel)")
+                        emitLine("\(elseLabel):")
+                        if case .compound(let elseComp) = elseStmt {
+                            emitCompoundWithCases(elseComp, keyPrefix: "\(key).e")
+                        } else {
+                            emitStmt(elseStmt)
+                        }
+                    } else {
+                        emitLine("\(elseLabel):")
+                    }
                 } else {
                     emitStmt(innerStmt)
                 }
@@ -1174,6 +1864,28 @@ public final class Codegen {
                 if let s = ds.stmt { emitStmt(s) }
             case .compound(let comp):
                 emitCompoundWithCases(comp, keyPrefix: "\(idx)")
+            case .if(let ifStmt):
+                // Emit if statement with case labels injected inside
+                let condReg = emitExpr(ifStmt.condition)
+                let elseLabel = newLabel()
+                emitLine("cbz \(condReg.x), \(elseLabel)")
+                regAlloc.free(condReg)
+                if case .compound(let thenComp) = ifStmt.thenStmt {
+                    emitCompoundWithCases(thenComp, keyPrefix: "\(idx).t")
+                } else {
+                    emitStmt(ifStmt.thenStmt)
+                }
+                if let elseStmt = ifStmt.elseStmt {
+                    emitLine("b \(endLabel)")
+                    emitLine("\(elseLabel):")
+                    if case .compound(let elseComp) = elseStmt {
+                        emitCompoundWithCases(elseComp, keyPrefix: "\(idx).e")
+                    } else {
+                        emitStmt(elseStmt)
+                    }
+                } else {
+                    emitLine("\(elseLabel):")
+                }
             default:
                 emitStmt(stmt)
             }
@@ -1412,9 +2124,50 @@ public final class Codegen {
                 }
                 size = t.sizeInBytes ?? 0
             } else if let e = s.expr {
-                // Evaluate type of expression
-                let t = exprType(e)
-                size = t.sizeInBytes ?? 4
+                // For VLAs, compute size at runtime (check vlaBasePointers first,
+                // since the local var type is stored as a pointer, not incompleteArray)
+                if case .identifier(let id) = e,
+                   vlaBasePointers.contains(id.name),
+                   let allDims = vlaAllDims[id.name], !allDims.isEmpty {
+                    // Get the VLA's element type from the stored pointer type
+                    var elemType = exprType(e).unqualified
+                    if case .pointer(let pt) = elemType { elemType = pt }
+                    var leafType = elemType
+                    while case .incompleteArray(let inner) = leafType.unqualified {
+                        leafType = inner
+                    }
+                    let leafSize = leafType.unqualified.sizeInBytes ?? 1
+                    // Load the first (outer) dimension
+                    let firstDimOffset = localVarOffsets[allDims[0]] ?? 0
+                    if firstDimOffset >= -256 && firstDimOffset <= 255 {
+                        emitLine("ldr \(reg.w), [x29, #\(firstDimOffset)]")
+                    } else {
+                        emitLoadImm("x16", Int64(firstDimOffset))
+                        emitLine("ldr \(reg.w), [x29, x16]")
+                    }
+                    emitLine("sxtw \(reg.x), \(reg.w)")
+                    // Multiply by remaining dimensions
+                    for i in 1..<allDims.count {
+                        let dimOffset = localVarOffsets[allDims[i]] ?? 0
+                        emitLine("ldr w16, [x29, #\(dimOffset)]")
+                        emitLine("sxtw x16, w16")
+                        emitLine("mul \(reg.x), \(reg.x), x16")
+                    }
+                    // Multiply by leaf element size
+                    if leafSize > 1 {
+                        if leafSize == 2 { emitLine("lsl \(reg.x), \(reg.x), #1") }
+                        else if leafSize == 4 { emitLine("lsl \(reg.x), \(reg.x), #2") }
+                        else if leafSize == 8 { emitLine("lsl \(reg.x), \(reg.x), #3") }
+                        else {
+                            emitLoadImm("x16", Int64(leafSize))
+                            emitLine("mul \(reg.x), \(reg.x), x16")
+                        }
+                    }
+                    return reg
+                } else {
+                    let t = exprType(e)
+                    size = t.sizeInBytes ?? 4
+                }
             } else {
                 size = 0
             }
@@ -1422,7 +2175,18 @@ public final class Codegen {
             return reg
 
         case .compoundLiteral(let cl):
-            return emitExpr(cl.initList)
+            // Compound literal: allocate stack space, initialize, return address
+            let litType = cl.type.unqualified
+            let litSize = litType.sizeInBytes ?? 8
+            // Allocate space on the stack (aligned to 16)
+            let alignedSize = (litSize + 15) & ~15
+            emitLine("sub sp, sp, #\(alignedSize)")
+            // Use the stack pointer as the base address
+            let addrReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(addrReg.x), sp")
+            // Initialize the memory from the init list
+            emitLocalInit(addrReg, cl.initList, type: cl.type)
+            return addrReg
 
         case .initList(let il):
             // Return first value for now
@@ -1432,6 +2196,320 @@ public final class Codegen {
             let reg = regAlloc.alloc() ?? .x9
             emitLine("mov \(reg.x), #0")
             return reg
+
+        case .genericExpr(let ge):
+            // Evaluate the controlling expression's type and select the matching branch
+            let ctrlType = exprType(ge.controllingExpr).unqualified
+            // Find matching association
+            var selected: Expr? = nil
+            var defaultExpr: Expr? = nil
+            for assoc in ge.associations {
+                if assoc.isDefault {
+                    defaultExpr = assoc.expr
+                } else if let tn = assoc.typeName {
+                    let assocType = tn.unqualified
+                    // Compare types
+                    if typeMatches(ctrlType, assocType) {
+                        selected = assoc.expr
+                        break
+                    }
+                }
+            }
+            if selected == nil { selected = defaultExpr }
+            if let s = selected {
+                return emitExpr(s)
+            }
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+
+        case .stmtExpr(let se):
+            // Emit all statements in the body
+            for stmt in se.body.statements {
+                _ = emitStmt(stmt)
+            }
+            // Return the value of the last expression statement
+            if let lastStmt = se.body.statements.last,
+               case .expr(let es) = lastStmt, let e = es.expr {
+                return emitExpr(e)
+            }
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+    }
+
+    /// Evaluate a complex-typed expression and store the result (real, imag) at
+/// the given stack offset (relative to x29). Used for initializing _Complex local
+/// variables. Supports: imaginary literals, real+complex, complex+real,
+/// real*complex, complex*real, complex*complex, and plain complex identifiers.
+    private func emitComplexExpr(_ expr: Expr, storeAtOffset offset: Int, isFloat: Bool) {
+        let fpPrefix = isFloat ? "s" : "d"
+        let partSize = isFloat ? 4 : 8
+
+        // Helper to emit a load of a double/float constant into an FP register
+        func loadFPConst(_ _reg: ARM64Reg, _ value: Double, _ float: Bool) {
+            if float {
+                let bits = UInt64(Float(value).bitPattern)
+                emitLoadImm(_reg.x, Int64(bitPattern: bits))
+                emitLine("fmov s\(_reg.regNum), w\(_reg.regNum)")
+            } else {
+                let bits = value.bitPattern
+                emitLoadImm(_reg.x, Int64(bitPattern: bits))
+                emitLine("fmov d\(_reg.regNum), \(_reg.x)")
+            }
+        }
+
+        switch expr {
+        case .floatLiteral(let f) where f.isImaginary:
+            // Imaginary literal: real=0, imag=value
+            let realReg = regAlloc.alloc() ?? .x9
+            let imagReg = regAlloc.alloc() ?? .x10
+            emitLine("fmov \(fpPrefix)\(realReg.regNum), #0.0")
+            loadFPConst(imagReg, f.value, isFloat)
+            emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+            emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+            regAlloc.free(realReg)
+            regAlloc.free(imagReg)
+
+        case .binary(let b) where b.op == .add || b.op == .sub:
+            // Complex addition/subtraction
+            let leftComplex = exprType(b.left).unqualified.isComplex
+            let rightComplex = exprType(b.right).unqualified.isComplex
+
+            if leftComplex && rightComplex {
+                // complex ± complex: (a±c, b±d)
+                // Store left parts to temp, right parts to temp2, then add/sub
+                let tmpOff = ensureTempSpace(size: partSize * 4)
+                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExpr(b.right, storeAtOffset: tmpOff + partSize * 2, isFloat: isFloat)
+                // Real part
+                let lr = regAlloc.alloc() ?? .x9
+                let rr = regAlloc.alloc() ?? .x10
+                emitLoadFP(lr, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(rr, offset: tmpOff + partSize * 2, isFloat: isFloat)
+                if b.op == .add { emitLine("fadd \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
+                else { emitLine("fsub \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
+                emitStoreFP(lr, offset: offset, isFloat: isFloat)
+                // Imaginary part
+                emitLoadFP(lr, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLoadFP(rr, offset: tmpOff + partSize * 3, isFloat: isFloat)
+                if b.op == .add { emitLine("fadd \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
+                else { emitLine("fsub \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
+                emitStoreFP(lr, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(lr)
+                regAlloc.free(rr)
+            } else if leftComplex && !rightComplex {
+                // complex + real: (a+real, b)
+                // Store left complex parts
+                let tmpOff = ensureTempSpace(size: partSize * 2)
+                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                // Evaluate right (real)
+                let rightReg = emitExpr(b.right)
+                // Convert to FP if needed
+                if !exprType(b.right).unqualified.isFloating {
+                    if exprType(b.right).unqualified.isSigned32Bit {
+                        emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    }
+                    if isFloat { emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)") }
+                    else { emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)") }
+                } else if exprType(b.right).unqualified == .float && !isFloat {
+                    emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
+                } else if exprType(b.right).unqualified == .double && isFloat {
+                    emitLine("fcvt s\(rightReg.regNum), d\(rightReg.regNum)")
+                }
+                let realReg = regAlloc.alloc() ?? .x9
+                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                if b.op == .add { emitLine("fadd \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)") }
+                else { emitLine("fsub \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)") }
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                // Imaginary part stays the same
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(rightReg)
+            } else if !leftComplex && rightComplex {
+                // real + complex: (real+a, d)
+                let tmpOff = ensureTempSpace(size: partSize * 2)
+                emitComplexExpr(b.right, storeAtOffset: tmpOff, isFloat: isFloat)
+                let leftReg = emitExpr(b.left)
+                if !exprType(b.left).unqualified.isFloating {
+                    if exprType(b.left).unqualified.isSigned32Bit {
+                        emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                    }
+                    if isFloat { emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)") }
+                    else { emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)") }
+                } else if exprType(b.left).unqualified == .float && !isFloat {
+                    emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
+                } else if exprType(b.left).unqualified == .double && isFloat {
+                    emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
+                }
+                let realReg = regAlloc.alloc() ?? .x9
+                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                if b.op == .add { emitLine("fadd \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)") }
+                else { emitLine("fsub \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)") }
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(leftReg)
+            } else {
+                // Both real — shouldn't happen (result would be real, not complex)
+                // Fall through: evaluate as real, store with imag=0
+                let realReg = emitExpr(expr)
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                let zeroReg = regAlloc.alloc() ?? .x9
+                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
+                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(zeroReg)
+            }
+
+        case .binary(let b) where b.op == .mul:
+            let leftComplex = exprType(b.left).unqualified.isComplex
+            let rightComplex = exprType(b.right).unqualified.isComplex
+
+            if leftComplex && rightComplex {
+                // complex * complex: (a*c-b*d, a*d+b*c)
+                let tmpOff = ensureTempSpace(size: partSize * 4)
+                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExpr(b.right, storeAtOffset: tmpOff + partSize * 2, isFloat: isFloat)
+                let ar = regAlloc.alloc() ?? .x9
+                let br = regAlloc.alloc() ?? .x10
+                let cr = regAlloc.alloc() ?? .x11
+                let dr = regAlloc.alloc() ?? .x12
+                emitLoadFP(ar, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(br, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLoadFP(cr, offset: tmpOff + partSize * 2, isFloat: isFloat)
+                emitLoadFP(dr, offset: tmpOff + partSize * 3, isFloat: isFloat)
+                // real = a*c - b*d
+                emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(cr.regNum)")
+                emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(dr.regNum)")
+                emitLine("fsub \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
+                emitStoreFP(ar, offset: offset, isFloat: isFloat)
+                // imag = a*d + b*c  — but we overwrote ar and br. Reload.
+                emitLoadFP(ar, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(br, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(dr.regNum)")
+                emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(cr.regNum)")
+                emitLine("fadd \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
+                emitStoreFP(ar, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(ar)
+                regAlloc.free(br)
+                regAlloc.free(cr)
+                regAlloc.free(dr)
+            } else if leftComplex && !rightComplex {
+                // complex * real: (a*r, b*r)
+                let tmpOff = ensureTempSpace(size: partSize * 2)
+                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                let rightReg = emitExpr(b.right)
+                if !exprType(b.right).unqualified.isFloating {
+                    if exprType(b.right).unqualified.isSigned32Bit {
+                        emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    }
+                    if isFloat { emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)") }
+                    else { emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)") }
+                } else if exprType(b.right).unqualified == .float && !isFloat {
+                    emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
+                } else if exprType(b.right).unqualified == .double && isFloat {
+                    emitLine("fcvt s\(rightReg.regNum), d\(rightReg.regNum)")
+                }
+                let realReg = regAlloc.alloc() ?? .x9
+                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)")
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)")
+                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(rightReg)
+            } else if !leftComplex && rightComplex {
+                // real * complex: (r*a, r*b)
+                let tmpOff = ensureTempSpace(size: partSize * 2)
+                emitComplexExpr(b.right, storeAtOffset: tmpOff, isFloat: isFloat)
+                let leftReg = emitExpr(b.left)
+                if !exprType(b.left).unqualified.isFloating {
+                    if exprType(b.left).unqualified.isSigned32Bit {
+                        emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                    }
+                    if isFloat { emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)") }
+                    else { emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)") }
+                } else if exprType(b.left).unqualified == .float && !isFloat {
+                    emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
+                } else if exprType(b.left).unqualified == .double && isFloat {
+                    emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
+                }
+                let realReg = regAlloc.alloc() ?? .x9
+                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)")
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)")
+                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(leftReg)
+            } else {
+                // Both real (shouldn't produce complex result)
+                let realReg = emitExpr(expr)
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                let zeroReg = regAlloc.alloc() ?? .x9
+                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
+                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(zeroReg)
+            }
+
+        case .cast(let c):
+            // Cast of a complex expression — just forward
+            emitComplexExpr(c.expr, storeAtOffset: offset, isFloat: isFloat)
+
+        case .identifier(let id):
+            // Copy from existing complex local variable
+            if let srcOff = localVarOffsets[id.name] {
+                let realReg = regAlloc.alloc() ?? .x9
+                let imagReg = regAlloc.alloc() ?? .x10
+                emitLoadFP(realReg, offset: srcOff, isFloat: isFloat)
+                emitLoadFP(imagReg, offset: srcOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(imagReg)
+            }
+
+        default:
+            // Fallback: evaluate as real, store with imag=0
+            let realReg = emitExpr(expr)
+            emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+            let zeroReg = regAlloc.alloc() ?? .x9
+            emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
+            emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+            regAlloc.free(zeroReg)
+        }
+    }
+
+    /// Allocate temporary stack space and return the offset (negative, relative to x29).
+    private func ensureTempSpace(size: Int) -> Int {
+        let aligned = (size + 7) & ~7  // align to 8 bytes
+        localOffset += aligned
+        if localOffset > frameSize { frameSize = localOffset }
+        return -localOffset  // return the negative offset
+    }
+
+    private func emitStoreFP(_ reg: ARM64Reg, offset: Int, isFloat: Bool) {
+        let fpReg = isFloat ? "s\(reg.regNum)" : "d\(reg.regNum)"
+        if offset >= -256 && offset <= 255 {
+            emitLine("str \(fpReg), [x29, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("str \(fpReg), [x29, x16]")
+        }
+    }
+
+    private func emitLoadFP(_ reg: ARM64Reg, offset: Int, isFloat: Bool) {
+        let fpReg = isFloat ? "s\(reg.regNum)" : "d\(reg.regNum)"
+        if offset >= -256 && offset <= 255 {
+            emitLine("ldr \(fpReg), [x29, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("ldr \(fpReg), [x29, x16]")
         }
     }
 
@@ -1559,11 +2637,18 @@ public final class Codegen {
                 return leftReg
             }
 
-            // Determine if this is a signed 32-bit comparison
+            // Determine if this is a signed 32-bit comparison.
+            // C99: when comparing signed and unsigned of the same rank, both are
+            // converted to unsigned. So if either operand is unsigned 32-bit,
+            // the comparison is unsigned.
             let is32BitSigned: Bool = {
                 switch leftType {
                 case .int, .short, .schar, .char, .enumType:
-                    return true
+                    // Check if right is unsigned 32-bit — if so, comparison is unsigned
+                    switch rightType {
+                    case .uint, .ushort, .uchar: return false
+                    default: return true
+                    }
                 case .uint, .ushort, .uchar:
                     return false
                 default:
@@ -1647,9 +2732,26 @@ public final class Codegen {
                 emitLine("sdiv x16, \(leftReg.x), \(rightReg.x)")
                 emitLine("msub \(leftReg.x), x16, \(rightReg.x), \(leftReg.x)")
             case .shl:
-                emitLine("lsl \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    emitLine("lsl \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("lsl \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .shr:
-                emitLine("asr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                // Use lsr for unsigned, asr for signed
+                if resultType.sizeInBytes == 4 {
+                    if is32BitSigned {
+                        emitLine("asr \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                    } else {
+                        emitLine("lsr \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                    }
+                } else {
+                    if leftType.isUnsigned {
+                        emitLine("lsr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    } else {
+                        emitLine("asr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    }
+                }
             case .bitAnd:
                 emitLine("and \(leftReg.x), \(leftReg.x), \(rightReg.x)")
             case .bitOr:
@@ -1731,6 +2833,11 @@ public final class Codegen {
             else { pointedType = .int }
             // If pointed type is an array, return address (array decays to pointer)
             if case .array = pointedType.unqualified {
+                return addrReg
+            }
+            // For structs, we can't load into a single register.
+            // Return the address — the caller (e.g., struct init) will use emitAddr/emitStructCopy.
+            if case .structType = pointedType.unqualified, (pointedType.sizeInBytes ?? 0) > 0 {
                 return addrReg
             }
             emitLoad(addrReg, type: pointedType)
@@ -2163,6 +3270,67 @@ public final class Codegen {
             return reg
         }
 
+        // __builtin_expect(expr, expected) → just return expr
+        if case .identifier(let id) = c.function, id.name == "__builtin_expect" {
+            if c.arguments.count >= 1 {
+                return emitExpr(c.arguments[0])
+            }
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // __builtin_offsetof(type, member) → compile-time constant
+        if case .identifier(let id) = c.function, id.name == "__builtin_offsetof" {
+            // Not commonly used, but handle gracefully
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // __builtin_types_compatible_p(type1, type2) → compile-time 0 or 1
+        if case .identifier(let id) = c.function, id.name == "__builtin_types_compatible_p" {
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #1") // assume compatible
+            return reg
+        }
+
+        // Inline creal(z) / cimag(z) — extract real/imaginary part from a _Complex value
+        if case .identifier(let id) = c.function,
+           (id.name == "creal" || id.name == "cimag" || id.name == "crealf" || id.name == "cimagf" ||
+            id.name == "creall" || id.name == "cimagl"),
+           c.arguments.count >= 1 {
+            let arg = c.arguments[0]
+            let isFloat = id.name.hasSuffix("f")
+            let isImagPart = id.name.hasPrefix("cimag")
+            let partSize = isFloat ? 4 : 8
+            let fpPrefix = isFloat ? "s" : "d"
+            let reg = regAlloc.alloc() ?? .x9
+            // If the argument is an identifier referencing a complex local variable,
+            // load the part directly from the stack slot
+            if case .identifier(let argId) = arg, let argOff = localVarOffsets[argId.name] {
+                let partOff = argOff + (isImagPart ? partSize : 0)
+                if partOff >= -256 && partOff <= 255 {
+                    emitLine("ldr \(fpPrefix)\(reg.regNum), [x29, #\(partOff)]")
+                } else {
+                    emitLoadImm("x16", Int64(partOff))
+                    emitLine("ldr \(fpPrefix)\(reg.regNum), [x29, x16]")
+                }
+            } else {
+                // Evaluate the complex expression to a temp and extract the part
+                let tmpOff = ensureTempSpace(size: partSize * 2)
+                emitComplexExpr(arg, storeAtOffset: tmpOff, isFloat: isFloat)
+                let partOff = tmpOff + (isImagPart ? partSize : 0)
+                if partOff >= -256 && partOff <= 255 {
+                    emitLine("ldr \(fpPrefix)\(reg.regNum), [x29, #\(partOff)]")
+                } else {
+                    emitLoadImm("x16", Int64(partOff))
+                    emitLine("ldr \(fpPrefix)\(reg.regNum), [x29, x16]")
+                }
+            }
+            return reg
+        }
+
         var funcName = ""
         var isLocalFuncPtr = false
         if case .identifier(let id) = c.function {
@@ -2198,6 +3366,10 @@ public final class Codegen {
         if let namedCount = namedParamCount, c.arguments.count > namedCount {
             // Evaluate named args and save on stack (they may be clobbered by
             // variadic arg evaluation, e.g. printf(fmt, func_call(...)))
+            // Track sp before and after arg evaluation to account for stack-allocating
+            // expressions (e.g., compound literals) that change sp.
+            emitLine("str x19, [sp, #-16]!")
+            emitLine("mov x19, sp")
             var namedArgRegs: [ARM64Reg] = []
             for i in 0..<min(namedCount, c.arguments.count) {
                 let argReg = emitExpr(c.arguments[i])
@@ -2228,11 +3400,22 @@ public final class Codegen {
                 regAlloc.free(argReg)
             }
 
+            // Compute extra stack allocated during arg evaluation (e.g., compound literals).
+            // x19 = sp before args. Current sp = sp after all pushes + extra allocations.
+            // The pushes themselves account for (namedCount + numVariadicArgs) * 16 bytes.
+            // x20 = extra = (x19 - sp) - pushes
+            let numVariadicArgs = c.arguments.count - namedCount
+            let totalPushSize = (min(namedCount, c.arguments.count) + numVariadicArgs) * 16
+            emitLine("mov x9, sp")
+            emitLine("sub x20, x19, x9")
+            if totalPushSize > 0 {
+                emitLine("sub x20, x20, #\(totalPushSize)")
+            }
+
             // Variadic args go on the stack
             let inUse = scratchRegs.filter { reg in
                 !regAlloc.available.contains(reg)
             }
-            let numVariadicArgs = c.arguments.count - namedCount
             let variadicSize = (numVariadicArgs * 8 + 15) & ~15
             let spillCount = inUse.count + (inUse.count % 2)
             let spillSize = spillCount * 8
@@ -2243,11 +3426,17 @@ public final class Codegen {
             if totalSize > 0 {
                 emitLine("sub sp, sp, #\(totalSize)")
             }
-            // Load variadic args from temp stack and place at the bottom (lowest address = [sp])
-            // Variadic args were pushed in order: arg[namedCount] first (highest), arg[N-1] last (lowest).
-            // After sub sp, the temp stack is at sp + totalSize.
-            // arg[N-1] is at sp + totalSize + 0, arg[N-2] at sp + totalSize + 16, etc.
-            // arg[namedCount+i] is at sp + totalSize + (numVariadicArgs - 1 - i) * 16
+            // The temp stack layout (high to low):
+            //   x19:                [x19 save]
+            //   x19 - 16:            [named arg 0]
+            //   ...                  [named arg namedCount-1]
+            //   x19 - namedCount*16: [extra stack from compound literals, etc.]
+            //   x19 - namedCount*16 - extra:  [variadic arg 0] (first variadic, highest)
+            //   ...                  [variadic arg numVariadicArgs-1] (last pushed, lowest)
+            //
+            // After `sub sp, sp, totalSize`, sp is below all temp stack entries.
+            // variadic arg[i] (last pushed = lowest) is at: sp + totalSize + (numVariadicArgs-1-i)*16
+            // named arg[i] (first pushed = highest) is at: sp + totalSize + x20 + variadicTempSize + (namedCount-1-i)*16
             for i in 0..<numVariadicArgs {
                 let tempOffset = totalSize + (numVariadicArgs - 1 - i) * 16
                 if variadicArgIsFloat[i] {
@@ -2264,11 +3453,10 @@ public final class Codegen {
             }
 
             // Restore named args from temp stack into their target registers.
-            // The named args were pushed in order, so arg[0] is at the highest
-            // address (sp + totalSize + variadicTempSize + 0), arg[1] at sp + totalSize + variadicTempSize + 16, etc.
             for i in 0..<min(namedCount, c.arguments.count) {
                 let tempOffset = totalSize + variadicTempSize + (namedCount - 1 - i) * 16
-                emitLine("ldr \(argRegs[i].x), [sp, #\(tempOffset)]")
+                emitLine("add x21, sp, #\(tempOffset)")
+                emitLine("ldr \(argRegs[i].x), [x21, x20]")
             }
 
             // Make the call
@@ -2283,16 +3471,34 @@ public final class Codegen {
             if totalSize > 0 {
                 emitLine("add sp, sp, #\(totalSize)")
             }
-            // Free the temp stack for named args
-            for _ in 0..<min(namedCount, c.arguments.count) {
+            // Free the temp stack for named args and variadic args
+            for _ in 0..<(min(namedCount, c.arguments.count) + numVariadicArgs) {
                 emitLine("add sp, sp, #16")
             }
+            // Free extra stack allocated during arg evaluation (e.g., compound literals)
+            emitLine("add sp, sp, x20")
+            // Restore x19 (post-index pop: load then sp += 16)
+            emitLine("ldr x19, [sp], #16")
         } else {
             // Non-variadic (or internal variadic): evaluate args and place in x0-x7
             // For internal variadic functions, push variadic args on the stack so
             // __builtin_va_start can point to them (handles both int and FP args).
             let isInternalVariadic = variadicFunctions.contains(funcName) && definedFunctions.contains(funcName)
-            let namedParamCount = isInternalVariadic ? (functionParamCounts[funcName] ?? 0) : 0
+            var namedParamCount = isInternalVariadic ? (functionParamCounts[funcName] ?? 0) : 0
+
+            // For indirect variadic calls (function pointer to a variadic function),
+            // detect the variadic-ness from the function pointer type.
+            var isIndirectVariadic = false
+            if funcName.isEmpty {
+                var funcType = exprType(c.function).unqualified
+                if case .unary(let u) = c.function, u.op == .dereference {
+                    funcType = exprType(u.operand).unqualified
+                }
+                if case .pointer(let to) = funcType, case .function(let params, _, let variadic) = to.unqualified {
+                    isIndirectVariadic = variadic
+                    namedParamCount = params.count
+                }
+            }
 
             // For indirect calls (function pointer), evaluate the function expression first
             // and save it in a register that won't be clobbered by arg evaluation.
@@ -2322,7 +3528,9 @@ public final class Codegen {
             // For struct-by-value args (9-16 bytes), evaluate to address then load 2 chunks.
             var evaluatedArgs: [ARM64Reg] = []
             var wideArgs: Set<Int> = []  // indices of args that use 2 register slots
+            var largeStructArgs: [Int: Int] = [:]  // indices of >16 byte struct args, value = num 8-byte chunks
             var floatArgs: Set<Int> = []  // indices of float/double args (go in d0-d7)
+            var hfaArgs: [Int: (count: Int, isFloat: Bool)] = [:]  // HFA struct args
             let paramTypes = functionParamTypes[funcName] ?? []
             for (i, arg) in c.arguments.enumerated() {
                 let argType = exprType(arg).unqualified
@@ -2332,7 +3540,39 @@ public final class Codegen {
                 let isFloatParam = paramType?.isFloating ?? false
                 let isIntParam = paramType?.isInteger ?? false
                 let argSize = argType.sizeInBytes ?? 8
-                if case .structType = argType, argSize > 8, argSize <= 16 {
+                // For variadic args (past named params), do NOT use HFA — structs use integer ABI.
+                let isVariadicArg = (isInternalVariadic || isIndirectVariadic) && i >= namedParamCount
+                if let hfaInfo = isHFA(argType), !isVariadicArg {
+                    // HFA struct: load each float/double member into FP registers
+                    // Push hfaInfo.count slots on temp stack (one per FP register)
+                    let addrReg = emitAddr(arg)
+                    for j in 0..<hfaInfo.count {
+                        // Push a placeholder slot
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                    }
+                    // Load each member and store to temp stack
+                    let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                    for j in 0..<hfaInfo.count {
+                        let memberOffset = j * (hfaInfo.isFloat ? 4 : 8)
+                        emitLine("ldr \(fpPrefix)16, [\(addrReg.x), #\(memberOffset)]")
+                        // Store at the correct temp stack position
+                        // The last-pushed slot is at sp+0, the first-pushed is at sp+(count-1)*16
+                        let slotOffset = (hfaInfo.count - 1 - j) * 16
+                        emitLine("str \(fpPrefix)16, [sp, #\(slotOffset)]")
+                    }
+                    evaluatedArgs.append(addrReg)
+                    hfaArgs[i] = hfaInfo
+                    regAlloc.free(addrReg)
+                } else if case .structType = argType, argSize <= 8 {
+                    // Small struct (≤8 bytes): load the struct value from its address
+                    let addrReg = emitAddr(arg)
+                    emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder
+                    // Load the 8-byte (or smaller) struct value
+                    emitLine("ldr x16, [\(addrReg.x)]")
+                    emitLine("str x16, [sp, #0]")
+                    evaluatedArgs.append(addrReg)
+                    regAlloc.free(addrReg)
+                } else if case .structType = argType, argSize > 8, argSize <= 16 {
                     // Struct by value (9-16 bytes): load two 8-byte chunks
                     let addrReg = emitAddr(arg)
                     // Push 2 slots (32 bytes) for the two chunks
@@ -2346,6 +3586,24 @@ public final class Codegen {
                     emitLine("str x16, [sp, #0]")   // chunk 1
                     evaluatedArgs.append(addrReg)
                     wideArgs.insert(i)
+                    regAlloc.free(addrReg)
+                } else if case .structType = argType, argSize > 16 {
+                    // Large struct (>16 bytes): copy all chunks to temp stack
+                    let addrReg = emitAddr(arg)
+                    let numChunks = (argSize + 7) / 8
+                    // Push placeholder slots
+                    for _ in 0..<numChunks {
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                    }
+                    // Load each 8-byte chunk and store to temp stack
+                    // Last-pushed slot is at sp+0, first-pushed is at sp+(numChunks-1)*16
+                    for j in 0..<numChunks {
+                        emitLine("ldr x16, [\(addrReg.x), #\(j * 8)]")
+                        let slotOffset = (numChunks - 1 - j) * 16
+                        emitLine("str x16, [sp, #\(slotOffset)]")
+                    }
+                    evaluatedArgs.append(addrReg)
+                    largeStructArgs[i] = numChunks
                     regAlloc.free(addrReg)
                 } else if argType.isFloating && isIntParam {
                     // Float arg but int param: convert float→int
@@ -2404,25 +3662,51 @@ public final class Codegen {
             // at sp when bl is executed (so callee's va_start at x29+16 can read them).
 
             // Count stack-passed args (register index >= 8, wide args use 2 slots)
+            // For HFA: if it fits in remaining FP regs, it uses FP reg slots.
+            // If it doesn't fit, the ENTIRE HFA goes on the stack (hfaCount slots).
             var totalRegSlots = 0
+            var fpSlotsUsed = 0
+            var largeStructStackSlots = 0  // large structs always go on stack
             for i in 0..<evaluatedArgs.count {
-                totalRegSlots += wideArgs.contains(i) ? 2 : 1
+                if wideArgs.contains(i) { totalRegSlots += 2 }
+                else if let largeChunks = largeStructArgs[i], largeChunks > 0 {
+                    // Large structs (>16 bytes) always go on stack, don't use register slots
+                    largeStructStackSlots += largeChunks
+                }
+                else if let hfaInfo = hfaArgs[i] {
+                    if fpSlotsUsed + hfaInfo.count <= 8 {
+                        fpSlotsUsed += hfaInfo.count
+                        totalRegSlots += hfaInfo.count
+                    } else {
+                        // Entire HFA goes on stack
+                        totalRegSlots += hfaInfo.count
+                    }
+                } else { totalRegSlots += 1 }
             }
             // For internal variadic: all variadic args go on the stack (not just overflow)
             let numStackArgs: Int
-            if isInternalVariadic && evaluatedArgs.count > namedParamCount {
+            if (isInternalVariadic || isIndirectVariadic) && evaluatedArgs.count > namedParamCount {
                 numStackArgs = evaluatedArgs.count - namedParamCount
             } else {
                 numStackArgs = max(totalRegSlots - 8, 0)
             }
+            // Compute actual stack size for variadic args (structs may need 16 bytes each)
             var stackArgSize = 0
-            if numStackArgs > 0 {
-                stackArgSize = (numStackArgs * 8 + 15) & ~15
+            if (isInternalVariadic || isIndirectVariadic) && evaluatedArgs.count > namedParamCount {
+                var variadicSize = 0
+                for i in namedParamCount..<evaluatedArgs.count {
+                    let argType = exprType(c.arguments[i]).unqualified
+                    let argSize = argType.sizeInBytes ?? 8
+                    variadicSize += (argSize + 7) & ~7  // round up to 8
+                }
+                stackArgSize = (variadicSize + 15) & ~15  // align to 16
+            } else {
+                stackArgSize = ((numStackArgs + largeStructStackSlots) * 8 + 15) & ~15
             }
 
             // Now restore ALL args from temp stack and move to target registers
             var namedCount = min(evaluatedArgs.count, 8)
-            if isInternalVariadic {
+            if isInternalVariadic || isIndirectVariadic {
                 namedCount = min(namedParamCount, evaluatedArgs.count)
             }
 
@@ -2463,7 +3747,13 @@ public final class Codegen {
             var argSlotOffsets: [Int] = []  // offset from tempBase for each arg's lowest slot
             var cumulative = 0
             for i in (0..<numArgs).reversed() {
-                let slotSize = wideArgs.contains(i) ? 32 : 16
+                let hfaCount = hfaArgs[i]?.count ?? 0
+                let largeChunks = largeStructArgs[i] ?? 0
+                let slotSize: Int
+                if wideArgs.contains(i) { slotSize = 32 }
+                else if largeChunks > 0 { slotSize = largeChunks * 16 }
+                else if hfaCount > 0 { slotSize = hfaCount * 16 }
+                else { slotSize = 16 }
                 argSlotOffsets.insert(cumulative, at: 0)
                 cumulative += slotSize
             }
@@ -2474,21 +3764,39 @@ public final class Codegen {
             // Float args use a separate register file (d0-d7) with an independent index.
             var regIdx = 0
             var fpRegIdx = 0
+            var stackArgIdx = 0  // tracks stack-passed arg slots
+            var variadicStackOffset = 0  // tracks byte offset for variadic args on stack
             for i in 0..<numArgs {
                 let tempOffset = tempBase + argSlotOffsets[i]
                 let isWide = wideArgs.contains(i)
+                let isLargeStruct = largeStructArgs[i] ?? 0 > 0
+                let largeChunks = largeStructArgs[i] ?? 0
                 let isFloatArg = floatArgs.contains(i)
-                let regsNeeded = isWide ? 2 : 1
+                let isHFAArg = hfaArgs[i] != nil
+                let regsNeeded = isWide ? 2 : (largeChunks > 0 ? largeChunks : 1)
 
                 // For internal variadic: named params go in registers, variadic args go on stack
-                let isVariadicArg = isInternalVariadic && i >= namedParamCount
+                let isVariadicArg = (isInternalVariadic || isIndirectVariadic) && i >= namedParamCount
                 if isVariadicArg {
-                    let stackOffset = (i - namedParamCount) * 8
+                    let argSize = exprType(c.arguments[i]).unqualified.sizeInBytes ?? 8
+                    let slotSize = (argSize + 7) & ~7  // round up to 8
+                    let stackOffset = variadicStackOffset
+                    variadicStackOffset += slotSize
                     if isWide {
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        // chunk 0 (first 8 bytes) is at tempOffset+16, chunk 1 at tempOffset
+                        // Place chunk 0 at stackOffset (low), chunk 1 at stackOffset+8 (high)
                         emitLine("ldr x9, [sp, #\(tempOffset + 16)]")
+                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        emitLine("ldr x9, [sp, #\(tempOffset)]")
                         emitLine("str x9, [sp, #\(stackOffset + 8)]")
+                    } else if largeChunks > 0 {
+                        // Temp stack has chunk 0 at highest offset, chunk N-1 at lowest.
+                        // Place chunk 0 at stackOffset (low), chunk N-1 at highest.
+                        for j in 0..<largeChunks {
+                            let slotOff = tempOffset + j * 16
+                            emitLine("ldr x9, [sp, #\(slotOff)]")
+                            emitLine("str x9, [sp, #\(stackOffset + (largeChunks - 1 - j) * 8)]")
+                        }
                     } else if isFloatArg {
                         emitLine("ldr d9, [sp, #\(tempOffset)]")
                         emitLine("str d9, [sp, #\(stackOffset)]")
@@ -2513,7 +3821,7 @@ public final class Codegen {
                         }
                     } else {
                         // Overflow: float arg goes on stack
-                        let stackOffset = (fpRegIdx - 8) * 8
+                        let stackOffset = stackArgIdx * 8
                         if isFloatParam {
                             emitLine("ldr d9, [sp, #\(tempOffset)]")
                             emitLine("fcvt s9, d9")
@@ -2522,9 +3830,45 @@ public final class Codegen {
                             emitLine("ldr d9, [sp, #\(tempOffset)]")
                             emitLine("str d9, [sp, #\(stackOffset)]")
                         }
+                        stackArgIdx += 1
                     }
                     regAlloc.free(evaluatedArgs[i])
                     fpRegIdx += 1
+                    continue
+                }
+
+                if isHFAArg, let hfaInfo = hfaArgs[i] {
+                    // HFA: load each member into FP registers (d0-d7 or s0-s7)
+                    // AAPCS64: if the entire HFA doesn't fit in remaining FP regs,
+                    // the entire HFA goes on the stack.
+                    let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                    let memberSize = hfaInfo.isFloat ? 4 : 8
+                    if fpRegIdx + hfaInfo.count <= 8 {
+                        // Fits entirely in FP registers
+                        for j in 0..<hfaInfo.count {
+                            let slotOff = tempOffset + (hfaInfo.count - 1 - j) * 16
+                            emitLine("ldr \(fpPrefix)\(fpRegIdx), [sp, #\(slotOff)]")
+                            fpRegIdx += 1
+                        }
+                    } else {
+                        // Entire HFA goes on the stack
+                        for j in 0..<hfaInfo.count {
+                            let slotOff = tempOffset + (hfaInfo.count - 1 - j) * 16
+                            let stackOff = stackArgIdx * 8
+                            emitLine("ldr d9, [sp, #\(slotOff)]")
+                            if hfaInfo.isFloat {
+                                emitLine("str s9, [sp, #\(stackOff)]")
+                            } else {
+                                emitLine("str d9, [sp, #\(stackOff)]")
+                            }
+                            stackArgIdx += 1
+                        }
+                        regAlloc.free(evaluatedArgs[i])
+                        regIdx += hfaInfo.count
+                        continue
+                    }
+                    regAlloc.free(evaluatedArgs[i])
+                    regIdx += hfaInfo.count  // HFA also consumes integer register slots
                     continue
                 }
 
@@ -2537,9 +3881,18 @@ public final class Codegen {
                         } else {
                             // Second chunk goes on stack
                             emitLine("ldr x9, [sp, #\(tempOffset)]")
-                            emitLine("str x9, [sp, #0]")
+                            emitLine("str x9, [sp, #\(stackArgIdx * 8)]")
                             emitLine("ldr \(argRegs[regIdx].x), [sp, #\(tempOffset + 16)]")
+                            stackArgIdx += 1
                         }
+                    } else if largeChunks > 0 {
+                        // Large struct: goes entirely on stack (too big for registers)
+                        for j in 0..<largeChunks {
+                            let slotOff = tempOffset + j * 16
+                            emitLine("ldr x9, [sp, #\(slotOff)]")
+                            emitLine("str x9, [sp, #\((stackArgIdx + (largeChunks - 1 - j)) * 8)]")
+                        }
+                        stackArgIdx += largeChunks
                     } else {
                         emitLine("ldr x9, [sp, #\(tempOffset)]")
                         emitLine("mov \(argRegs[regIdx].x), x9")
@@ -2547,22 +3900,33 @@ public final class Codegen {
                     regAlloc.free(evaluatedArgs[i])
                 } else {
                     // Stack-passed args
-                    let stackOffset = (regIdx - 8) * 8
+                    let stackOffset = stackArgIdx * 8
                     if isWide {
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        // chunk 0 (first 8 bytes) at tempOffset+16, chunk 1 at tempOffset
+                        // Place chunk 0 at stackOffset (low), chunk 1 at stackOffset+8 (high)
                         emitLine("ldr x9, [sp, #\(tempOffset + 16)]")
+                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        emitLine("ldr x9, [sp, #\(tempOffset)]")
                         emitLine("str x9, [sp, #\(stackOffset + 8)]")
+                        stackArgIdx += 2
+                    } else if largeChunks > 0 {
+                        for j in 0..<largeChunks {
+                            let slotOff = tempOffset + j * 16
+                            emitLine("ldr x9, [sp, #\(slotOff)]")
+                            emitLine("str x9, [sp, #\(stackOffset + (largeChunks - 1 - j) * 8)]")
+                        }
+                        stackArgIdx += largeChunks
                     } else {
                         emitLine("ldr x9, [sp, #\(tempOffset)]")
                         emitLine("str x9, [sp, #\(stackOffset)]")
+                        stackArgIdx += 1
                     }
                     regAlloc.free(evaluatedArgs[i])
                 }
                 regIdx += regsNeeded
             }
             // Re-allocate the target registers
-            let totalRegArgs = isInternalVariadic ? min(namedParamCount, 8) : min(regIdx, 8)
+            let totalRegArgs = (isInternalVariadic || isIndirectVariadic) ? min(namedParamCount, 8) : min(regIdx, 8)
             for _ in 0..<totalRegArgs {
                 _ = regAlloc.alloc() // consume the register slot
             }
@@ -2627,12 +3991,28 @@ public final class Codegen {
         switch expr {
         case .integerLiteral(let l): return l.type
         case .charLiteral: return .int
-        case .floatLiteral(let f): return f.type
+        case .floatLiteral(let f):
+            if f.isImaginary {
+                switch f.type {
+                case .float: return .complexFloat
+                case .double: return .complexDouble
+                case .longDouble: return .complexLongDouble
+                default: return .complexDouble
+                }
+            }
+            return f.type
         case .stringLiteral(let s): return s.type
         case .boolLiteral: return .bool
         case .identifier(let id):
             if let t = localVarTypes[id.name] { return t }
             if let t = globalVarTypes[id.name] { return t }
+            // Function name → function type (decays to function pointer in _Generic)
+            if functionNames.contains(id.name) {
+                let params = functionParamTypes[id.name] ?? []
+                let ret = functionReturnTypes[id.name] ?? .int
+                let isVariadic = variadicFunctions.contains(id.name)
+                return .function(params: params, returnType: ret, variadic: isVariadic)
+            }
             return .int
         case .binary(let b):
             // Comparison and logical operators always return int (C standard)
@@ -2646,10 +4026,23 @@ public final class Codegen {
             let rt = exprType(b.right)
             if lt.isPointer && rt.isInteger { return lt }
             if lt.isInteger && rt.isPointer { return rt }
+            // Shift operators: result type is the promoted left operand
+            if b.op == .shl || b.op == .shr {
+                let lu = lt.unqualified
+                // Integer promotion: char/short → int
+                if lu == .char || lu == .schar || lu == .uchar || lu == .short || lu == .ushort {
+                    return .int
+                }
+                return lt
+            }
             // Apply usual arithmetic conversions to determine result type.
             let lu = lt.unqualified
             let ru = rt.unqualified
             if lu.isArithmetic && ru.isArithmetic {
+                // Complex type rules (C99 6.3.1.8)
+                if lu == .complexLongDouble || ru == .complexLongDouble { return .complexLongDouble }
+                if lu == .complexDouble || ru == .complexDouble { return .complexDouble }
+                if lu == .complexFloat || ru == .complexFloat { return .complexFloat }
                 // Floating-point usual arithmetic conversions
                 if lu == .longDouble || ru == .longDouble { return .longDouble }
                 if lu == .double || ru == .double { return .double }
@@ -2666,6 +4059,7 @@ public final class Codegen {
                 }
                 if rank(lu) >= 4 || rank(ru) >= 4 { return rank(lu) >= rank(ru) ? lu : ru }
                 if rank(lu) >= 3 || rank(ru) >= 3 { return rank(lu) >= rank(ru) ? lu : ru }
+                if rank(lu) >= 2 || rank(ru) >= 2 { return rank(lu) >= rank(ru) ? lu : ru }
             }
             return lu.isArithmetic ? lt : rt
         case .unary(let u):
@@ -2709,12 +4103,15 @@ public final class Codegen {
             let bt = exprType(s.base)
             if case .pointer(let to) = bt.unqualified { return to }
             if case .array(let elem, _) = bt.unqualified { return elem }
+            if case .incompleteArray(let elem) = bt.unqualified { return elem }
             return .int
         case .member(let m):
             let bt = exprType(m.base)
             var recordType = bt.unqualified
             if m.isArrow {
                 if case .pointer(let to) = bt.unqualified { recordType = to }
+                else if case .array(let to, _) = bt.unqualified { recordType = to }
+                else if case .incompleteArray(let to) = bt.unqualified { recordType = to }
             }
             // Look up completed record if incomplete
             if case .structType(let rec) = recordType.unqualified, rec.fields.isEmpty {
@@ -2728,27 +4125,137 @@ public final class Codegen {
                 }
             }
             if case .structType(let rec) = recordType.unqualified {
-                for field in rec.fields where field.name == m.memberName {
-                    return field.type
+                for field in rec.fields {
+                    if (field.name ?? "") == m.memberName { return field.type }
+                    if (field.name ?? "").isEmpty {
+                        if fieldHasMember(field.type, m.memberName) {
+                            return findMemberType(field.type, m.memberName)
+                        }
+                    }
                 }
             }
             if case .unionType(let rec) = recordType.unqualified {
-                for field in rec.fields where field.name == m.memberName {
-                    return field.type
+                for field in rec.fields {
+                    if (field.name ?? "") == m.memberName { return field.type }
+                    if (field.name ?? "").isEmpty {
+                        if fieldHasMember(field.type, m.memberName) {
+                            return findMemberType(field.type, m.memberName)
+                        }
+                    }
                 }
             }
             return .int
         case .cast(let c):
             return c.type
-        case .conditional:
-            return .int
+        case .conditional(let c):
+            let t = exprType(c.trueExpr)
+            let f = exprType(c.falseExpr)
+            let tu = t.unqualified
+            let fu = f.unqualified
+            if tu == fu { return t }
+            if tu.isPointer && fu.isPointer {
+                if case .pointer(let to) = tu, to.unqualified == .void { return t }
+                if case .pointer(let to) = fu, to.unqualified == .void { return f }
+                return t
+            }
+            // Arithmetic conversion
+            if tu.isArithmetic && fu.isArithmetic {
+                if tu == .longDouble || fu == .longDouble { return .longDouble }
+                if tu == .double || fu == .double { return .double }
+                if tu == .float || fu == .float { return .float }
+            }
+            return t
         case .sizeof:
             return .ulong
         case .compoundLiteral(let cl):
             return cl.type
         case .initList:
             return .int
+        case .genericExpr(let ge):
+            // Evaluate the controlling expression and return the selected branch's type
+            let ctrlType = exprType(ge.controllingExpr).unqualified
+            for assoc in ge.associations {
+                if assoc.isDefault { continue }
+                if let tn = assoc.typeName, typeMatches(ctrlType, tn.unqualified) {
+                    return exprType(assoc.expr)
+                }
+            }
+            for assoc in ge.associations where assoc.isDefault {
+                return exprType(assoc.expr)
+            }
+            return .int
+        case .stmtExpr(let se):
+            if let lastStmt = se.body.statements.last,
+               case .expr(let es) = lastStmt, let e = es.expr {
+                return exprType(e)
+            }
+            return .int
         }
+    }
+
+    /// Count the number of scalar fields in a struct (recursively for nested structs and arrays).
+    private func countScalarFields(_ rec: RecordType) -> Int {
+        var count = 0
+        for field in rec.fields {
+            let ft = field.type.unqualified
+            if case .structType(let subRec) = ft {
+                count += countScalarFields(subRec)
+            } else if case .array(_, let arrCount) = ft {
+                count += arrCount
+            } else {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    /// Strip all qualifiers recursively (including pointee qualifiers) from a type.
+    private func stripAllQualifiers(_ type: CType) -> CType {
+        let t = type.unqualified
+        switch t {
+        case .pointer(let to):
+            return .pointer(to: stripAllQualifiers(to))
+        case .qualified(let base, _, _, _):
+            return stripAllQualifiers(base)
+        default:
+            return t
+        }
+    }
+
+    /// Check if two types match for _Generic (respects qualifiers on pointee types)
+    private func typeMatches(_ a: CType, _ b: CType) -> Bool {
+        var au = a.unqualified
+        var bu = b.unqualified
+        // Array decays to pointer in _Generic
+        if case .array(let elem, _) = au { au = .pointer(to: elem) }
+        if case .incompleteArray(let elem) = au { au = .pointer(to: elem) }
+        if case .array(let elem, _) = bu { bu = .pointer(to: elem) }
+        if case .incompleteArray(let elem) = bu { bu = .pointer(to: elem) }
+        // Function decays to function pointer in _Generic
+        if case .function = au { au = .pointer(to: au) }
+        if case .function = bu { bu = .pointer(to: bu) }
+        if au == bu { return true }
+        // Match struct types by name
+        if case .structType(let ra) = au, case .structType(let rb) = bu {
+            return ra.name == rb.name
+        }
+        if case .unionType(let ra) = au, case .unionType(let rb) = bu {
+            return ra.name == rb.name
+        }
+        // Match pointer types — check pointee types (with qualifiers)
+        if case .pointer(let ta) = au, case .pointer(let tb) = bu {
+            // For pointers, compare pointee types including qualifiers
+            let taU = ta.unqualified
+            let tbU = tb.unqualified
+            if taU == tbU {
+                // Check if qualifiers match (const/volatile on pointee)
+                let aIsConst = ta.isConst
+                let bIsConst = tb.isConst
+                return aIsConst == bIsConst
+            }
+            return typeMatches(taU, tbU)
+        }
+        return false
     }
 
     /// Collect completed record types from a CType (recursive).
@@ -2764,6 +4271,67 @@ public final class Codegen {
     }
 
     /// Get the offset of a struct/union member.
+    /// Find the type of a named member (recursively for anonymous members)
+    private func findMemberType(_ type: CType, _ memberName: String) -> CType {
+        let t = type.unqualified
+        if case .structType(let rec) = t {
+            for field in rec.fields {
+                if (field.name ?? "") == memberName { return field.type }
+                if (field.name ?? "").isEmpty, fieldHasMember(field.type, memberName) {
+                    return findMemberType(field.type, memberName)
+                }
+            }
+        }
+        if case .unionType(let rec) = t {
+            for field in rec.fields {
+                if (field.name ?? "") == memberName { return field.type }
+                if (field.name ?? "").isEmpty, fieldHasMember(field.type, memberName) {
+                    return findMemberType(field.type, memberName)
+                }
+            }
+        }
+        return .int
+    }
+
+    /// Check if a type is an HFA (Homogeneous Floating-point Aggregate).
+    /// Returns (count, isFloat) if it is, nil otherwise.
+    /// An HFA is a struct with 1-4 members all of the same FP type (float or double).
+    private func isHFA(_ type: CType) -> (count: Int, isFloat: Bool)? {
+        let t = type.unqualified
+        guard case .structType(let rec) = t else { return nil }
+        let fields = rec.fields
+        guard fields.count >= 1, fields.count <= 4 else { return nil }
+        var isFloat = false
+        var isDouble = false
+        for field in fields {
+            let ft = field.type.unqualified
+            if ft == .float { isFloat = true }
+            else if ft == .double || ft == .longDouble { isDouble = true }
+            else { return nil }  // Not a floating-point member
+        }
+        if isFloat && !isDouble { return (count: fields.count, isFloat: true) }
+        if isDouble && !isFloat { return (count: fields.count, isFloat: false) }
+        return nil
+    }
+
+    /// Check if a record type has a named member (recursively for anonymous members)
+    private func fieldHasMember(_ type: CType, _ memberName: String) -> Bool {
+        let t = type.unqualified
+        if case .structType(let rec) = t {
+            for field in rec.fields {
+                if (field.name ?? "") == memberName { return true }
+                if (field.name ?? "").isEmpty, fieldHasMember(field.type, memberName) { return true }
+            }
+        }
+        if case .unionType(let rec) = t {
+            for field in rec.fields {
+                if (field.name ?? "") == memberName { return true }
+                if (field.name ?? "").isEmpty, fieldHasMember(field.type, memberName) { return true }
+            }
+        }
+        return false
+    }
+
     private func memberOffset(_ baseType: CType, _ memberName: String) -> Int {
         var t = baseType.unqualified
         if case .pointer(let to) = t { t = to.unqualified }
@@ -2779,22 +4347,50 @@ public final class Codegen {
             }
         }
         if case .structType(let rec) = t {
-            for field in rec.fields where field.name == memberName {
-                return field.offset
+            for field in rec.fields {
+                if (field.name ?? "") == memberName {
+                    return field.offset
+                }
+                // Anonymous struct/union member: search recursively
+                if (field.name ?? "").isEmpty {
+                    let ft = field.type.unqualified
+                    switch ft {
+                        case .structType, .unionType:
+                            let subOffset = memberOffset(field.type, memberName)
+                            if subOffset != 0 || fieldHasMember(field.type, memberName) {
+                                return field.offset + subOffset
+                            }
+                        default: break
+                        }
+                }
             }
         }
         if case .unionType(let rec) = t {
-            for field in rec.fields where field.name == memberName {
-                return field.offset
+            for field in rec.fields {
+                if (field.name ?? "") == memberName {
+                    return field.offset
+                }
+                // Anonymous struct/union member: search recursively
+                if (field.name ?? "").isEmpty {
+                    let ft = field.type.unqualified
+                    switch ft {
+                        case .structType, .unionType:
+                            let subOffset = memberOffset(field.type, memberName)
+                            if subOffset != 0 || fieldHasMember(field.type, memberName) {
+                                return field.offset + subOffset
+                            }
+                        default: break
+                        }
+                }
             }
         }
         return 0
     }
 
     /// Look up bitfield info for a struct member.
-    /// Returns (bitWidth, bitOffsetWithinUnit, unitSizeInBytes) or nil if not a bitfield.
+    /// Returns (bitWidth, bitOffsetWithinUnit, unitSizeInBytes, isSigned) or nil if not a bitfield.
     /// bitOffsetWithinUnit is the bit position of the field within its containing unit.
-    private func bitfieldInfo(_ baseType: CType, _ memberName: String) -> (bitWidth: Int, bitOffset: Int, unitSize: Int)? {
+    private func bitfieldInfo(_ baseType: CType, _ memberName: String) -> (bitWidth: Int, bitOffset: Int, unitSize: Int, isSigned: Bool)? {
         var t = baseType.unqualified
         if case .pointer(let to) = t { t = to.unqualified }
         if case .structType(let rec) = t {
@@ -2803,12 +4399,21 @@ public final class Codegen {
             }
         }
         if case .structType(let rec) = t {
-            for field in rec.fields where field.name == memberName {
+            for field in rec.fields where (field.name ?? "") == memberName {
                 guard let bw = field.bitWidth else { return nil }
                 // Determine the containing unit size from the field type
                 let unitSize = field.type.unqualified.sizeInBytes ?? 4
+                // Determine if the field is signed.
+                // Enum bitfields are treated as unsigned by default on ARM64 (GCC behavior).
+                let fieldBaseType = field.type.unqualified
+                let isSigned: Bool
+                if case .enumType = fieldBaseType {
+                    isSigned = false
+                } else {
+                    isSigned = !fieldBaseType.isUnsigned
+                }
                 // Use the bitOffset stored in the field (bit position within containing unit)
-                return (bw, field.bitOffset, unitSize)
+                return (bw, field.bitOffset, unitSize, isSigned)
             }
         }
         return nil
@@ -2833,7 +4438,15 @@ public final class Codegen {
         switch expr {
         case .identifier(let id):
             let reg = regAlloc.alloc() ?? .x9
-            if let offset = localVarOffsets[id.name] {
+            if vlaBasePointers.contains(id.name), let offset = localVarOffsets[id.name] {
+                // VLA base pointer: load the pointer value from the local variable
+                if offset >= -256 && offset <= 255 {
+                    emitLine("ldr \(reg.x), [x29, #\(offset)]")
+                } else {
+                    emitLoadImm("x17", Int64(offset))
+                    emitLine("ldr \(reg.x), [x29, x17]")
+                }
+            } else if let offset = localVarOffsets[id.name] {
                 if offset >= -4095 && offset <= 4095 {
                     emitLine("add \(reg.x), x29, #\(offset)")
                 } else {
@@ -2854,6 +4467,10 @@ public final class Codegen {
                     emitLine("adrp \(reg.x), _\(id.name)@PAGE")
                     emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
                 }
+            } else if functionNames.contains(id.name) {
+                // Function name — take its address
+                emitLine("adrp \(reg.x), _\(id.name)@PAGE")
+                emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
             }
             return reg
 
@@ -2865,6 +4482,11 @@ public final class Codegen {
             if baseTypeFull.isArray {
                 // Array subscript: get address of the array, don't load its value
                 baseReg = emitAddr(s.base)
+            } else if case .incompleteArray = baseTypeFull,
+                      case .identifier(let id) = s.base,
+                      vlaBasePointers.contains(id.name) {
+                // VLA subscript: load the base pointer value
+                baseReg = emitExpr(s.base)
             } else {
                 // Pointer subscript: load the pointer value
                 baseReg = emitExpr(s.base)
@@ -2881,6 +4503,46 @@ public final class Codegen {
             else if case .incompleteArray(let e) = baseTypeFull { elemType = e }
             else if case .pointer(let e) = baseTypeFull { elemType = e }
             else { elemType = .int }
+
+            // Check for multi-dimensional VLA: if the base is a VLA and the element
+            // type is also an incompleteArray, compute stride at runtime.
+            if case .incompleteArray(let innerElemType) = elemType.unqualified,
+               case .identifier(let id) = s.base,
+               vlaBasePointers.contains(id.name),
+               let innerDims = vlaInnerDims[id.name], !innerDims.isEmpty {
+                // Multi-dimensional VLA subscript: stride = inner_dim * inner_elem_size
+                // The first inner dimension determines the row stride.
+                let dimName = innerDims[0]
+                let dimOffset = localVarOffsets[dimName] ?? 0
+                // Load the inner dimension value
+                if dimOffset >= -256 && dimOffset <= 255 {
+                    emitLine("ldr w16, [x29, #\(dimOffset)]")
+                } else {
+                    emitLoadImm("x17", Int64(dimOffset))
+                    emitLine("ldr w16, [x29, x17]")
+                }
+                // Sign-extend the dimension
+                emitLine("sxtw x16, w16")
+                // stride = index * inner_dim
+                emitLine("mul \(indexReg.x), \(indexReg.x), x16")
+                // Multiply by inner element size
+                let innerElemSize = innerElemType.unqualified.sizeInBytes ?? 4
+                if innerElemSize == 4 {
+                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #2")
+                } else if innerElemSize == 8 {
+                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #3")
+                } else if innerElemSize == 2 {
+                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #1")
+                } else if innerElemSize == 1 {
+                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x)")
+                } else {
+                    emitLoadImm("x17", Int64(innerElemSize))
+                    emitLine("madd \(baseReg.x), \(indexReg.x), x17, \(baseReg.x)")
+                }
+                regAlloc.free(indexReg)
+                return baseReg
+            }
+
             let elemSize = elemType.unqualified.isPointer ? 8 : (elemType.sizeInBytes ?? 4)
             // addr = base + index * elemSize
             if elemSize == 1 {
@@ -2928,6 +4590,22 @@ public final class Codegen {
         }
     }
 
+    /// Try to get the address of an lvalue expression. Returns nil if the expression
+    /// is not an lvalue (cannot take its address). Handles casts by stripping them.
+    private func emitAddrOrNil(_ expr: Expr) -> ARM64Reg? {
+        switch expr {
+        case .identifier, .subscript_, .member:
+            return emitAddr(expr)
+        case .unary(let u) where u.op == .dereference:
+            return emitExpr(u.operand)
+        case .cast(let c):
+            // Cast to the same type — get address of the inner expression
+            return emitAddrOrNil(c.expr)
+        default:
+            return nil
+        }
+    }
+
     private func emitSubscriptExpr(_ s: SubscriptExpr) -> ARM64Reg {
         let addrReg = emitAddr(.subscript_(s))
         // Determine element type and load with correct size
@@ -2937,8 +4615,11 @@ public final class Codegen {
         else if case .incompleteArray(let e) = bt { elemType = e }
         else if case .pointer(let e) = bt { elemType = e }
         else { elemType = .int }
-        // If element type is an array, return address (array decays to pointer)
+        // If element type is an array (including incompleteArray/VLA), return address (array decays to pointer)
         if case .array = elemType.unqualified {
+            return addrReg
+        }
+        if case .incompleteArray = elemType.unqualified {
             return addrReg
         }
         emitLoad(addrReg, type: elemType)
@@ -2986,14 +4667,73 @@ public final class Codegen {
                     emitLine("and \(addrReg.x), \(addrReg.x), x16")
                 }
             }
+            // Sign-extend for signed bitfields
+            if bf.isSigned && bf.bitWidth < 64 {
+                // Test the sign bit (bit bitWidth-1). If set, sign-extend.
+                // sbfx extracts and sign-extends: sbfx xReg, xReg, #lsb, #width
+                // But we already shifted to bit 0, so we can use sbfx from bit 0
+                emitLine("sbfx \(addrReg.x), \(addrReg.x), #0, #\(bf.bitWidth)")
+            }
+            return addrReg
+        }
+        // Handle member access on a function call returning a struct (e.g., fr_hfa11().a)
+        // The struct return is in registers (s0-s3/d0-d3 for HFA, x0-x1 for small struct),
+        // so we need to store it to a temp, load the member, then free the temp.
+        if case .call = m.base, case .structType = exprType(m.base).unqualified {
+            let baseType = exprType(m.base).unqualified
+            var resolvedType = baseType
+            if case .structType(let rec) = baseType, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                resolvedType = .structType(completed)
+            }
+            let structSize = resolvedType.sizeInBytes ?? 0
+            let alignedSize = max((structSize + 15) & ~15, 16)
+            // Allocate temp on stack (16-byte aligned), plus 16 bytes to save x19
+            emitLine("sub sp, sp, #\(alignedSize + 16)")
+            emitLine("str x19, [sp, #\(alignedSize)]")  // save x19
+            emitLine("mov x19, sp")  // x19 = temp address
+            if let hfaInfo = isHFA(resolvedType) {
+                _ = emitExpr(m.base)  // makes the call (x19 is callee-saved, preserved)
+                let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                for j in 0..<hfaInfo.count {
+                    let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                    emitLine("str \(fpPrefix)\(j), [x19, #\(memberOff)]")
+                }
+            } else if structSize <= 16 {
+                _ = emitExpr(m.base)  // makes the call
+                emitLine("str x0, [x19]")
+                if structSize > 8 {
+                    emitLine("str x1, [x19, #8]")
+                }
+            } else {
+                emitLine("mov x8, x19")
+                _ = emitExpr(m.base)  // makes the call
+            }
+            let addrReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(addrReg.x), x19")
+            emitLine("ldr x19, [sp, #\(alignedSize)]")  // restore x19
+            // Add member offset
+            let mOffset = memberOffset(resolvedType, m.memberName)
+            if mOffset != 0 {
+                emitLine("add \(addrReg.x), \(addrReg.x), #\(mOffset)")
+            }
+            let mt = exprType(.member(m))
+            if case .array = mt.unqualified {
+                // Restore x19 and free temp (but keep addrReg pointing to the member)
+                emitLine("add sp, sp, #\(alignedSize + 16)")
+                return addrReg
+            }
+            // Load the member value
+            emitLoad(addrReg, type: mt)
+            regAlloc.free(addrReg)
+            // Free the temp + x19 save area
+            emitLine("add sp, sp, #\(alignedSize + 16)")
             return addrReg
         }
         let addrReg = emitAddr(.member(m))
         // If the member type is an array, the value IS the address (array decays to pointer)
         let mt = exprType(.member(m))
-        if case .array = mt.unqualified {
-            return addrReg
-        }
+        if case .array = mt.unqualified { return addrReg }
+        if case .incompleteArray = mt.unqualified { return addrReg }
         // Load the value with the correct size based on member type
         emitLoad(addrReg, type: mt)
         return addrReg
@@ -3030,14 +4770,24 @@ public final class Codegen {
         let elseLabel = newLabel()
         let endLabel = newLabel()
         let resultReg = regAlloc.alloc() ?? .x9
+        let resultType = exprType(.conditional(c)).unqualified
+        let isFloat = resultType.isFloating
         emitLine("cbz \(condReg.x), \(elseLabel)")
         let trueReg = emitExpr(c.trueExpr)
-        emitLine("mov \(resultReg.x), \(trueReg.x)")
+        if isFloat {
+            emitLine("fmov \(resultType == .float ? "s" : "d")\(resultReg.regNum), \(resultType == .float ? "s" : "d")\(trueReg.regNum)")
+        } else {
+            emitLine("mov \(resultReg.x), \(trueReg.x)")
+        }
         regAlloc.free(trueReg)
         emitLine("b \(endLabel)")
         emitLine("\(elseLabel):")
         let falseReg = emitExpr(c.falseExpr)
-        emitLine("mov \(resultReg.x), \(falseReg.x)")
+        if isFloat {
+            emitLine("fmov \(resultType == .float ? "s" : "d")\(resultReg.regNum), \(resultType == .float ? "s" : "d")\(falseReg.regNum)")
+        } else {
+            emitLine("mov \(resultReg.x), \(falseReg.x)")
+        }
         regAlloc.free(falseReg)
         emitLine("\(endLabel):")
         return resultReg
@@ -3119,53 +4869,551 @@ public final class Codegen {
         }
     }
 
+    /// Copy struct bytes from srcReg to dstAddrName (a raw register name like "x16")
+    private func emitStructCopyToField(_ dstAddrName: String, _ srcReg: ARM64Reg, _ size: Int) {
+        var offset = 0
+        var remaining = size
+        while remaining >= 8 {
+            emitLine("ldr x15, [\(srcReg.x), #\(offset)]")
+            emitLine("str x15, [\(dstAddrName), #\(offset)]")
+            offset += 8
+            remaining -= 8
+        }
+        if remaining >= 4 {
+            emitLine("ldr w15, [\(srcReg.x), #\(offset)]")
+            emitLine("str w15, [\(dstAddrName), #\(offset)]")
+            offset += 4
+            remaining -= 4
+        }
+        if remaining >= 2 {
+            emitLine("ldrh w15, [\(srcReg.x), #\(offset)]")
+            emitLine("strh w15, [\(dstAddrName), #\(offset)]")
+            offset += 2
+            remaining -= 2
+        }
+        if remaining >= 1 {
+            emitLine("ldrb w15, [\(srcReg.x), #\(offset)]")
+            emitLine("strb w15, [\(dstAddrName), #\(offset)]")
+        }
+    }
+
     /// Emit a local aggregate initializer: write init list values to stack memory at addrReg.
     private func emitLocalInit(_ addrReg: ARM64Reg, _ expr: Expr, type: CType) {
         guard case .initList(let il) = expr else { return }
         let t = type.unqualified
+        // Zero-initialize the aggregate before writing init list values.
+        // C99 requires that fields/elements not explicitly initialized be set to zero.
+        if let totalSize = t.sizeInBytes, totalSize > 0 {
+            emitLine("mov w15, #0")
+            for i in stride(from: 0, to: totalSize, by: 1) {
+                if i > 0 {
+                    emitLine("strb w15, [\(addrReg.x), #\(i)]")
+                } else {
+                    emitLine("strb w15, [\(addrReg.x)]")
+                }
+            }
+        }
         // Save base address to stack to avoid clobbering by emitExpr
         emitLine("sub sp, sp, #16")
         emitLine("str \(addrReg.x), [sp, #0]")
         if case .structType(let rec) = t {
             let fields = rec.fields
-            for (i, v) in il.values.enumerated() {
-                if i < fields.count {
-                    let fieldOffset = fields[i].offset
-                    let fieldAddr = regAlloc.alloc() ?? .x9
-                    emitLine("ldr \(fieldAddr.x), [sp, #0]")
-                    if fieldOffset != 0 {
-                        emitLine("add \(fieldAddr.x), \(fieldAddr.x), #\(fieldOffset)")
+            var valueIdx = 0
+            // Build a map from field name → list of value indices for designated initializers
+            // (multiple designators can target the same struct field, e.g. .inner.x and .inner.y)
+            var designatedFields: [String: [Int]] = [:]
+            for (vi, desig) in il.designators.enumerated() {
+                if let names = desig, let firstName = names.first {
+                    designatedFields[firstName, default: []].append(vi)
+                }
+            }
+            let hasDesignators = !designatedFields.isEmpty
+            for field in fields {
+                let fieldOffset = field.offset
+                let fieldSize = field.type.sizeInBytes ?? 0
+                if fieldSize == 0 {
+                    if valueIdx < il.values.count { valueIdx += 1 }
+                    continue
+                }
+                // Check if this field has a designator
+                if hasDesignators {
+                    // Find all values designated for this field (including anonymous members)
+                    var designatedIndices: [Int] = []
+                    let fieldName = field.name ?? ""
+                    if !fieldName.isEmpty, let indices = designatedFields[fieldName] {
+                        designatedIndices = indices
+                    } else if fieldName.isEmpty {
+                        // Anonymous struct/union member: check if any designator matches a sub-field
+                        for (vi, desig) in il.designators.enumerated() {
+                            if let names = desig, let firstName = names.first {
+                                if fieldHasMember(field.type, firstName) {
+                                    designatedIndices.append(vi)
+                                }
+                            }
+                        }
                     }
+                    if !designatedIndices.isEmpty {
+                        for idx in designatedIndices {
+                        // Emit the designated value for this field
+                        emitLine("ldr x16, [sp, #0]")
+                        if fieldOffset != 0 {
+                            emitLine("add x16, x16, #\(fieldOffset)")
+                        }
+                        let v = il.values[idx]
+                        let fieldType = field.type.unqualified
+                        // Handle nested designators (e.g., .a.j = 5)
+                        let nestedNames: [String] = {
+                            if let names = il.designators[idx] {
+                                return Array(names.dropFirst())
+                            }
+                            return []
+                        }()
+                        if !nestedNames.isEmpty {
+                            // Nested designator: compute offset of the nested field chain
+                            // and store the scalar value at that offset
+                            var nestedType = field.type
+                            var nestedOffset = 0
+                            for name in nestedNames {
+                                if case .structType(let rec) = nestedType.unqualified {
+                                    for nf in rec.fields {
+                                        if (nf.name ?? "") == name {
+                                            nestedOffset += nf.offset
+                                            nestedType = nf.type
+                                            break
+                                        }
+                                        if (nf.name ?? "").isEmpty, fieldHasMember(nf.type, name) {
+                                            nestedOffset += nf.offset
+                                            nestedType = nf.type
+                                            break
+                                        }
+                                    }
+                                } else if case .unionType(let rec) = nestedType.unqualified {
+                                    for nf in rec.fields {
+                                        if (nf.name ?? "") == name {
+                                            nestedOffset += nf.offset
+                                            nestedType = nf.type
+                                            break
+                                        }
+                                        if (nf.name ?? "").isEmpty, fieldHasMember(nf.type, name) {
+                                            nestedOffset += nf.offset
+                                            nestedType = nf.type
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                            if nestedOffset != 0 {
+                                emitLine("add x16, x16, #\(nestedOffset)")
+                            }
+                            let valReg = emitExpr(v)
+                            emitStoreToAddrRaw("x16", valReg, type: nestedType)
+                            regAlloc.free(valReg)
+                        } else if case .initList = v {
+                            let fieldAddr = regAlloc.alloc() ?? .x9
+                            emitLine("mov \(fieldAddr.x), x16")
+                            emitLocalInit(fieldAddr, v, type: field.type)
+                            regAlloc.free(fieldAddr)
+                        } else if case .compoundLiteral(let cl) = v {
+                            let fieldAddr = regAlloc.alloc() ?? .x9
+                            emitLine("mov \(fieldAddr.x), x16")
+                            emitLocalInit(fieldAddr, cl.initList, type: field.type)
+                            regAlloc.free(fieldAddr)
+                        } else if case .structType = fieldType, let srcAddr = emitAddrOrNil(v) {
+                            emitStructCopyToField("x16", srcAddr, field.type.sizeInBytes ?? 0)
+                            regAlloc.free(srcAddr)
+                        } else if case .structType = fieldType, case .unary(let u) = v, u.op == .dereference {
+                            let ptrReg = emitExpr(u.operand)
+                            emitStructCopyToField("x16", ptrReg, field.type.sizeInBytes ?? 0)
+                            regAlloc.free(ptrReg)
+                        } else {
+                            // Scalar value — store to field address
+                            let valReg = emitExpr(v)
+                            // Convert float/double if needed
+                            let valType = exprType(v).unqualified
+                            if valType == .double && field.type.unqualified == .float {
+                                emitLine("fcvt s\(valReg.regNum), d\(valReg.regNum)")
+                            } else if valType == .float && field.type.unqualified == .double {
+                                emitLine("fcvt d\(valReg.regNum), s\(valReg.regNum)")
+                            }
+                            emitStoreToAddrRaw("x16", valReg, type: field.type)
+                            regAlloc.free(valReg)
+                        }
+                        } // end for idx in designatedIndices
+                        continue
+                    }
+                    // No designator for this field — leave it zero-initialized
+                    continue
+                }
+                // Use x16 as field address to avoid clobbering by emitExpr
+                emitLine("ldr x16, [sp, #0]")
+                if fieldOffset != 0 {
+                    emitLine("add x16, x16, #\(fieldOffset)")
+                }
+                let fieldType = field.type.unqualified
+                if valueIdx < il.values.count {
+                    let v = il.values[valueIdx]
                     if case .initList = v {
                         // Nested aggregate init
-                        emitLocalInit(fieldAddr, v, type: fields[i].type)
+                        valueIdx += 1
+                        let fieldAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(fieldAddr.x), x16")
+                        emitLocalInit(fieldAddr, v, type: field.type)
+                        regAlloc.free(fieldAddr)
+                    } else if case .compoundLiteral(let cl) = v {
+                        valueIdx += 1
+                        let fieldAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(fieldAddr.x), x16")
+                        emitLocalInit(fieldAddr, cl.initList, type: field.type)
+                        regAlloc.free(fieldAddr)
+                    } else if case .stringLiteral(let sl) = v, case .array(let elemType, let count) = fieldType, elemType.isChar {
+                        // String literal for char array field — copy bytes inline
+                        valueIdx += 1
+                        let label = addStringLiteral(sl.value)
+                        // Use x14 as src to avoid clobbering x16 (field addr)
+                        emitLine("adrp x14, \(label)@PAGE")
+                        emitLine("add x14, x14, \(label)@PAGEOFF")
+                        let bytes = Array(sl.value.utf8)
+                        let copyLen = min(count, bytes.count + 1)
+                        for i in 0..<copyLen {
+                            if i > 0 {
+                                emitLine("ldrb w15, [x14, #\(i)]")
+                                emitLine("strb w15, [x16, #\(i)]")
+                            } else {
+                                emitLine("ldrb w15, [x14]")
+                                emitLine("strb w15, [x16]")
+                            }
+                        }
+                        // Zero-fill remaining bytes
+                        if copyLen < count {
+                            emitLine("mov w15, #0")
+                            for i in copyLen..<count {
+                                emitLine("strb w15, [x16, #\(i)]")
+                            }
+                        }
+                    } else if case .array(let elemType, let count) = fieldType {
+                        // Array field: consume values for each element
+                        for _ in 0..<count {
+                            if valueIdx < il.values.count {
+                                let ev = il.values[valueIdx]
+                                valueIdx += 1
+                                if case .initList = ev {
+                                    let elemAddr = regAlloc.alloc() ?? .x9
+                                    emitLine("mov \(elemAddr.x), x16")
+                                    emitLocalInit(elemAddr, ev, type: elemType)
+                                    regAlloc.free(elemAddr)
+                                } else {
+                                    let valReg = emitExpr(ev)
+                                    emitStoreToAddrRaw("x16", valReg, type: elemType)
+                                    regAlloc.free(valReg)
+                                }
+                            } else {
+                                break
+                            }
+                            // Advance x16 by elemSize
+                            let elemSize = elemType.sizeInBytes ?? 8
+                            emitLine("add x16, x16, #\(elemSize)")
+                        }
+                    } else if case .stringLiteral(let sl) = v, case .array(let elemType, let count) = fieldType, elemType.isChar {
+                        // String literal for char array — already handled above
+                        valueIdx += 1
+                    } else if case .identifier = v, case .structType = fieldType {
+                        // Struct copy from a variable — copy bytes from source to field
+                        valueIdx += 1
+                        let srcAddr = emitAddr(v)
+                        emitStructCopyToField("x16", srcAddr, field.type.sizeInBytes ?? 0)
+                        regAlloc.free(srcAddr)
+                    } else if case .unary(let u) = v, u.op == .dereference, case .structType = fieldType {
+                        // Struct copy from *ptr — dereference pointer and copy
+                        valueIdx += 1
+                        let ptrReg = emitExpr(u.operand)
+                        emitStructCopyToField("x16", ptrReg, field.type.sizeInBytes ?? 0)
+                        regAlloc.free(ptrReg)
+                    } else if case .identifier = v, case .unionType = fieldType {
+                        // Union copy from a variable
+                        valueIdx += 1
+                        let srcAddr = emitAddr(v)
+                        emitStructCopyToField("x16", srcAddr, field.type.sizeInBytes ?? 0)
+                        regAlloc.free(srcAddr)
+                    } else if case .structType = fieldType {
+                        // Struct field initialized from a non-init expression:
+                        // Could be a cast, member access, dereference, etc.
+                        // Try to get the address of the expression and copy bytes.
+                        valueIdx += 1
+                        if let srcAddr = emitAddrOrNil(v) {
+                            emitStructCopyToField("x16", srcAddr, field.type.sizeInBytes ?? 0)
+                            regAlloc.free(srcAddr)
+                        } else {
+                            // Fallback: evaluate as flat init
+                            valueIdx -= 1  // undo the increment since emitLocalInitStructElem advances it
+                            if case .structType(let subRec) = fieldType {
+                                emitLine("mov x17, x16")
+                                emitLocalInitStructElem(il.values, idx: &valueIdx, rec: subRec, baseAddrReg: "x17")
+                            }
+                        }
+                    } else {
+                        // Scalar field (or bitfield)
+                        valueIdx += 1
+                        let valReg = emitExpr(v)
+                        // Convert float/double if needed
+                        let valType = exprType(v).unqualified
+                        if valType == .double && field.type.unqualified == .float {
+                            emitLine("fcvt s\(valReg.regNum), d\(valReg.regNum)")
+                        } else if valType == .float && field.type.unqualified == .double {
+                            emitLine("fcvt d\(valReg.regNum), s\(valReg.regNum)")
+                        }
+                        if field.bitWidth != nil {
+                            // Bitfield initialization: read-modify-write
+                            // Save the value on stack first
+                            emitLine("str \(valReg.x), [sp, #-16]!")
+                            regAlloc.free(valReg)
+                            // Load the containing unit
+                            let unitSize = field.type.unqualified.sizeInBytes ?? 4
+                            switch unitSize {
+                            case 1: emitLine("ldrb w17, [x16]")
+                            case 2: emitLine("ldrh w17, [x16]")
+                            case 4: emitLine("ldr w17, [x16]")
+                            case 8: emitLine("ldr x17, [x16]")
+                            default: emitLine("ldr w17, [x16]")
+                            }
+                            // Load the value from stack into x14
+                            emitLine("ldr x14, [sp]")
+                            // Compute masks
+                            let bw = field.bitWidth!
+                            let bo = field.bitOffset
+                            let bitfieldMask: UInt64 = ((UInt64(1) << UInt64(bw)) - 1) << UInt64(bo)
+                            let clearMask: UInt64 = ~bitfieldMask
+                            // Clear the bitfield bits in the unit (use x15 for clearMask)
+                            emitLine("mov x15, #\(clearMask & 0xffff)")
+                            if clearMask > 0xffff {
+                                emitLine("movk x15, #\((clearMask >> 16) & 0xffff), lsl #16")
+                            }
+                            if clearMask > 0xffffff {
+                                emitLine("movk x15, #\((clearMask >> 32) & 0xffff), lsl #32")
+                            }
+                            if clearMask > 0xffffffffffff {
+                                emitLine("movk x15, #\((clearMask >> 48) & 0xffff), lsl #48")
+                            }
+                            emitLine("and x17, x17, x15")
+                            // Shift the new value to the bitfield position
+                            if bo > 0 {
+                                emitLine("lsl x14, x14, #\(bo)")
+                            }
+                            // Mask the new value to bitWidth bits (shifted to position)
+                            emitLine("mov x15, #\(bitfieldMask & 0xffff)")
+                            if bitfieldMask > 0xffff {
+                                emitLine("movk x15, #\((bitfieldMask >> 16) & 0xffff), lsl #16")
+                            }
+                            if bitfieldMask > 0xffffff {
+                                emitLine("movk x15, #\((bitfieldMask >> 32) & 0xffff), lsl #32")
+                            }
+                            if bitfieldMask > 0xffffffffffff {
+                                emitLine("movk x15, #\((bitfieldMask >> 48) & 0xffff), lsl #48")
+                            }
+                            emitLine("and x14, x14, x15")
+                            emitLine("orr x17, x17, x14")
+                            // Store the unit back
+                            switch unitSize {
+                            case 1: emitLine("strb w17, [x16]")
+                            case 2: emitLine("strh w17, [x16]")
+                            case 4: emitLine("str w17, [x16]")
+                            case 8: emitLine("str x17, [x16]")
+                            default: emitLine("str w17, [x16]")
+                            }
+                            emitLine("add sp, sp, #16")  // free the pushed value
+                        } else {
+                            emitStoreToAddrRaw("x16", valReg, type: field.type)
+                            regAlloc.free(valReg)
+                        }
+                    }
+                }
+            }
+        } else if case .unionType(let rec) = t {
+            // Union init: initialize the first field (or first named field)
+            if let firstField = rec.fields.first {
+                if il.values.count > 0 {
+                    let v = il.values[0]
+                    let fieldAddr = regAlloc.alloc() ?? .x9
+                    emitLine("ldr \(fieldAddr.x), [sp, #0]")
+                    if case .initList = v {
+                        emitLocalInit(fieldAddr, v, type: firstField.type)
+                    } else if case .compoundLiteral(let cl) = v {
+                        emitLocalInit(fieldAddr, cl.initList, type: firstField.type)
+                    } else if case .identifier = v, case .structType = firstField.type.unqualified {
+                        // Struct copy from variable
+                        let srcAddr = emitAddr(v)
+                        emitStructCopyToField("\(fieldAddr.x)", srcAddr, firstField.type.sizeInBytes ?? 0)
+                        regAlloc.free(srcAddr)
+                    } else if case .array = firstField.type.unqualified {
+                        // Array field with flat init — use emitLocalInit with a synthetic initList
+                        // Actually, all values belong to the first field's array
+                        emitLocalInit(fieldAddr, .initList(InitListExpr(values: il.values, loc: SourceLoc.unknown)), type: firstField.type)
                     } else {
                         let valReg = emitExpr(v)
-                        emitStoreToAddr(fieldAddr, valReg, type: fields[i].type)
+                        emitStoreToAddrRaw("\(fieldAddr.x)", valReg, type: firstField.type)
+                        regAlloc.free(valReg)
                     }
                     regAlloc.free(fieldAddr)
                 }
             }
         } else if case .array(let elemType, _) = t {
             let elemSize = elemType.sizeInBytes ?? 8
-            for (i, v) in il.values.enumerated() {
-                let elemAddr = regAlloc.alloc() ?? .x9
-                emitLine("ldr \(elemAddr.x), [sp, #0]")
-                if i > 0 {
-                    emitLine("add \(elemAddr.x), \(elemAddr.x), #\(i * elemSize)")
+            if case .structType(let subRec) = elemType.unqualified {
+                // Array of structs: consume values per struct element
+                var valueIdx = 0
+                var elemI = 0
+                while valueIdx < il.values.count {
+                    emitLine("ldr x16, [sp, #0]")
+                    if elemI > 0 {
+                        emitLine("add x16, x16, #\(elemI * elemSize)")
+                    }
+                    let v = il.values[valueIdx]
+                    if case .initList = v {
+                        // Complete element with brace init
+                        valueIdx += 1
+                        let elemAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(elemAddr.x), x16")
+                        emitLocalInit(elemAddr, v, type: elemType)
+                        regAlloc.free(elemAddr)
+                    } else if case .compoundLiteral(let cl) = v {
+                        valueIdx += 1
+                        let elemAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(elemAddr.x), x16")
+                        emitLocalInit(elemAddr, cl.initList, type: elemType)
+                        regAlloc.free(elemAddr)
+                    } else {
+                        // Flat init: consume values for one struct element
+                        let startIdx = valueIdx
+                        emitLocalInitStructElem(il.values, idx: &valueIdx, rec: subRec, baseAddrReg: "x16")
+                        if valueIdx == startIdx { break }
+                    }
+                    elemI += 1
                 }
-                if case .initList = v {
-                    emitLocalInit(elemAddr, v, type: elemType)
-                } else {
-                    let valReg = emitExpr(v)
-                    emitStoreToAddr(elemAddr, valReg, type: elemType)
+            } else {
+                let elemSize = elemType.sizeInBytes ?? 8
+                for (i, v) in il.values.enumerated() {
+                    emitLine("ldr x16, [sp, #0]")
+                    if i > 0 {
+                        emitLine("add x16, x16, #\(i * elemSize)")
+                    }
+                    if case .initList = v {
+                        let elemAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(elemAddr.x), x16")
+                        emitLocalInit(elemAddr, v, type: elemType)
+                        regAlloc.free(elemAddr)
+                    } else if case .compoundLiteral(let cl) = v {
+                        let elemAddr = regAlloc.alloc() ?? .x9
+                        emitLine("mov \(elemAddr.x), x16")
+                        emitLocalInit(elemAddr, cl.initList, type: elemType)
+                        regAlloc.free(elemAddr)
+                    } else {
+                        let valReg = emitExpr(v)
+                        emitStoreToAddrRaw("x16", valReg, type: elemType)
+                        regAlloc.free(valReg)
+                    }
                 }
-                regAlloc.free(elemAddr)
             }
         }
         // Restore base address and stack
         emitLine("ldr \(addrReg.x), [sp, #0]")
         emitLine("add sp, sp, #16")
+    }
+
+    /// Emit a local init for one struct element from a flat init list.
+    /// Consumes values from allValues starting at idx, for the fields of rec.
+    /// Uses x16 as the base address register (string name).
+    private func emitLocalInitStructElem(_ allValues: [Expr], idx: inout Int, rec: RecordType, baseAddrReg: String) {
+        for field in rec.fields {
+            let fieldSize = field.type.sizeInBytes ?? 0
+            if fieldSize == 0 { continue }
+            let fieldOffset = field.offset
+            let fieldType = field.type.unqualified
+            if idx < allValues.count {
+                let v = allValues[idx]
+                // Compute field address: x16 = base + fieldOffset
+                if fieldOffset == 0 {
+                    emitLine("mov x16, \(baseAddrReg)")
+                } else {
+                    emitLine("add x16, \(baseAddrReg), #\(fieldOffset)")
+                }
+                if case .initList = v {
+                    idx += 1
+                    let fieldAddr = regAlloc.alloc() ?? .x9
+                    emitLine("mov \(fieldAddr.x), x16")
+                    emitLocalInit(fieldAddr, v, type: field.type)
+                    regAlloc.free(fieldAddr)
+                } else if case .stringLiteral(let sl) = v, case .array(let elemType, let count) = fieldType, elemType.isChar {
+                    // String literal for char array — copy bytes inline
+                    idx += 1
+                    let label = addStringLiteral(sl.value)
+                    // Use x14/x15 to avoid clobbering base addr register
+                    emitLine("adrp x14, \(label)@PAGE")
+                    emitLine("add x14, x14, \(label)@PAGEOFF")
+                    let bytes = Array(sl.value.utf8)
+                    let copyLen = min(count, bytes.count + 1)
+                    for i in 0..<copyLen {
+                        if i > 0 {
+                            emitLine("ldrb w15, [x14, #\(i)]")
+                            emitLine("strb w15, [x16, #\(i)]")
+                        } else {
+                            emitLine("ldrb w15, [x14]")
+                            emitLine("strb w15, [x16]")
+                        }
+                    }
+                    if copyLen < count {
+                        emitLine("mov w15, #0")
+                        for i in copyLen..<count {
+                            emitLine("strb w15, [x16, #\(i)]")
+                        }
+                    }
+                } else if case .array(let elemType, let count) = fieldType {
+                    // Array field: consume values for each element
+                    for _ in 0..<count {
+                        if idx < allValues.count {
+                            let ev = allValues[idx]
+                            idx += 1
+                            let valReg = emitExpr(ev)
+                            emitStoreToAddrRaw("x16", valReg, type: elemType)
+                            regAlloc.free(valReg)
+                            let es = elemType.sizeInBytes ?? 8
+                            emitLine("add x16, x16, #\(es)")
+                        }
+                    }
+                } else {
+                    idx += 1
+                    let valReg = emitExpr(v)
+                    emitStoreToAddrRaw("x16", valReg, type: field.type)
+                    regAlloc.free(valReg)
+                }
+            }
+        }
+    }
+
+    /// Store a register value to an address (given as a raw register name), using the correct store instruction for the type.
+    private func emitStoreToAddrRaw(_ addrRegName: String, _ valReg: ARM64Reg, type: CType) {
+        let t = type.unqualified
+        switch t {
+        case .bool, .char, .schar, .uchar:
+            emitLine("strb \(valReg.w), [\(addrRegName)]")
+        case .short, .ushort:
+            emitLine("strh \(valReg.w), [\(addrRegName)]")
+        case .int, .uint:
+            emitLine("str \(valReg.w), [\(addrRegName)]")
+        case .float:
+            emitLine("str s\(valReg.regNum), [\(addrRegName)]")
+        case .double, .longDouble:
+            emitLine("str d\(valReg.regNum), [\(addrRegName)]")
+        case .structType(let rec), .unionType(let rec):
+            // Store based on size
+            let size = rec.size ?? 8
+            switch size {
+            case 1: emitLine("strb \(valReg.w), [\(addrRegName)]")
+            case 2: emitLine("strh \(valReg.w), [\(addrRegName)]")
+            case 4: emitLine("str \(valReg.w), [\(addrRegName)]")
+            default: emitLine("str \(valReg.x), [\(addrRegName)]")
+            }
+        default:
+            emitLine("str \(valReg.x), [\(addrRegName)]")
+        }
     }
 
     /// Store a register value to an address, using the correct store instruction for the type.

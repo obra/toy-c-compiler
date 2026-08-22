@@ -213,7 +213,9 @@ public final class Preprocessor {
                 }
                 if !batch.isEmpty {
                     let expanded = expander.expand(batch)
-                    output.append(contentsOf: expanded)
+                    // Process _Pragma() operators in the expanded token stream
+                    let processed = processPragmaOperators(expanded)
+                    output.append(contentsOf: processed)
                 }
                 continue  // don't increment i — the outer loop handles the directive
             } else {
@@ -333,8 +335,8 @@ public final class Preprocessor {
             // Conditionals are handled in processTokens before reaching here
             break
         case "pragma":
-            // Tolerate pragmas — most are ignored
-            break
+            let pragmaTokens = processPragmaDirective(first, rest)
+            output.append(contentsOf: pragmaTokens)
         case "line":
             // Tolerate #line
             break
@@ -348,6 +350,93 @@ public final class Preprocessor {
             // Unknown directive — ignore
             break
         }
+    }
+
+    /// Process a #pragma directive (called from both #pragma and _Pragma).
+    /// Returns pragma marker tokens to emit into the output stream (for pack, etc.).
+    private func processPragmaDirective(_ first: Token, _ rest: [Token]) -> [Token] {
+        let pragmaName = first.spelling
+        let pragmaText = rest.map { $0.spelling }.joined(separator: " ")
+        if pragmaName == "push_macro" || pragmaText.contains("push_macro") {
+            if let macroName = extractPragmaMacroName(rest) {
+                macroTable.pushMacro(macroName)
+            }
+        } else if pragmaName == "pop_macro" || pragmaText.contains("pop_macro") {
+            if let macroName = extractPragmaMacroName(rest) {
+                macroTable.popMacro(macroName)
+            }
+        } else if pragmaName == "pack" || pragmaText.contains("pack") {
+            // Emit a pragma token for the parser to process
+            // Format: "pack <args>"
+            let packArgs = rest.map { $0.spelling }.joined(separator: " ")
+            return [Token(kind: .pragma, spelling: "pack " + packArgs, loc: first.loc)]
+        }
+        return []
+    }
+
+    /// Extract macro name from #pragma push_macro("name") or pop_macro("name")
+    private func extractPragmaMacroName(_ tokens: [Token]) -> String? {        // Find string literal token
+        for t in tokens {
+            if t.kind == .stringLiteral {
+                var spelling = t.spelling
+                if spelling.hasPrefix("\"") && spelling.hasSuffix("\"") {
+                    spelling = String(spelling.dropFirst().dropLast())
+                }
+                return spelling
+            }
+        }
+        return nil
+    }
+
+    /// Process _Pragma("string") operators in a token stream.
+    /// _Pragma("pack(push, 1)") is equivalent to #pragma pack(push, 1).
+    private func processPragmaOperators(_ tokens: [Token]) -> [Token] {
+        var output: [Token] = []
+        var i = 0
+        while i < tokens.count {
+            let t = tokens[i]
+            // Look for _Pragma identifier followed by (
+            if t.kind == .identifier && t.spelling == "_Pragma" &&
+               i + 1 < tokens.count && tokens[i+1].kind == .punct && tokens[i+1].spelling == "(" {
+                // Find the matching close paren
+                var depth = 1
+                var j = i + 2
+                while j < tokens.count && depth > 0 {
+                    if tokens[j].kind == .punct && tokens[j].spelling == "(" { depth += 1 }
+                    else if tokens[j].kind == .punct && tokens[j].spelling == ")" { depth -= 1 }
+                    if depth == 0 { break }
+                    j += 1
+                }
+                // Extract the string literal argument
+                if j < tokens.count && j > i + 2 {
+                    let argTokens = Array(tokens[(i+2)..<j])
+                    if let strTok = argTokens.first(where: { $0.kind == .stringLiteral }) {
+                        // De-stringify: remove surrounding quotes, unescape
+                        var pragmaStr = strTok.spelling
+                        if pragmaStr.hasPrefix("\"") && pragmaStr.hasSuffix("\"") {
+                            pragmaStr = String(pragmaStr.dropFirst().dropLast())
+                        }
+                        // Unescape escaped quotes and backslashes
+                        pragmaStr = pragmaStr.replacingOccurrences(of: "\\\"", with: "\"")
+                        pragmaStr = pragmaStr.replacingOccurrences(of: "\\\\", with: "\\")
+
+                        // Process as a pragma directive
+                        let pragmaTokens = lexTokens(pragmaStr, fileId: -1, startOffset: 0).filter { $0.kind != .eof }
+                        if let firstPragma = pragmaTokens.first {
+                            let rest = Array(pragmaTokens.dropFirst())
+                            let emitted = processPragmaDirective(firstPragma, rest)
+                            output.append(contentsOf: emitted)
+                        }
+                    }
+                }
+                // Skip past the _Pragma(...)
+                i = j + 1
+            } else {
+                output.append(t)
+                i += 1
+            }
+        }
+        return output
     }
 
     private func processDefine(_ tokens: [Token]) {
@@ -861,14 +950,18 @@ public final class Preprocessor {
             s = String(s.dropLast())
         }
         if s.hasPrefix("0x") || s.hasPrefix("0X") {
-            return Int64(s.dropFirst(2), radix: 16) ?? 0
+            if let uv = UInt64(s.dropFirst(2), radix: 16) { return Int64(bitPattern: uv) }
+            return 0
         }
         if s.hasPrefix("0b") || s.hasPrefix("0B") {
-            return Int64(s.dropFirst(2), radix: 2) ?? 0
+            if let uv = UInt64(s.dropFirst(2), radix: 2) { return Int64(bitPattern: uv) }
+            return 0
         }
         if s.hasPrefix("0") && s.count > 1 {
-            return Int64(s.dropFirst(), radix: 8) ?? 0
+            if let uv = UInt64(s.dropFirst(), radix: 8) { return Int64(bitPattern: uv) }
+            return 0
         }
+        if let uv = UInt64(s) { return Int64(bitPattern: uv) }
         return Int64(s) ?? 0
     }
 

@@ -306,6 +306,15 @@ public final class Sema {
             return l.type
 
         case .floatLiteral(let f):
+            if f.isImaginary {
+                // Imaginary literal: type is _Complex version of the base float type
+                switch f.type {
+                case .float: return .complexFloat
+                case .double: return .complexDouble
+                case .longDouble: return .complexLongDouble
+                default: return .complexDouble
+                }
+            }
             return f.type
 
         case .charLiteral:
@@ -333,6 +342,13 @@ public final class Sema {
             // Check enum constants
             if let _ = enumConstants[id.name] {
                 return .int
+            }
+            // Built-in functions
+            if id.name.hasPrefix("__builtin_") {
+                // __builtin_expect(expr, n) returns expr
+                // Most __builtin_* functions can be treated as returning long
+                return .function(params: [.long, .long],
+                                 returnType: .long, variadic: false)
             }
             // Undefined — report error but don't crash
             diags.error("use of undeclared identifier '\(id.name)'", at: id.loc)
@@ -370,6 +386,20 @@ public final class Sema {
             _ = analyzeExpr(c.condition)
             let t = analyzeExpr(c.trueExpr)
             let f = analyzeExpr(c.falseExpr)
+            // If both branches have the same type (including pointers, structs, etc.),
+            // return that type. Only use arithmetic conversion for arithmetic types.
+            let tu = t.unqualified
+            let fu = f.unqualified
+            if tu == fu {
+                return t
+            }
+            // If both are pointer types, use the compatible one
+            if tu.isPointer && fu.isPointer {
+                // If one is void*, return void*; otherwise return the first
+                if case .pointer(let to) = tu, to.unqualified == .void { return t }
+                if case .pointer(let to) = fu, to.unqualified == .void { return f }
+                return t
+            }
             return usualArithmeticConversion(t, f)
 
         case .call(let c):
@@ -438,6 +468,25 @@ public final class Sema {
         case .initList(let il):
             for v in il.values {
                 _ = analyzeExpr(v)
+            }
+            return .int
+
+        case .genericExpr(let ge):
+            _ = analyzeExpr(ge.controllingExpr)
+            for assoc in ge.associations {
+                _ = analyzeExpr(assoc.expr)
+            }
+            return .int
+
+        case .stmtExpr(let se):
+            // Analyze all statements in the body
+            for stmt in se.body.statements {
+                _ = analyzeStmt(stmt)
+            }
+            // Return type is the type of the last expression statement
+            if let lastStmt = se.body.statements.last,
+               case .expr(let es) = lastStmt, let e = es.expr {
+                return analyzeExpr(e)
             }
             return .int
         }
@@ -513,6 +562,16 @@ public final class Sema {
     private func usualArithmeticConversion(_ a: CType, _ b: CType) -> CType {
         let ta = a.unqualified
         let tb = b.unqualified
+
+        // Complex type rules (C99 6.3.1.8): if either operand is complex,
+        // the other is converted to the corresponding complex type.
+        if ta == .complexLongDouble || tb == .complexLongDouble { return .complexLongDouble }
+        if ta == .complexDouble || tb == .complexDouble { return .complexDouble }
+        if ta == .complexFloat || tb == .complexFloat { return .complexFloat }
+
+        // If one is complex and other is real, use the complex type
+        // (handled above by the complex checks against real types)
+        // If both real, fall through to real rules
 
         // If either is double or long double
         if ta == .longDouble || tb == .longDouble { return .longDouble }
