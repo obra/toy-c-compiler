@@ -346,4 +346,80 @@ final class OurCompilerE2ETests: XCTestCase {
         """
         XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 0, expectedStdout: "sum=6\n", extraArgs: ["-I", "include"]))
     }
+
+    // MARK: - Forward-typedef'd struct layout (SQLite VdbeSorter pattern)
+
+    /// When a struct is forward-declared via typedef (e.g., `typedef struct Foo Foo;`)
+    /// and later defined (e.g., `struct Foo { ... };`), the typedef must resolve
+    /// to the complete struct when used as a field type in another struct.
+    /// Without the fix in parseDeclSpecifiers, the typedef would still point to
+    /// the incomplete struct (size=nil), causing wrong field offsets.
+    func testForwardTypedefStructLayout() {
+        let source = """
+        typedef struct Inner Inner;
+        typedef struct Outer Outer;
+
+        struct Inner {
+            int a;
+            int b;
+        };
+
+        struct Outer {
+            int x;
+            int y;
+            Inner inner;
+            int z;
+        };
+
+        int main() {
+            struct Outer o;
+            o.x = 1;
+            o.y = 2;
+            o.inner.a = 3;
+            o.inner.b = 4;
+            o.z = 5;
+            return o.inner.a + o.inner.b;
+        }
+        """
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 7))
+    }
+
+    /// Test that a forward-typedef'd struct has the correct size when used as
+    /// a field, by checking the offset of the field after it.
+    func testForwardTypedefStructOffset() {
+        let source = """
+        typedef struct SorterRecord SorterRecord;
+        typedef struct SorterList SorterList;
+
+        struct SorterList {
+            SorterRecord *pList;
+            unsigned char *aMemory;
+        };
+
+        struct VdbeSorter {
+            int a;
+            int b;
+            int c;
+            int d;
+            void *e;
+            void *f;
+            void *g;
+            void *h;
+            void *i;
+            SorterList list;
+            int j;
+            int k;
+            unsigned char flag;
+        };
+
+        int main() {
+            struct VdbeSorter s;
+            unsigned char *base = (unsigned char *)&s;
+            unsigned char *field = &s.flag;
+            return (int)(field - base);
+        }
+        """
+        // Expected: 4*4 + 5*8 + 16 + 4 + 4 = 80
+        XCTAssertTrue(Harness.runViaOurCompiler(source, expectedExit: 80))
+    }
 }

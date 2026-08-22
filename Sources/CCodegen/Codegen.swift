@@ -1106,8 +1106,29 @@ public final class Codegen {
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 regIndex += hfaCount
                 stackParamIdx += hfaCount
+            } else if !isHFA && pt.isFloating && fpRegIndex < 8 {
+                // Float/double parameter arrives in d0-d7 (separate FP register file).
+                // Per AAPCS64, FP and integer registers are independent — float params
+                // do NOT consume integer register slots.
+                ensureLocalSpace(size: 8)  // always allocate 8 bytes for simplicity
+                let offset = -(localOffset)
+                localVarOffsets[param.name ?? "_param_\(i)"] = offset
+                let fpReg = pt == .float ? "s\(fpRegIndex)" : "d\(fpRegIndex)"
+                emitStoreFP(fpReg, offset)
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
+                fpRegIndex += 1
+            } else if !isHFA && pt.isFloating {
+                // Float/double parameter overflow: passed on the stack
+                let stackSrcOffset = 16 + stackParamIdx * 8
+                ensureLocalSpace(size: 8)
+                let localOff = -(localOffset)
+                localVarOffsets[param.name ?? "_param_\(i)"] = localOff
+                emitLoadFP("d9", stackSrcOffset)
+                emitStoreFP("d9", localOff)
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
+                stackParamIdx += 1
             } else if !isHFA && regIndex < 8 && regWidth <= 2 {
-                // Parameters come in x0-x7 (int) or d0-d7 (float), store them on the stack
+                // Parameters come in x0-x7 (int), store them on the stack
                 // Large structs (regWidth > 2) always go on the stack path below.
                 ensureLocalSpace(size: regWidth * 8)
                 let offset = -(localOffset)
@@ -1116,10 +1137,6 @@ public final class Codegen {
                 if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
-                } else if pt.isFloating {
-                    // Float/double parameter arrives in d0-d7
-                    let fpReg = pt == .float ? "s\(regIndex)" : "d\(regIndex)"
-                    emitStoreFP(fpReg, offset)
                 } else if case .structType = pt {
                     // Struct parameter: store register(s) to stack
                     emitStoreFP(argRegs[regIndex].x, offset)
@@ -1554,11 +1571,12 @@ public final class Codegen {
                         regAlloc.free(srcAddr)
                     }
                 } else if retType.isFloating {
-                    // Float/double return value goes in d0
+                    // Float/double return value goes in s0 (float) or d0 (double)
                     let reg = emitExpr(v)
                     let fpReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+                    let retFpReg = retType == .float ? "s0" : "d0"
                     if reg != .x0 {
-                        emitLine("fmov d0, \(fpReg)")
+                        emitLine("fmov \(retFpReg), \(fpReg)")
                     }
                 } else {
                     // Move result to x0
@@ -1599,12 +1617,14 @@ public final class Codegen {
             break
 
         case .goto(let g):
-            // Get or create the assembly label for this C label
+            // Get or create the assembly label for this C label.
+            // Use a distinct prefix to avoid collisions with newLabel() labels.
             let asmLabel: String
             if let existing = gotoLabels[g.label] {
                 asmLabel = existing
             } else {
-                asmLabel = newLabel()
+                labelCounter += 1
+                asmLabel = "L_\(currentFuncName)_G\(labelCounter)"
                 gotoLabels[g.label] = asmLabel
             }
             emitLine("b \(asmLabel)")
@@ -1615,7 +1635,8 @@ public final class Codegen {
             if let existing = gotoLabels[l.name] {
                 asmLabel = existing
             } else {
-                asmLabel = newLabel()
+                labelCounter += 1
+                asmLabel = "L_\(currentFuncName)_G\(labelCounter)"
                 gotoLabels[l.name] = asmLabel
             }
             emitLine("\(asmLabel):")
@@ -1822,22 +1843,26 @@ public final class Codegen {
                 } else if case .if(let ifStmt) = innerStmt {
                     // Emit if statement, but inject case labels inside its body
                     let condReg = emitExpr(ifStmt.condition)
+                    regAlloc.reset()
                     let elseLabel = newLabel()
                     emitLine("cbz \(condReg.x), \(elseLabel)")
-                    regAlloc.free(condReg)
                     if case .compound(let thenComp) = ifStmt.thenStmt {
                         emitCompoundWithCases(thenComp, keyPrefix: "\(key).t")
                     } else {
                         emitStmt(ifStmt.thenStmt)
                     }
+                    regAlloc.reset()
                     if let elseStmt = ifStmt.elseStmt {
-                        emitLine("b \(endLabel)")
+                        let ifEndLabel = newLabel()
+                        emitLine("b \(ifEndLabel)")
                         emitLine("\(elseLabel):")
                         if case .compound(let elseComp) = elseStmt {
                             emitCompoundWithCases(elseComp, keyPrefix: "\(key).e")
                         } else {
                             emitStmt(elseStmt)
                         }
+                        regAlloc.reset()
+                        emitLine("\(ifEndLabel):")
                     } else {
                         emitLine("\(elseLabel):")
                     }
@@ -3972,12 +3997,13 @@ public final class Codegen {
             }
         }
 
-        // Result is in x0 (int) or d0 (float)
+        // Result is in x0 (int), s0 (float), or d0 (double)
         let resultReg = regAlloc.alloc() ?? .x9
         let callReturnType = exprType(.call(c)).unqualified
         if callReturnType.isFloating {
+            let fpPrefix = callReturnType == .float ? "s" : "d"
             if resultReg != .x0 {
-                emitLine("fmov d\(resultReg.regNum), d0")
+                emitLine("fmov \(fpPrefix)\(resultReg.regNum), \(fpPrefix)0")
             }
         } else {
             if resultReg != .x0 {
