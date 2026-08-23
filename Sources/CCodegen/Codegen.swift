@@ -3578,8 +3578,21 @@ public final class Codegen {
         let targetType = exprType(a.target).unqualified
         if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct/union assignment: get source address and copy bytes to target
-            let srcReg = emitAddr(a.value)
             let dstReg = emitAddr(a.target)
+            // If the RHS is a function call returning a struct, the struct is in x0/x1.
+            // We need to store the return registers to a temp, then copy.
+            if case .call = a.value {
+                // Emit the call (struct returned in x0/x1)
+                _ = emitExpr(a.value)
+                // Store return registers to the destination
+                emitLine("str x0, [\(dstReg.x)]")
+                if size > 8 {
+                    emitLine("str x1, [\(dstReg.x), #8]")
+                }
+                regAlloc.free(dstReg)
+                return dstReg
+            }
+            let srcReg = emitAddr(a.value)
             var remaining = size
             var offset = 0
             while remaining >= 8 {
