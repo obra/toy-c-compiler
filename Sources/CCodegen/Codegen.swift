@@ -6298,23 +6298,24 @@ public final class Codegen {
             }
         } else if case .unionType(let rec) = t {
             // Union init: initialize the first field (or first named field)
+            // The base address was saved at [sp, #0] before this function was called.
+            // Move it to [sp, #8] so nested emitLocalInit calls don't overwrite it.
+            emitLine("ldr x9, [sp, #0]")
+            emitLine("str x9, [sp, #8]")
             if let firstField = rec.fields.first {
                 if il.values.count > 0 {
                     let v = il.values[0]
                     let fieldAddr = regAlloc.alloc() ?? .x9
-                    emitLine("ldr \(fieldAddr.x), [sp, #0]")
+                    emitLine("ldr \(fieldAddr.x), [sp, #8]")
                     if case .initList = v {
                         emitLocalInit(fieldAddr, v, type: firstField.type)
                     } else if case .compoundLiteral(let cl) = v {
                         emitLocalInit(fieldAddr, cl.initList, type: firstField.type)
                     } else if case .identifier = v, case .structType = firstField.type.unqualified {
-                        // Struct copy from variable
                         let srcAddr = emitAddr(v)
                         emitStructCopyToField("\(fieldAddr.x)", srcAddr, firstField.type.sizeInBytes ?? 0)
                         regAlloc.free(srcAddr)
                     } else if case .array = firstField.type.unqualified {
-                        // Array field with flat init — use emitLocalInit with a synthetic initList
-                        // Actually, all values belong to the first field's array
                         emitLocalInit(fieldAddr, .initList(InitListExpr(values: il.values, loc: SourceLoc.unknown)), type: firstField.type)
                     } else {
                         let valReg = emitExpr(v)
@@ -6324,6 +6325,9 @@ public final class Codegen {
                     regAlloc.free(fieldAddr)
                 }
             }
+            // Restore the base address for the caller
+            emitLine("ldr x9, [sp, #8]")
+            emitLine("str x9, [sp, #0]")
         } else if case .array(let elemType, _) = t {
             let elemSize = elemType.sizeInBytes ?? 8
             if case .structType(let subRec) = elemType.unqualified {
