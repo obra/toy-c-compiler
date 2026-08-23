@@ -4426,6 +4426,7 @@ public final class Codegen {
             // For indirect variadic calls (function pointer to a variadic function),
             // detect the variadic-ness from the function pointer type.
             var isIndirectVariadic = false
+            var indirectParamTypes: [CType] = []
             if funcName.isEmpty {
                 var funcType = exprType(c.function).unqualified
                 if case .unary(let u) = c.function, u.op == .dereference {
@@ -4434,6 +4435,7 @@ public final class Codegen {
                 if case .pointer(let to) = funcType, case .function(let params, _, let variadic) = to.unqualified {
                     isIndirectVariadic = variadic
                     namedParamCount = params.count
+                    indirectParamTypes = params
                 }
             }
 
@@ -4468,7 +4470,7 @@ public final class Codegen {
             var largeStructArgs: [Int: Int] = [:]  // indices of >16 byte struct args, value = num 8-byte chunks
             var floatArgs: Set<Int> = []  // indices of float/double args (go in d0-d7)
             var hfaArgs: [Int: (count: Int, isFloat: Bool)] = [:]  // HFA struct args
-            let paramTypes = functionParamTypes[funcName] ?? []
+            let paramTypes = functionParamTypes[funcName] ?? indirectParamTypes
             for (i, arg) in c.arguments.enumerated() {
                 let argType = exprType(arg).unqualified
                 // Use the declared parameter type to determine if the arg should be float.
@@ -4768,8 +4770,8 @@ public final class Codegen {
                 if isFloatArg {
                     // Float/double arg goes in d0-d7
                     // The value was saved as double; convert back to float if param is float.
-                    let paramTypes = functionParamTypes[funcName] ?? []
-                    let isFloatParam = i < paramTypes.count && paramTypes[i].unqualified == .float
+                    let callParamTypes = functionParamTypes[funcName] ?? indirectParamTypes
+                    let isFloatParam = i < callParamTypes.count && callParamTypes[i].unqualified == .float
                     if fpRegIdx < 8 {
                         emitLine("ldr d\(fpRegIdx), [sp, #\(tempOffset)]")
                         if isFloatParam {
