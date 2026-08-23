@@ -363,6 +363,9 @@ public final class Sema {
             if id.name == "exit" {
                 return .function(params: [.int], returnType: .void, variadic: false)
             }
+            if id.name == "alloca" {
+                return .function(params: [.long], returnType: .pointer(to: .void), variadic: false)
+            }
             // Undefined — report error but don't crash
             diags.error("use of undeclared identifier '\(id.name)'", at: id.loc)
             return .int

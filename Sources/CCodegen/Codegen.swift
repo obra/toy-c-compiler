@@ -4005,8 +4005,8 @@ public final class Codegen {
             return reg
         }
 
-        // __builtin_alloca(size) → allocate on stack (subtract sp)
-        if case .identifier(let id) = c.function, id.name == "__builtin_alloca", c.arguments.count >= 1 {
+        // __builtin_alloca(size) / alloca(size) → allocate on stack (subtract sp)
+        if case .identifier(let id) = c.function, (id.name == "__builtin_alloca" || id.name == "alloca"), c.arguments.count >= 1 {
             let sizeReg = emitExpr(c.arguments[0])
             // Align to 16 bytes
             emitLine("add \(sizeReg.x), \(sizeReg.x), #15")
