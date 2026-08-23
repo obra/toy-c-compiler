@@ -5286,6 +5286,37 @@ public final class Codegen {
                 if let t = globalVarTypes[id.name] {
                     if case .function(_, let ret, _) = t.unqualified { return ret }
                 }
+                // Known builtin return types (for functions not in functionReturnTypes)
+                let builtinReturnTypes: [String: CType] = [
+                    "__builtin_malloc": .pointer(to: .void),
+                    "__builtin_calloc": .pointer(to: .void),
+                    "__builtin_realloc": .pointer(to: .void),
+                    "__builtin_alloca": .pointer(to: .void),
+                    "malloc": .pointer(to: .void),
+                    "calloc": .pointer(to: .void),
+                    "realloc": .pointer(to: .void),
+                    "alloca": .pointer(to: .void),
+                    "memcpy": .pointer(to: .void),
+                    "memset": .pointer(to: .void),
+                    "memmove": .pointer(to: .void),
+                    "strcpy": .pointer(to: .char),
+                    "strncpy": .pointer(to: .char),
+                    "strcat": .pointer(to: .char),
+                    "strncat": .pointer(to: .char),
+                    "strdup": .pointer(to: .char),
+                    "strndup": .pointer(to: .char),
+                    "strchr": .pointer(to: .char),
+                    "strrchr": .pointer(to: .char),
+                    "strstr": .pointer(to: .char),
+                    "strpbrk": .pointer(to: .char),
+                    "memchr": .pointer(to: .void),
+                    " getenv": .pointer(to: .char),
+                    "getenv": .pointer(to: .char),
+                    "bsearch": .pointer(to: .void),
+                ]
+                if let t = builtinReturnTypes[id.name] {
+                    return t
+                }
                 // Check if it's a known function
                 return .int
             }
