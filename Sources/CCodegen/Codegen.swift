@@ -5137,6 +5137,8 @@ public final class Codegen {
     private func memberOffset(_ baseType: CType, _ memberName: String) -> Int {
         var t = baseType.unqualified
         if case .pointer(let to) = t { t = to.unqualified }
+        if case .array(let elem, _) = t { t = elem.unqualified }
+        if case .incompleteArray(let elem) = t { t = elem.unqualified }
         // If the record is incomplete, try to look it up by name
         if case .structType(let rec) = t {
             if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
