@@ -2821,6 +2821,26 @@ public final class Codegen {
                 }
             }()
 
+            // Determine if the comparison should use unsigned condition codes.
+            // This is true when both operands are unsigned, or when one is unsigned
+            // and the other has equal or lower rank (C99 usual arithmetic conversions).
+            let isUnsignedCmp: Bool = {
+                let lu = leftType.unqualified
+                let ru = rightType.unqualified
+                if lu.isUnsigned && ru.isUnsigned { return true }
+                if lu.isUnsigned && ru.isSigned {
+                    let ls = lu.sizeInBytes ?? 0
+                    let rs = ru.sizeInBytes ?? 0
+                    return ls >= rs
+                }
+                if ru.isUnsigned && lu.isSigned {
+                    let ls = lu.sizeInBytes ?? 0
+                    let rs = ru.sizeInBytes ?? 0
+                    return rs >= ls
+                }
+                return false
+            }()
+
             // For pointer arithmetic (pointer + int or pointer - int), multiply
             // the integer operand by sizeof(pointee) before the add/sub.
             // Also sign-extend 32-bit signed int operands to 64 bits.
@@ -2964,28 +2984,28 @@ public final class Codegen {
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                 }
                 emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                emitLine("cset \(leftReg.x), lt")
+                emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "lo" : "lt")")
             case .le:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                 }
                 emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                emitLine("cset \(leftReg.x), le")
+                emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "ls" : "le")")
             case .gt:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                 }
                 emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                emitLine("cset \(leftReg.x), gt")
+                emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hi" : "gt")")
             case .ge:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                 }
                 emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                emitLine("cset \(leftReg.x), ge")
+                emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hs" : "ge")")
             default:
                 break
             }
