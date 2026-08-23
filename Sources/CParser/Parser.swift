@@ -2106,12 +2106,17 @@ public final class Parser {
             if s[i] == "\\" && s.index(after: i) < s.endIndex {
                 let next = s[s.index(after: i)]
                 switch next {
+                case "a": result += "\u{07}"
+                case "b": result += "\u{08}"
+                case "f": result += "\u{0C}"
                 case "n": result += "\n"
-                case "t": result += "\t"
                 case "r": result += "\r"
+                case "t": result += "\t"
+                case "v": result += "\u{0B}"
                 case "\\": result += "\\"
                 case "'": result += "'"
                 case "\"": result += "\""
+                case "?": result += "?"
                 case "x":
                     // Hex escape
                     let afterBackslash = s.index(after: i)
@@ -2169,12 +2174,17 @@ public final class Parser {
     private func parseEscape(_ s: String) -> UInt8 {
         guard let first = s.first else { return 0 }
         switch first {
+        case "a": return 0x07
+        case "b": return 0x08
+        case "f": return 0x0C
         case "n": return 0x0A
-        case "t": return 0x09
         case "r": return 0x0D
+        case "t": return 0x09
+        case "v": return 0x0B
         case "\\": return 0x5C
         case "'": return 0x27
         case "\"": return 0x22
+        case "?": return 0x3F
         case "x":
             // Hex escape: \xHH (up to 2 hex digits)
             let hex = String(s.dropFirst())
