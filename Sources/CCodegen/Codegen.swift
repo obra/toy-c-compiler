@@ -3040,13 +3040,24 @@ public final class Codegen {
             // For pointer arithmetic in compound assignments, scale the int by sizeof(pointee)
             let targetType = exprType(a.target).unqualified
             let valueType = exprType(a.value).unqualified
-            let isPtrArithCompound = (targetType.isPointer || valueType.isPointer) && !(targetType.isPointer && valueType.isPointer)
+            let targetIsPtr = targetType.isPointer || targetType.isArray
+            let valueIsPtr = valueType.isPointer || valueType.isArray
+            let isPtrArithCompound = (targetIsPtr || valueIsPtr) && !(targetIsPtr && valueIsPtr)
             if isPtrArithCompound && (binaryOp == .add || binaryOp == .sub) {
                 // Determine pointee size from the pointer operand
-                let ptrType: CType = targetType.isPointer ? targetType : valueType
+                let ptrType: CType = targetIsPtr ? targetType : valueType
                 let pointeeSize: Int = {
-                    if case .pointer(let to) = ptrType.unqualified {
+                    let pt = ptrType.unqualified
+                    if case .pointer(let to) = pt {
                         let t = to.unqualified
+                        return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
+                    }
+                    if case .array(let elemType, _) = pt {
+                        let t = elemType.unqualified
+                        return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
+                    }
+                    if case .incompleteArray(let elemType) = pt {
+                        let t = elemType.unqualified
                         return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
                     }
                     return 4
