@@ -1043,10 +1043,22 @@ public final class Codegen {
     /// Escape a string for use in .ascii/.asciz directives
     private func escapeStringLiteral(_ s: String) -> String {
         var result = ""
-        for c in s.unicodeScalars {
+        let scalars = s.unicodeScalars
+        var idx = scalars.startIndex
+        while idx < scalars.endIndex {
+            let c = scalars[idx]
             switch c {
             case "\"": result += "\\\""
-            case "\\": result += "\\\\"
+            case "\\": 
+                // Check if this is already an escape sequence (e.g. \377 from parseStringLiteralValue)
+                // If so, pass it through without double-escaping
+                let nextIdx = scalars.index(after: idx)
+                if nextIdx < scalars.endIndex && scalars[nextIdx] >= "0" && scalars[nextIdx] <= "7" {
+                    // This is an octal escape like \377 — pass through as-is
+                    result += "\\"
+                } else {
+                    result += "\\\\"
+                }
             case "\n": result += "\\n"
             case "\t": result += "\\t"
             case "\r": result += "\\r"
@@ -1058,6 +1070,7 @@ public final class Codegen {
                     result += String(format: "\\%03o", c.value)
                 }
             }
+            idx = scalars.index(after: idx)
         }
         return result
     }

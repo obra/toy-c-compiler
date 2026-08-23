@@ -351,7 +351,7 @@ public final class Parser {
                 if case .incompleteArray(let elem) = type.unqualified,
                    elem.isChar,
                    case .stringLiteral(let sl) = initExpr! {
-                    actualType = .array(of: elem, count: sl.value.count + 1)
+                    actualType = .array(of: elem, count: countDecodedBytes(sl.value) + 1)
                 }
             }
 
@@ -1461,7 +1461,7 @@ public final class Parser {
                 if case .incompleteArray(let elem) = type.unqualified,
                    elem.isChar,
                    case .stringLiteral(let sl) = initExpr! {
-                    actualType = .array(of: elem, count: sl.value.count + 1)
+                    actualType = .array(of: elem, count: countDecodedBytes(sl.value) + 1)
                 }
             }
             decls.append(.varDecl(VarDecl(name: name, type: actualType, initializer: initExpr,
@@ -1968,7 +1968,8 @@ public final class Parser {
                 str += parseStringLiteralValue(current().spelling)
                 advance()
             }
-            let type = CType.array(of: .char, count: str.utf8.count + 1)
+            let byteCount = countDecodedBytes(str)
+            let type = CType.array(of: .char, count: byteCount + 1)
             return .stringLiteral(StringLiteral(value: str, type: type, loc: token.loc))
 
         case .identifier:
@@ -2120,6 +2121,41 @@ public final class Parser {
             return parseEscape(String(s.dropFirst()))
         }
         return Array(s.utf8).first ?? 0
+    }
+
+    /// Count the decoded byte length of a string literal value produced by
+    /// parseStringLiteralValue.  Bytes >= 128 are stored as `\NNN` octal escape
+    /// sequences (4 chars for 1 byte), so `str.utf8.count` overcounts.  This
+    /// helper walks the string treating `\NNN` as a single byte.
+    private func countDecodedBytes(_ s: String) -> Int {
+        let scalars = s.unicodeScalars
+        var count = 0
+        var i = scalars.startIndex
+        while i < scalars.endIndex {
+            if scalars[i] == "\\" {
+                let next = scalars.index(after: i)
+                if next < scalars.endIndex && scalars[next] >= "0" && scalars[next] <= "7" {
+                    // Octal escape \NNN — consume up to 3 octal digits, counts as 1 byte
+                    count += 1
+                    var j = next
+                    var digits = 0
+                    while j < scalars.endIndex && scalars[j] >= "0" && scalars[j] <= "7" && digits < 3 {
+                        j = scalars.index(after: j)
+                        digits += 1
+                    }
+                    i = j
+                    continue
+                }
+                // Other escape sequences (\n, \t, \\, etc.) are 1 decoded byte each
+                count += 1
+                i = scalars.index(after: i)
+                if i < scalars.endIndex { i = scalars.index(after: i) }
+                continue
+            }
+            count += 1
+            i = scalars.index(after: i)
+        }
+        return count
     }
 
     private func parseStringLiteralValue(_ spelling: String) -> String {
