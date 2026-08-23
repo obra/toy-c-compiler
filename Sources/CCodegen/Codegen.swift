@@ -4916,12 +4916,12 @@ public final class Codegen {
         case .bool, .char, .schar, .uchar:
             emitLine("ldrb \(reg.w), [\(reg.x)]")
             if t == .schar || t == .char {
-                emitLine("sxtb \(reg.w), \(reg.w)")
+                emitLine("sxtb \(reg.x), \(reg.w)")
             }
         case .short, .ushort:
             emitLine("ldrh \(reg.w), [\(reg.x)]")
             if t == .short {
-                emitLine("sxth \(reg.w), \(reg.w)")
+                emitLine("sxth \(reg.x), \(reg.w)")
             }
         case .int, .uint:
             emitLine("ldr \(reg.w), [\(reg.x)]")
