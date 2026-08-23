@@ -1988,6 +1988,30 @@ public final class Parser {
             return try parsePrimaryExpr()
         }
 
+        // __builtin_offsetof(type, member) — first arg is a type, not an expression
+        if token.kind == .identifier && token.spelling == "__builtin_offsetof" {
+            let loc = advance().loc
+            _ = try consume(kind: .punct, spelling: "(")
+            // Parse the type
+            let (baseType, _, _, _) = try parseDeclSpecifiers()
+            let (_, typeName, _) = try parseDeclarator(baseType)
+            _ = match(kind: .punct, spelling: ",")
+            // Parse the member access chain (e.g., b, or a.b, or a.b.c)
+            // Use a dummy sizeof expression to carry the type, followed by .member
+            var memberBase: Expr = .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc))
+            var memberName = try consume(kind: .identifier).spelling
+            memberBase = .member(MemberExpr(base: memberBase, memberName: memberName, isArrow: false, loc: loc))
+            while isPunct(".") {
+                advance()
+                let m = try consume(kind: .identifier).spelling
+                memberBase = .member(MemberExpr(base: memberBase, memberName: m, isArrow: false, loc: loc))
+            }
+            _ = try consume(kind: .punct, spelling: ")")
+            // Return as a call — codegen recognizes __builtin_offsetof and computes the offset
+            return .call(CallExpr(function: .identifier(Identifier(name: "__builtin_offsetof", loc: loc)),
+                                  arguments: [memberBase], loc: loc))
+        }
+
         switch token.kind {
         case .integerLiteral:
             advance()

@@ -3983,9 +3983,39 @@ public final class Codegen {
 
         // __builtin_offsetof(type, member) → compile-time constant
         if case .identifier(let id) = c.function, id.name == "__builtin_offsetof" {
-            // Not commonly used, but handle gracefully
+            // The argument is a member expression: .member(sizeof(type), memberName)
+            // We compute the offset at compile time from the type and member chain.
             let reg = regAlloc.alloc() ?? .x9
-            emitLine("mov \(reg.x), #0")
+            if let arg = c.arguments.first, case .member(let m) = arg,
+               case .sizeof(let sz) = m.base, let typeName = sz.typeName {
+                var offset: Int = 0
+                var currentType: CType = typeName
+                // Walk the member chain (for nested structs: a.b.c)
+                var currentExpr: Expr = arg
+                var memberNames: [String] = []
+                while true {
+                    if case .member(let mm) = currentExpr {
+                        memberNames.insert(mm.memberName, at: 0)
+                        currentExpr = mm.base
+                    } else {
+                        break
+                    }
+                }
+                for memberName in memberNames {
+                    if case .structType(let rec) = currentType.unqualified {
+                        for field in rec.fields {
+                            if field.name == memberName {
+                                offset += field.offset ?? 0
+                                currentType = field.type
+                                break
+                            }
+                        }
+                    }
+                }
+                emitLoadImm(reg.x, Int64(offset))
+            } else {
+                emitLine("mov \(reg.x), #0")
+            }
             return reg
         }
 
