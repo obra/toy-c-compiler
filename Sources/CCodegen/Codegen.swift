@@ -219,6 +219,12 @@ public final class Codegen {
                     emitLine(".quad \(l.value)")
                 case .pointer, .function:
                     emitLine(".quad \(l.value)")
+                case .float:
+                    let bits = Float(l.value).bitPattern
+                    emitLine(".long \(bits)")
+                case .double, .longDouble:
+                    let bits = Double(l.value).bitPattern
+                    emitLine(".quad \(bits)")
                 case .qualified(let base, _, _, _):
                     emitInitializer(expr, size: size, type: base)
                 case .typedef(_, let base):
