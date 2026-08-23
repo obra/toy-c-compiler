@@ -3125,6 +3125,12 @@ public final class Codegen {
                 }
                 emitStoreToAddr(addrReg, valReg, type: operandType)
                 regAlloc.free(addrReg)
+                // Truncate the result register to match the operand type width.
+                // The add/sub above operates on the full 64-bit register, but
+                // for u8/u16/u32 types the result must be truncated. For example,
+                // ++u8_var when the value is 0xFF: add gives 0x100, but the
+                // expression result should be 0x00 (the truncated value).
+                truncateReg(valReg, type: operandType)
                 resultReg = valReg
             }
             return resultReg
@@ -5365,6 +5371,35 @@ public final class Codegen {
         switch t.unqualified {
         case .structType, .unionType: return true
         default: return false
+        }
+    }
+
+    /// Truncate a register to match the width of the given integer type.
+    /// After arithmetic on the full 64-bit register, the result must be
+    /// narrowed for sub-word types (u8, u16, u32) so the expression value
+    /// matches what C semantics require.
+    private func truncateReg(_ reg: ARM64Reg, type: CType) {
+        let t = type.unqualified
+        switch t {
+        case .bool, .char, .schar, .uchar:
+            if t == .schar || t == .char {
+                emitLine("sxtb \(reg.x), \(reg.w)")
+            } else {
+                emitLine("and \(reg.x), \(reg.x), #0xff")
+            }
+        case .short, .ushort:
+            if t == .short {
+                emitLine("sxth \(reg.x), \(reg.w)")
+            } else {
+                emitLine("and \(reg.x), \(reg.x), #0xffff")
+            }
+        case .int, .uint:
+            if t == .int {
+                emitLine("sxtw \(reg.x), \(reg.w)")
+            }
+            // uint: already zero-extended in the 64-bit register
+        default:
+            break // long, pointer, etc. — no truncation needed
         }
     }
 
