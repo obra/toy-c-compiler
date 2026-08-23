@@ -1540,6 +1540,15 @@ public final class Codegen {
                                     if case .identifier = init_ {
                                         // Use emitAddr for identifiers to get the struct's address
                                         srcAddr = emitAddr(init_)
+                                    } else if case .subscript_ = init_ {
+                                        // Subscript on a struct: get the address, not the value
+                                        srcAddr = emitAddr(init_)
+                                    } else if case .member = init_ {
+                                        // Member access on a struct: get the address
+                                        srcAddr = emitAddr(init_)
+                                    } else if case .unary(let u) = init_, u.op == .dereference {
+                                        // *ptr on a struct: get the address
+                                        srcAddr = emitAddr(init_)
                                     } else {
                                         srcAddr = emitExpr(init_)
                                     }
