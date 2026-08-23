@@ -9,6 +9,7 @@ private let cKeywords: Set<String> = [
     "register", "restrict", "return", "short", "signed",
     "sizeof", "static", "struct", "switch", "typedef",
     "union", "unsigned", "void", "volatile", "while",
+    "typeof",
     "_Bool", "_Complex", "_Imaginary", "_Alignas",
     "_Alignof", "_Atomic", "_Generic", "_Noreturn",
     "_Static_assert", "_Thread_local",

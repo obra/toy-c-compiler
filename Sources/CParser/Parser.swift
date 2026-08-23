@@ -46,6 +46,98 @@ public final class Parser {
 
     /// Global variable types (name → type), for sizeof evaluation in constant expressions.
     private var globalVarTypes: [String: CType] = [:]
+
+    /// Determine the type of an expression for typeof().
+    /// Handles identifiers (globals, typedefs), integer/float literals, and simple expressions.
+    private func typeofExprType(_ expr: Expr) -> CType {
+        switch expr {
+        case .identifier(let id):
+            if let t = globalVarTypes[id.name] { return t }
+            if let t = typedefTypes[id.name] { return t }
+            if let _ = parserEnumConstants[id.name] { return .int }
+            return .int
+        case .integerLiteral(let il):
+            return il.type
+        case .floatLiteral(let fl):
+            return fl.type
+        case .cast(let c):
+            return c.type
+        case .unary(let u):
+            switch u.op {
+            case .dereference:
+                if case .pointer(let to) = typeofExprType(u.operand).unqualified { return to }
+                return .int
+            case .addressOf:
+                return .pointer(to: typeofExprType(u.operand))
+            default:
+                return integerPromoteType(typeofExprType(u.operand))
+            }
+        case .binary(let b):
+            // Result type is the common type of both operands
+            let lt = typeofExprType(b.left)
+            let rt = typeofExprType(b.right)
+            return lt.isFloating ? lt : rt.isFloating ? rt : lt
+        case .sizeof:
+            return .ulongLong
+        case .subscript_(let s):
+            if case .pointer(let to) = typeofExprType(s.base).unqualified { return to }
+            if case .array(let elem, _) = typeofExprType(s.base).unqualified { return elem }
+            return .int
+        case .member(let m):
+            var baseRecordType = typeofExprType(m.base).unqualified
+            if m.isArrow {
+                if case .pointer(let to) = baseRecordType { baseRecordType = to.unqualified }
+            }
+            if case .structType(let rec) = baseRecordType {
+                for field in rec.fields {
+                    if (field.name ?? "") == m.memberName { return field.type }
+                }
+            }
+            if case .unionType(let rec) = baseRecordType {
+                for field in rec.fields {
+                    if (field.name ?? "") == m.memberName { return field.type }
+                }
+            }
+            return .int
+        default:
+            return .int
+        }
+    }
+
+    /// Integer promotion: char/short → int, others unchanged.
+    private func integerPromoteType(_ t: CType) -> CType {
+        let u = t.unqualified
+        switch u {
+        case .bool, .char, .schar, .uchar, .short, .ushort:
+            return .int
+        default:
+            return t
+        }
+    }
+
+    /// Check if two types are compatible (for __builtin_types_compatible_p).
+    /// Types are compatible if they're the same type ignoring qualifiers.
+    /// Arrays of different sizes are compatible (C99 6.7.5.2).
+    private func typesCompatible(_ t1: CType, _ t2: CType) -> Bool {
+        let a = t1.unqualified
+        let b = t2.unqualified
+        // Same type
+        if a == b { return true }
+        // Arrays: compatible if element types are compatible (size doesn't matter)
+        if case .array(let e1, _) = a, case .array(let e2, _) = b { return typesCompatible(e1, e2) }
+        if case .array(let e1, _) = a, case .incompleteArray(let e2) = b { return typesCompatible(e1, e2) }
+        if case .incompleteArray(let e1) = a, case .array(let e2, _) = b { return typesCompatible(e1, e2) }
+        if case .incompleteArray(let e1) = a, case .incompleteArray(let e2) = b { return typesCompatible(e1, e2) }
+        // Typedefs: check underlying types
+        if case .typedef(let n1, let base1) = a, case .typedef(let n2, let base2) = b {
+            if n1 == n2 { return true }
+            return typesCompatible(base1, base2)
+        }
+        // Enum and int are compatible
+        if case .enumType = a, case .int = b { return true }
+        if case .int = a, case .enumType = b { return true }
+        return false
+    }
     /// Stack of #pragma pack values (for struct alignment control).
     private var packStack: [Int] = []
     /// Current pack alignment (0 = use natural alignment).
@@ -627,8 +719,28 @@ public final class Parser {
                             else { advance() }
                         }
                     }
-                case "__extension__", "__typeof", "__typeof__":
+                case "__extension__":
                     advance() // just skip
+
+                // typeof / __typeof / __typeof__ — GNU extension: type of an expression or type
+                case "typeof", "__typeof", "__typeof__":
+                    advance() // consume typeof keyword
+                    _ = try consume(kind: .punct, spelling: "(")
+                    // Check if this is typeof(type) or typeof(expr)
+                    let nextTok = next()
+                    if nextTok.kind == .keyword && isTypeKeyword(nextTok.spelling) ||
+                       (nextTok.kind == .identifier && typedefNames.contains(nextTok.spelling)) {
+                        // typeof(type) — parse the type
+                        let (innerBase, _, _, _) = try parseDeclSpecifiers()
+                        let (_, innerType, _) = try parseDeclarator(innerBase)
+                        _ = try consume(kind: .punct, spelling: ")")
+                        typedefBase = innerType
+                    } else {
+                        // typeof(expr) — parse the expression and get its type
+                        let expr = try parseExpr()
+                        _ = try consume(kind: .punct, spelling: ")")
+                        typedefBase = typeofExprType(expr)
+                    }
 
                 default:
                     done = true
@@ -771,6 +883,8 @@ public final class Parser {
                             let widthExpr = try parseConditionalExpr()
                             bitWidth = Int(evalIntConst(widthExpr))
                         }
+                        // Skip __attribute__ after the bitfield width (e.g., int x:3 __attribute__((packed)))
+                        skipAsmAndAttributes()
                         if let bw = bitWidth {
                             // Bitfield: pack into allocation unit of the declared type
                             let typeSize = fieldType.sizeInBytes ?? 0
@@ -829,6 +943,8 @@ public final class Parser {
                             let widthExpr = try parseConditionalExpr()
                             bitWidth = Int(evalIntConst(widthExpr))
                         }
+                        // Skip __attribute__ after the bitfield width (e.g., int x:3 __attribute__((packed)))
+                        skipAsmAndAttributes()
                         let fieldSize = fieldType.sizeInBytes ?? 0
                         let fieldAlign = fieldType.alignOf ?? 1
                         maxAlign = max(maxAlign, fieldAlign)
@@ -1553,6 +1669,16 @@ public final class Parser {
             }
 
         case .keyword:
+            // __label__ declares local labels (GNU extension): __label__ name1, name2;
+            if isKeyword("__label__") {
+                advance() // consume __label__
+                while !isPunct(";") && !isAtEnd() {
+                    if current().kind == .identifier { advance() }
+                    if !match(kind: .punct, spelling: ",") { break }
+                }
+                _ = try consume(kind: .punct, spelling: ";")
+                return try parseStmt()
+            }
             if isKeyword("if") { return .if(try parseIfStmt()) }
             if isKeyword("while") { return .while(try parseWhileStmt()) }
             if isKeyword("do") { return .doWhile(try parseDoWhileStmt()) }
@@ -2157,6 +2283,21 @@ public final class Parser {
             // Evaluate the condition at compile time
             let condVal = evalIntConst(cond)
             return condVal != 0 ? thenExpr : elseExpr
+        }
+
+        // __builtin_types_compatible_p(type1, type2) — compile-time type compatibility check
+        if token.kind == .identifier && token.spelling == "__builtin_types_compatible_p" {
+            let loc = advance().loc
+            _ = try consume(kind: .punct, spelling: "(")
+            let (base1, _, _, _) = try parseDeclSpecifiers()
+            let (_, type1, _) = try parseDeclarator(base1)
+            _ = try consume(kind: .punct, spelling: ",")
+            let (base2, _, _, _) = try parseDeclSpecifiers()
+            let (_, type2, _) = try parseDeclarator(base2)
+            _ = try consume(kind: .punct, spelling: ")")
+            // Check type compatibility at compile time
+            let compatible = typesCompatible(type1, type2)
+            return .integerLiteral(IntegerLiteral(value: compatible ? 1 : 0, type: .int, loc: loc))
         }
 
         // __builtin_va_arg(ap, type) — variadic argument access
