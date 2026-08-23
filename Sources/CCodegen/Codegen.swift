@@ -598,6 +598,20 @@ public final class Codegen {
                 // &array[constant] — emit symbol + offset
                 if let (sym, offset) = resolveAddressOfSubscript(sub) {
                     emitSymbolOffset(sym, offset)
+                } else if let idx = evalConstExpr(sub.index),
+                          isNullPointerConstant(sub.base) {
+                    // &((char*)0)[index] — address is just index * elemSize
+                    let elemSize: Int = {
+                        let baseType = exprType(sub.base).unqualified
+                        if case .pointer(let to) = baseType {
+                            return to.unqualified.sizeInBytes ?? 1
+                        }
+                        if case .array(let elemType, _) = baseType {
+                            return elemType.sizeInBytes ?? 1
+                        }
+                        return 1
+                    }()
+                    emitLine(".quad \(idx * Int64(elemSize))")
                 } else {
                     emitLine(".quad 0")
                 }
@@ -808,6 +822,19 @@ public final class Codegen {
     /// Resolve pointer arithmetic (base +/- offset) for initializers
     private func resolvePointerArith(_ b: BinaryExpr) -> (String, Int64)? {
         return resolveSymbolAndOffset(.binary(b))
+    }
+
+    /// Check if an expression is a null pointer constant (integer literal 0,
+    /// possibly cast to a pointer type).
+    private func isNullPointerConstant(_ expr: Expr) -> Bool {
+        switch expr {
+        case .integerLiteral(let l):
+            return l.value == 0
+        case .cast(let c):
+            return isNullPointerConstant(c.expr)
+        default:
+            return false
+        }
     }
 
     /// Best-effort constant expression evaluation for initializers.
