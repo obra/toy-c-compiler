@@ -3666,12 +3666,14 @@ public final class Codegen {
                 }
             }
         }
-        storeExprResult(a.target, valueReg)
-        return valueReg
+        let storedReg = storeExprResult(a.target, valueReg)
+        return storedReg
     }
 
     /// Store a register's value to an lvalue (local var, global, member, subscript, deref).
-    private func storeExprResult(_ target: Expr, _ reg: ARM64Reg) {
+    /// Returns the value register (possibly truncated for bitfield writes).
+    @discardableResult
+    private func storeExprResult(_ target: Expr, _ reg: ARM64Reg) -> ARM64Reg {
         // Check if this is a bitfield member write (read-modify-write)
         if case .member(let m) = target,
            let bf = bitfieldInfo(exprType(m.base), m.memberName) {
@@ -3756,7 +3758,23 @@ public final class Codegen {
             }
             emitLine("add sp, sp, #16")
             regAlloc.free(addrReg)
-            return
+            // Truncate the return value to the bitfield width
+            // For signed bitfields, sign-extend from the bitfield width
+            if bf.isSigned {
+                emitLine("sbfx \(reg.x), \(reg.x), #0, #\(bf.bitWidth)")
+            } else {
+                let mask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth)) - 1
+                if mask <= 255 {
+                    emitLine("and \(reg.x), \(reg.x), #\(mask)")
+                } else {
+                    emitLine("mov \(unitReg.x), #\(mask & 0xffff)")
+                    if mask > 0xffff {
+                        emitLine("movk \(unitReg.x), #\((mask >> 16) & 0xffff), lsl #16")
+                    }
+                    emitLine("and \(reg.x), \(reg.x), \(unitReg.x)")
+                }
+            }
+            return reg
         }
 
         // Save the value register to the stack before computing the target address,
@@ -3823,6 +3841,7 @@ public final class Codegen {
         }
         emitLine("add sp, sp, #16")
         regAlloc.free(addrReg)
+        return reg
     }
 
     private func emitCallExpr(_ c: CallExpr) -> ARM64Reg {
