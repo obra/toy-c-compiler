@@ -16,4 +16,7 @@ typedef int wchar_t;
 
 #define offsetof(type, member) ((size_t)(&((type*)0)->member))
 
+/* GCC-compatible built-in functions */
+extern void __sync_synchronize(void);
+
 #endif /* _STDDEF_H */

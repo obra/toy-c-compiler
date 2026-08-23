@@ -3563,6 +3563,14 @@ public final class Codegen {
             return reg
         }
 
+        // __sync_synchronize() → emit a data memory barrier (ARM64 DMB ISH)
+        if case .identifier(let id) = c.function, id.name == "__sync_synchronize" {
+            emitLine("dmb ish")
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
         // __builtin_expect(expr, expected) → just return expr
         if case .identifier(let id) = c.function, id.name == "__builtin_expect" {
             if c.arguments.count >= 1 {
