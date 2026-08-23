@@ -107,6 +107,11 @@ public final class Codegen {
             }
         }
 
+        // Debug: check if VdbeFrame is known
+        if let vf = knownRecords["VdbeFrame"] {
+        } else {
+        }
+
         // Emit data section for string literals and globals
         emitDataSection(decls)
 
@@ -4669,7 +4674,7 @@ public final class Codegen {
             }
             if case .structType(let rec) = recordType.unqualified {
                 for field in rec.fields {
-                    if (field.name ?? "") == m.memberName { return field.type }
+                    if (field.name ?? "") == m.memberName { return resolveIncompleteTypes(field.type) }
                     if (field.name ?? "").isEmpty {
                         if fieldHasMember(field.type, m.memberName) {
                             return findMemberType(field.type, m.memberName)
@@ -4679,7 +4684,7 @@ public final class Codegen {
             }
             if case .unionType(let rec) = recordType.unqualified {
                 for field in rec.fields {
-                    if (field.name ?? "") == m.memberName { return field.type }
+                    if (field.name ?? "") == m.memberName { return resolveIncompleteTypes(field.type) }
                     if (field.name ?? "").isEmpty {
                         if fieldHasMember(field.type, m.memberName) {
                             return findMemberType(field.type, m.memberName)
@@ -4813,6 +4818,34 @@ public final class Codegen {
         }
         if case .unionType(let rec) = t, rec.size != nil {
             knownRecords[rec.name] = rec
+        }
+    }
+
+    /// Resolve incomplete struct/union types in a CType to their completed versions
+    /// from knownRecords. This is needed because struct member types may reference
+    /// structs that were incomplete at the point of member declaration but were
+    /// completed later (e.g., VdbeFrame.aMem is Mem* but Mem/sqlite3_value was
+    /// incomplete when VdbeFrame was defined).
+    private func resolveIncompleteTypes(_ type: CType) -> CType {
+        switch type {
+        case .pointer(let to):
+            return .pointer(to: resolveIncompleteTypes(to))
+        case .structType(let rec):
+            if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                return .structType(completed)
+            }
+            return type
+        case .unionType(let rec):
+            if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                return .unionType(completed)
+            }
+            return type
+        case .qualified(let base, let c, let v, let r):
+            return .qualified(base: resolveIncompleteTypes(base), const: c, volatile: v, restrict: r)
+        case .typedef(let name, let base):
+            return .typedef(name: name, base: resolveIncompleteTypes(base))
+        default:
+            return type
         }
     }
 
