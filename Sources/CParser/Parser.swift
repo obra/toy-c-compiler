@@ -2027,6 +2027,23 @@ public final class Parser {
             return condVal != 0 ? thenExpr : elseExpr
         }
 
+        // __builtin_va_arg(ap, type) — variadic argument access
+        if token.kind == .identifier && token.spelling == "__builtin_va_arg" {
+            let loc = advance().loc
+            _ = try consume(kind: .punct, spelling: "(")
+            let apExpr = try parseAssignmentExpr()
+            _ = try consume(kind: .punct, spelling: ",")
+            // Parse the type
+            let (baseType, _, _, _) = try parseDeclSpecifiers()
+            let (_, typeName, _) = try parseDeclarator(baseType)
+            _ = try consume(kind: .punct, spelling: ")")
+            // Encode as: *(type*)((ap += sizeof(type)) - sizeof(type))
+            // Use a call to __builtin_va_arg with sizeof(type) as arg for codegen
+            return .call(CallExpr(function: .identifier(Identifier(name: "__builtin_va_arg", loc: loc)),
+                                  arguments: [apExpr, .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc))],
+                                  loc: loc))
+        }
+
         switch token.kind {
         case .integerLiteral:
             advance()

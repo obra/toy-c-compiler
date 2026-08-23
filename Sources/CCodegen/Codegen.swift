@@ -3944,7 +3944,25 @@ public final class Codegen {
         // Handle __builtin_va_start: return pointer to the pre-saved register area.
         // For variadic functions, x1-x7 are saved at function entry (before any calls).
         // The save area is at x29 + vaSaveAreaOffset.
+        // Two forms:
+        //   1) __builtin_va_start() — returns the pointer (used by our stdarg.h macro)
+        //   2) __builtin_va_start(ap, last) — stores the pointer to ap (direct call)
         if case .identifier(let id) = c.function, id.name == "__builtin_va_start" {
+            if c.arguments.count >= 1 {
+                // Two-arg form: store the save area pointer to ap (which is a char*[])
+                let apAddr = emitAddr(c.arguments[0])
+                let savePtr = regAlloc.alloc() ?? .x9
+                if vaSaveAreaOffset >= -256 && vaSaveAreaOffset <= 255 {
+                    emitLine("add \(savePtr.x), x29, #\(vaSaveAreaOffset)")
+                } else {
+                    emitLoadImm("x16", Int64(vaSaveAreaOffset))
+                    emitLine("add \(savePtr.x), x29, x16")
+                }
+                emitLine("str \(savePtr.x), [\(apAddr.x)]")
+                regAlloc.free(savePtr)
+                return apAddr
+            }
+            // Zero-arg form: return the pointer
             let reg = regAlloc.alloc() ?? .x9
             if vaSaveAreaOffset >= -256 && vaSaveAreaOffset <= 255 {
                 emitLine("add \(reg.x), x29, #\(vaSaveAreaOffset)")
@@ -4052,11 +4070,79 @@ public final class Codegen {
             return reg
         }
 
+        // __builtin_va_end(ap) → no-op
+        if case .identifier(let id) = c.function, id.name == "__builtin_va_end" {
+            let reg = regAlloc.alloc() ?? .x9
+            return reg
+        }
+
+        // __builtin_va_copy(dest, src) → copy the va_list pointer
+        if case .identifier(let id) = c.function, id.name == "__builtin_va_copy", c.arguments.count >= 2 {
+            let destReg = emitAddr(c.arguments[0])
+            let srcReg = emitExpr(c.arguments[1])
+            emitLine("ldr \(destReg.x), [\(srcReg.x)]")
+            // Store to dest (which is a va_list = char*[], so store to *dest)
+            // Actually dest is already an address, we need to store the loaded value
+            let valReg = regAlloc.alloc() ?? .x9
+            emitLine("ldr \(valReg.x), [\(destReg.x)]")
+            emitLine("str \(srcReg.x), [\(destReg.x)]")
+            regAlloc.free(srcReg)
+            return destReg
+        }
+
         // __builtin_trap() → abort
         if case .identifier(let id) = c.function, id.name == "__builtin_trap" {
             emitLine("bl _abort")
             let reg = regAlloc.alloc() ?? .x9
             return reg
+        }
+
+        // __builtin_va_arg(ap, type) — load from va_list and advance
+        // va_list is char*[] (array of 1 pointer), so &ap gives address of the pointer slot.
+        // *ap = current pointer, advance by sizeof(type) rounded up to 8.
+        if case .identifier(let id) = c.function, id.name == "__builtin_va_arg", c.arguments.count >= 2 {
+            // Get address of the va_list (which is char*[], so &ap gives the slot address)
+            let apAddr = emitAddr(c.arguments[0])
+            // Load current pointer: curPtr = *apAddr
+            let curPtr = regAlloc.alloc() ?? .x9
+            emitLine("ldr \(curPtr.x), [\(apAddr.x)]")
+            // Get the size and type from the sizeof argument
+            var size = 8
+            var argType: CType = .long
+            if case .sizeof(let sz) = c.arguments[1], let typeName = sz.typeName {
+                argType = typeName
+                size = ((typeName.sizeInBytes ?? 8) + 7) & ~7
+                if size < 8 { size = 8 }
+            }
+            // Compute new pointer: newPtr = curPtr + size
+            let newPtr = regAlloc.alloc() ?? .x10
+            if size <= 4095 {
+                emitLine("add \(newPtr.x), \(curPtr.x), #\(size)")
+            } else {
+                emitLoadImm("x17", Int64(size))
+                emitLine("add \(newPtr.x), \(curPtr.x), x17")
+            }
+            // Store newPtr back to the va_list slot: *apAddr = newPtr
+            emitLine("str \(newPtr.x), [\(apAddr.x)]")
+            regAlloc.free(apAddr)
+            regAlloc.free(newPtr)
+            // For pointer types, the value IS the pointer (curPtr already holds the pointer value)
+            // For integer/float types <= 8 bytes, load from curPtr
+            let resolvedType = argType.unqualified
+            if case .pointer = resolvedType {
+                // Pointer type: curPtr holds the pointer value already
+                return curPtr
+            } else if case .structType = resolvedType {
+                // Struct: return the address
+                return curPtr
+            } else if resolvedType == .double || resolvedType == .float {
+                // Float/double: return the address, caller will load
+                return curPtr
+            } else {
+                // Integer types: load from curPtr
+                emitLoad(curPtr, type: resolvedType)
+                return curPtr
+            }
         }
 
         // __builtin_alloca(size) / alloca(size) → allocate on stack (subtract sp)
