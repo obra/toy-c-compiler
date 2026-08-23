@@ -1750,6 +1750,10 @@ public final class Codegen {
 
         case .empty:
             break
+
+        case .asm(let asmStmt):
+            // Emit inline assembly directly
+            emitLine(asmStmt.instructions)
         }
     }
 
@@ -3568,6 +3572,14 @@ public final class Codegen {
             emitLine("dmb ish")
             let reg = regAlloc.alloc() ?? .x9
             emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // sqlite3Hwtime() → read the ARM64 virtual timer count (CNTVCT_EL0)
+        // This is a built-in because GCC extended asm (%0 placeholders) is not supported.
+        if case .identifier(let id) = c.function, id.name == "sqlite3Hwtime" {
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mrs \(reg.x), cntvct_el0")
             return reg
         }
 

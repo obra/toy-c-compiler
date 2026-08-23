@@ -256,7 +256,7 @@ public final class Sema {
         case .default(let ds):
             if let s = ds.stmt { analyzeStmt(s) }
 
-        case .break, .continue, .empty, .goto:
+        case .break, .continue, .empty, .goto, .asm:
             break
 
         case .return(let rs):

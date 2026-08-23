@@ -1328,6 +1328,34 @@ public final class Parser {
     }
 
     private func parseStmt() throws -> Stmt {
+        // __asm__("...") statement - emit inline assembly
+        if isKeyword("__asm") || isKeyword("__asm__") || isKeyword("asm") {
+            let loc = advance().loc
+            // Skip __volatile__ if present
+            if isKeyword("__volatile__") || isKeyword("volatile") { advance() }
+            if isPunct("(") {
+                advance()
+                // Skip everything inside the asm parens, collecting the first string literal
+                var asmText = ""
+                var depth = 1
+                while !isAtEnd() && depth > 0 {
+                    let tk = current()
+                    if tk.kind == .punct && tk.spelling == "(" { depth += 1 }
+                    else if tk.kind == .punct && tk.spelling == ")" { depth -= 1 }
+                    if depth == 0 { advance(); break }
+                    if depth == 1 && tk.kind == .stringLiteral && asmText.isEmpty {
+                        asmText = tk.spelling
+                    }
+                    advance()
+                }
+                if isPunct(";") { advance() }
+                // Strip quotes from the string literal
+                if asmText.hasPrefix("\"") { asmText = String(asmText.dropFirst()) }
+                if asmText.hasSuffix("\"") { asmText = String(asmText.dropLast()) }
+                return .asm(AsmStmt(instructions: asmText, loc: loc))
+            }
+        }
+
         // Labeled statements
         if current().kind == .identifier && next().kind == .punct && next().spelling == ":" {
             let label = advance().spelling

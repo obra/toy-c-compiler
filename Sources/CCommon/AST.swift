@@ -193,6 +193,7 @@ public indirect enum Stmt: ASTNode, Equatable {
     case label(LabelStmt)
     case decl(DeclStmt)
     case empty(EmptyStmt)
+    case asm(AsmStmt)
 
     public var loc: SourceLoc {
         switch self {
@@ -206,6 +207,7 @@ public indirect enum Stmt: ASTNode, Equatable {
         case .case(let s): return s.loc
         case .default(let s): return s.loc
         case .break(let s): return s.loc
+        case .asm(let s): return s.loc
         case .continue(let s): return s.loc
         case .return(let s): return s.loc
         case .goto(let s): return s.loc
@@ -322,6 +324,12 @@ public struct DeclStmt: Equatable {
 public struct EmptyStmt: Equatable {
     public let loc: SourceLoc
     public init(loc: SourceLoc) { self.loc = loc }
+}
+
+public struct AsmStmt: Equatable {
+    public let instructions: String
+    public let loc: SourceLoc
+    public init(instructions: String, loc: SourceLoc) { self.instructions = instructions; self.loc = loc }
 }
 
 // MARK: - Expressions
