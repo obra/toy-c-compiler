@@ -3808,11 +3808,8 @@ public final class Codegen {
         if case .member(let m) = target,
            let bf = bitfieldInfo(exprType(m.base), m.memberName) {
             // Bitfield write: read-modify-write on the containing unit.
-            // Push the value to the stack, then call emitAddr (which for simple
-            // member expressions on locals/params does NOT push to the stack).
-            // After emitAddr, the value is at [sp+16] (one 16-byte push).
-            // For complex base expressions where emitAddr DOES push, this would
-            // break — but that's rare and not needed for SQLite.
+            // Layout: value is at [sp] (pushed below), addrReg holds the unit address.
+            // unitReg and valReg are x16/x17 (chosen to avoid addrReg).
             emitLine("str \(reg.x), [sp, #-16]!")
             let addrReg = emitAddr(target)
             let unitReg: ARM64Reg = (addrReg == .x16) ? .x17 : .x16
@@ -3829,33 +3826,12 @@ public final class Codegen {
             let bitfieldMask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth) - 1) << UInt64(bf.bitOffset)
             let clearMask: UInt64 = ~bitfieldMask
             let valueMask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth) - 1) << UInt64(bf.bitOffset)
-            // Load the new value from stack (at sp — one 16-byte push before emitAddr)
-            emitLine("ldr \(valReg.x), [sp]")
-            // Shift the new value to the bitfield position
-            if bf.bitOffset > 0 {
-                emitLine("lsl \(valReg.x), \(valReg.x), #\(bf.bitOffset)")
-            }
-            // Mask the new value to bitWidth bits (shifted to position)
-            if valueMask <= 255 {
-                emitLine("and \(valReg.x), \(valReg.x), #\(valueMask)")
-            } else {
-                emitLine("mov \(unitReg.x), #\(valueMask & 0xffff)")
-                if valueMask > 0xffff {
-                    emitLine("movk \(unitReg.x), #\((valueMask >> 16) & 0xffff), lsl #16")
-                }
-                if valueMask > 0xffffff {
-                    emitLine("movk \(unitReg.x), #\((valueMask >> 32) & 0xffff), lsl #32")
-                }
-                if valueMask > 0xffffffffffff {
-                    emitLine("movk \(unitReg.x), #\((valueMask >> 48) & 0xffff), lsl #48")
-                }
-                emitLine("and \(valReg.x), \(valReg.x), \(unitReg.x)")
-            }
-            // Clear bitfield bits in containing unit
+
+            // Step 1: Clear bitfield bits in unitReg using clearMask
             if clearMask <= 255 {
                 emitLine("and \(unitReg.x), \(unitReg.x), #\(clearMask)")
             } else {
-                // Build clearMask in valReg, AND with unitReg, then reload valReg from stack
+                // Build clearMask in valReg, AND with unitReg
                 emitLine("mov \(valReg.x), #\(clearMask & 0xffff)")
                 if clearMask > 0xffff {
                     emitLine("movk \(valReg.x), #\((clearMask >> 16) & 0xffff), lsl #16")
@@ -3867,18 +3843,35 @@ public final class Codegen {
                     emitLine("movk \(valReg.x), #\((clearMask >> 48) & 0xffff), lsl #48")
                 }
                 emitLine("and \(unitReg.x), \(unitReg.x), \(valReg.x)")
-                // Reload original value from stack and recompute
-                emitLine("ldr \(valReg.x), [sp]")
-                if bf.bitOffset > 0 {
-                    emitLine("lsl \(valReg.x), \(valReg.x), #\(bf.bitOffset)")
-                }
-                if valueMask <= 255 {
-                    emitLine("and \(valReg.x), \(valReg.x), #\(valueMask)")
-                }
             }
-            // OR in the new value
+
+            // Step 2: Load, shift, and mask the new value in valReg
+            emitLine("ldr \(valReg.x), [sp]")
+            if bf.bitOffset > 0 {
+                emitLine("lsl \(valReg.x), \(valReg.x), #\(bf.bitOffset)")
+            }
+            if valueMask <= 255 {
+                emitLine("and \(valReg.x), \(valReg.x), #\(valueMask)")
+            } else {
+                // Build valueMask in addrReg (save addrReg to sp+8 first), AND with valReg
+                emitLine("str \(addrReg.x), [sp, #8]")
+                emitLine("mov \(addrReg.x), #\(valueMask & 0xffff)")
+                if valueMask > 0xffff {
+                    emitLine("movk \(addrReg.x), #\((valueMask >> 16) & 0xffff), lsl #16")
+                }
+                if valueMask > 0xffffff {
+                    emitLine("movk \(addrReg.x), #\((valueMask >> 32) & 0xffff), lsl #32")
+                }
+                if valueMask > 0xffffffffffff {
+                    emitLine("movk \(addrReg.x), #\((valueMask >> 48) & 0xffff), lsl #48")
+                }
+                emitLine("and \(valReg.x), \(valReg.x), \(addrReg.x)")
+                emitLine("ldr \(addrReg.x), [sp, #8]")
+            }
+
+            // Step 3: OR the new value into the unit
             emitLine("orr \(unitReg.x), \(unitReg.x), \(valReg.x)")
-            // Store the containing unit back
+            // Step 4: Store the containing unit back
             switch bf.unitSize {
             case 1: emitLine("strb \(unitReg.w), [\(addrReg.x)]")
             case 2: emitLine("strh \(unitReg.w), [\(addrReg.x)]")
