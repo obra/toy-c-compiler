@@ -2931,8 +2931,11 @@ public final class Codegen {
             if isFloatOp {
                 // Floating-point arithmetic: use d registers (or s for float).
                 // For comparisons the result goes into an integer register.
+                // Use float (s) registers only if both operands are float (or one is
+                // float and the other is int — C converts int to float in that case).
                 let isFloat = isFloatResult ? (resultType == .float) :
-                              (leftType == .float && rightType == .float)
+                    ((leftType == .float || rightType == .float) &&
+                     (leftType != .double && rightType != .double && leftType != .longDouble && rightType != .longDouble))
 
                 // Implicit conversion: if one operand is int and the other is float,
                 // convert the int operand to float (C usual arithmetic conversions).
