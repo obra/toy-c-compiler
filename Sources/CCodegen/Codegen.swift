@@ -4027,13 +4027,8 @@ public final class Codegen {
         // __builtin_ffs(x) → find first set bit (1-indexed, 0 if x==0)
         if case .identifier(let id) = c.function, id.name == "__builtin_ffs", c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
-            // rbit + clz gives us the bit position, then add 1
-            // If x == 0, result is 0
+            // If x == 0, result is 0; otherwise rbit + clz + 1
             emitLine("cmp \(argReg.x), #0")
-            emitLine("mov \(argReg.x), #0")
-            emitLine("csel \(argReg.x), \(argReg.x), \(argReg.x), eq")
-            // For non-zero: rbit x9, x; clz x9, x9; add x9, x9, #1
-            // But this is tricky with csel. Use a branch instead.
             let label = newLabel()
             emitLine("b.eq \(label)")
             emitLine("rbit \(argReg.x), \(argReg.x)")
