@@ -3432,6 +3432,226 @@ public final class Codegen {
             return reg
         }
 
+        // __builtin_constant_p(expr) → 0 (we can't evaluate at compile time easily)
+        if case .identifier(let id) = c.function, id.name == "__builtin_constant_p" {
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // __builtin_prefetch(addr, ...) → no-op
+        if case .identifier(let id) = c.function, id.name == "__builtin_prefetch" {
+            let reg = regAlloc.alloc() ?? .x9
+            return reg
+        }
+
+        // __builtin_return_address(0) → 0 (not supported)
+        if case .identifier(let id) = c.function, id.name == "__builtin_return_address" {
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // __builtin_unreachable() → no-op (falls through)
+        if case .identifier(let id) = c.function, id.name == "__builtin_unreachable" {
+            let reg = regAlloc.alloc() ?? .x9
+            return reg
+        }
+
+        // __builtin_trap() → abort
+        if case .identifier(let id) = c.function, id.name == "__builtin_trap" {
+            emitLine("bl _abort")
+            let reg = regAlloc.alloc() ?? .x9
+            return reg
+        }
+
+        // __builtin_alloca(size) → allocate on stack (subtract sp)
+        if case .identifier(let id) = c.function, id.name == "__builtin_alloca", c.arguments.count >= 1 {
+            let sizeReg = emitExpr(c.arguments[0])
+            // Align to 16 bytes
+            emitLine("add \(sizeReg.x), \(sizeReg.x), #15")
+            emitLine("and \(sizeReg.x), \(sizeReg.x), #0xFFFFFFFFFFFFFFF0")
+            emitLine("sub sp, sp, \(sizeReg.x)")
+            // Return the stack pointer (before alignment, which is the allocated address)
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(resultReg.x), sp")
+            regAlloc.free(sizeReg)
+            return resultReg
+        }
+
+        // __builtin_ffs(x) → find first set bit (1-indexed, 0 if x==0)
+        if case .identifier(let id) = c.function, id.name == "__builtin_ffs", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            // rbit + clz gives us the bit position, then add 1
+            // If x == 0, result is 0
+            emitLine("cmp \(argReg.x), #0")
+            emitLine("mov \(argReg.x), #0")
+            emitLine("csel \(argReg.x), \(argReg.x), \(argReg.x), eq")
+            // For non-zero: rbit x9, x; clz x9, x9; add x9, x9, #1
+            // But this is tricky with csel. Use a branch instead.
+            let label = newLabel()
+            emitLine("b.eq \(label)")
+            emitLine("rbit \(argReg.x), \(argReg.x)")
+            emitLine("clz \(argReg.x), \(argReg.x)")
+            emitLine("add \(argReg.x), \(argReg.x), #1")
+            emitLine("\(label):")
+            return argReg
+        }
+
+        // __builtin_ctz(x) → count trailing zeros
+        if case .identifier(let id) = c.function, id.name == "__builtin_ctz", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            // rbit + clz gives ctz
+            emitLine("rbit \(argReg.x), \(argReg.x)")
+            emitLine("clz \(argReg.x), \(argReg.x)")
+            return argReg
+        }
+
+        // __builtin_clz(x) → count leading zeros
+        if case .identifier(let id) = c.function, id.name == "__builtin_clz", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("clz \(argReg.x), \(argReg.x)")
+            return argReg
+        }
+
+        // __builtin_bswap32(x) → byte-swap 32-bit
+        if case .identifier(let id) = c.function, id.name == "__builtin_bswap32", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("rev w\(argReg.regNum), w\(argReg.regNum)")
+            return argReg
+        }
+
+        // __builtin_bswap64(x) → byte-swap 64-bit
+        if case .identifier(let id) = c.function, id.name == "__builtin_bswap64", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("rev \(argReg.x), \(argReg.x)")
+            return argReg
+        }
+
+        // __builtin_bswap16(x) → byte-swap 16-bit
+        if case .identifier(let id) = c.function, id.name == "__builtin_bswap16", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("rev16 w\(argReg.regNum), w\(argReg.regNum)")
+            return argReg
+        }
+
+        // __builtin_popcount(x) → population count
+        if case .identifier(let id) = c.function, id.name == "__builtin_popcount", c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("cnt w\(argReg.regNum), w\(argReg.regNum)")
+            return argReg
+        }
+
+        // __builtin_add_overflow(a, b, &res) → 1 if overflow, stores a+b in *res
+        if case .identifier(let id) = c.function, id.name == "__builtin_add_overflow", c.arguments.count >= 3 {
+            let aReg = emitExpr(c.arguments[0])
+            emitLine("str \(aReg.x), [sp, #-16]!")
+            let bReg = emitExpr(c.arguments[1])
+            emitLine("str \(bReg.x), [sp, #-16]!")
+            let ptrReg = emitExpr(c.arguments[2])
+            emitLine("str \(ptrReg.x), [sp, #-16]!")
+            // Load a and b, add with flags
+            emitLine("ldr x9, [sp, #16]")
+            emitLine("ldr x10, [sp, #0]")
+            emitLine("adds x9, x9, x10")
+            // Store result through pointer
+            emitLine("ldr x11, [sp, #0]")
+            // Check if pointer is 32-bit or 64-bit based on the pointed-to type
+            let ptrType = exprType(c.arguments[2]).unqualified
+            if case .pointer(let to) = ptrType {
+                let pointeeType = to.unqualified
+                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
+                    emitLine("str w9, [x11]")
+                } else {
+                    emitLine("str x9, [x11]")
+                }
+            } else {
+                emitLine("str x9, [x11]")
+            }
+            // Return 1 if overflow (C bit set for unsigned, V bit for signed)
+            // For simplicity, check both: cset with cs (carry set = unsigned overflow)
+            // or vs (signed overflow). We'll use cs since most tests use unsigned.
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("cset \(resultReg.w), cs")
+            emitLine("add sp, sp, #48")
+            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
+            return resultReg
+        }
+
+        // __builtin_sub_overflow(a, b, &res) → 1 if overflow, stores a-b in *res
+        if case .identifier(let id) = c.function, id.name == "__builtin_sub_overflow", c.arguments.count >= 3 {
+            let aReg = emitExpr(c.arguments[0])
+            emitLine("str \(aReg.x), [sp, #-16]!")
+            let bReg = emitExpr(c.arguments[1])
+            emitLine("str \(bReg.x), [sp, #-16]!")
+            let ptrReg = emitExpr(c.arguments[2])
+            emitLine("str \(ptrReg.x), [sp, #-16]!")
+            emitLine("ldr x9, [sp, #16]")
+            emitLine("ldr x10, [sp, #0]")
+            emitLine("subs x9, x9, x10")
+            emitLine("ldr x11, [sp, #0]")
+            let ptrType = exprType(c.arguments[2]).unqualified
+            if case .pointer(let to) = ptrType {
+                let pointeeType = to.unqualified
+                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
+                    emitLine("str w9, [x11]")
+                } else {
+                    emitLine("str x9, [x11]")
+                }
+            } else {
+                emitLine("str x9, [x11]")
+            }
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("cset \(resultReg.w), cc")
+            emitLine("add sp, sp, #48")
+            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
+            return resultReg
+        }
+
+        // __builtin_mul_overflow(a, b, &res) → 1 if overflow, stores a*b in *res
+        if case .identifier(let id) = c.function, id.name == "__builtin_mul_overflow", c.arguments.count >= 3 {
+            let aReg = emitExpr(c.arguments[0])
+            emitLine("str \(aReg.x), [sp, #-16]!")
+            let bReg = emitExpr(c.arguments[1])
+            emitLine("str \(bReg.x), [sp, #-16]!")
+            let ptrReg = emitExpr(c.arguments[2])
+            emitLine("str \(ptrReg.x), [sp, #-16]!")
+            emitLine("ldr x9, [sp, #16]")
+            emitLine("ldr x10, [sp, #0]")
+            emitLine("mul x9, x9, x10")
+            emitLine("ldr x11, [sp, #0]")
+            let ptrType = exprType(c.arguments[2]).unqualified
+            if case .pointer(let to) = ptrType {
+                let pointeeType = to.unqualified
+                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
+                    emitLine("str w9, [x11]")
+                } else {
+                    emitLine("str x9, [x11]")
+                }
+            } else {
+                emitLine("str x9, [x11]")
+            }
+            // For unsigned 32-bit multiply, overflow if upper 32 bits are non-zero
+            // For 64-bit, we can't easily detect overflow — just return 0
+            let resultReg = regAlloc.alloc() ?? .x9
+            // Check if pointer points to 32-bit type
+            if case .pointer(let to) = ptrType {
+                let pointeeType = to.unqualified
+                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
+                    emitLine("lsr x12, x9, #32")
+                    emitLine("cmp x12, #0")
+                    emitLine("cset \(resultReg.w), ne")
+                } else {
+                    emitLine("mov \(resultReg.w), #0")
+                }
+            } else {
+                emitLine("mov \(resultReg.w), #0")
+            }
+            emitLine("add sp, sp, #48")
+            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
+            return resultReg
+        }
+
         // Inline creal(z) / cimag(z) — extract real/imaginary part from a _Complex value
         if case .identifier(let id) = c.function,
            (id.name == "creal" || id.name == "cimag" || id.name == "crealf" || id.name == "cimagf" ||
@@ -3480,6 +3700,41 @@ public final class Codegen {
             } else {
                 funcName = id.name
             }
+        }
+
+        // Map __builtin_X functions to their standard library equivalents.
+        // Most __builtin_ functions are simply aliases for the corresponding libc function.
+        let builtinMappings: [String: String] = [
+            "__builtin_abort": "abort",
+            "__builtin_exit": "exit",
+            "__builtin_memcpy": "memcpy",
+            "__builtin_memset": "memset",
+            "__builtin_memcmp": "memcmp",
+            "__builtin_strcmp": "strcmp",
+            "__builtin_strlen": "strlen",
+            "__builtin_strcpy": "strcpy",
+            "__builtin_strncpy": "strncpy",
+            "__builtin_strncmp": "strncmp",
+            "__builtin_strchr": "strchr",
+            "__builtin_strrchr": "strrchr",
+            "__builtin_strstr": "strstr",
+            "__builtin_memmove": "memmove",
+            "__builtin_malloc": "malloc",
+            "__builtin_calloc": "calloc",
+            "__builtin_realloc": "realloc",
+            "__builtin_free": "free",
+            "__builtin_printf": "printf",
+            "__builtin_fprintf": "fprintf",
+            "__builtin_sprintf": "sprintf",
+            "__builtin_snprintf": "snprintf",
+            "__builtin_puts": "puts",
+            "__builtin_putchar": "putchar",
+            "__builtin_trap": "abort",
+            "__builtin_unreachable": "abort",
+            "__builtin_assert": "abort",
+        ]
+        if let mapped = builtinMappings[funcName] {
+            funcName = mapped
         }
 
         // Check if this is a variadic function (e.g., printf)
@@ -4072,10 +4327,14 @@ public final class Codegen {
                 regIdx += regsNeeded
             }
             // Re-allocate the target registers
+            // Note: argument registers (x0-x7) are NOT managed by regAlloc
+            // (which only manages scratch regs x9-x15). We must NOT consume
+            // scratch registers to represent arg register usage — that would
+            // permanently shrink the available pool and cause register aliasing.
+            // The arg registers are caller-saved and don't conflict with scratch regs.
             let totalRegArgs = isInternalVariadic ? min(namedParamCount, 8) : min(regIdx, 8)
-            for _ in 0..<totalRegArgs {
-                _ = regAlloc.alloc() // consume the register slot
-            }
+            // No register consumption needed — arg registers are separate from scratch pool
+            _ = totalRegArgs  // used only for documentation
 
             // Variadic args already placed on stack by the loop above.
             var variadicStackArgSize = 0

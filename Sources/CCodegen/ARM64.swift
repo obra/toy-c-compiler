@@ -77,7 +77,12 @@ public final class RegAlloc {
     }
 
     public func free(_ reg: ARM64Reg) {
-        available.insert(reg, at: 0)
+        // Prevent duplicate entries — if the register is already available,
+        // don't add it again (duplicates cause alloc() to return the same
+        // register multiple times, leading to register aliasing bugs).
+        if !available.contains(reg) {
+            available.insert(reg, at: 0)
+        }
     }
 
     public func reset() {
