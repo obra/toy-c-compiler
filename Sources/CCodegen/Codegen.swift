@@ -3138,9 +3138,21 @@ public final class Codegen {
             // This is true when both operands are unsigned, or when one is unsigned
             // and the other has equal or lower rank (C99 usual arithmetic conversions).
             // Pointer comparisons are always unsigned.
+            // Note: Apply integer promotion first — types smaller than int are promoted
+            // to int (signed) if they fit, which means char/short comparisons are signed.
             let isUnsignedCmp: Bool = {
-                let lu = leftType.unqualified
-                let ru = rightType.unqualified
+                // Integer promotion: types smaller than int become int (or unsigned int)
+                func intPromote(_ t: CType) -> CType {
+                    let u = t.unqualified
+                    switch u {
+                    case .bool, .char, .schar, .uchar, .short, .ushort:
+                        return .int  // all fit in int, so promote to signed int
+                    default:
+                        return t
+                    }
+                }
+                let lu = intPromote(leftType).unqualified
+                let ru = intPromote(rightType).unqualified
                 if lu.isPointer || ru.isPointer { return true }
                 if lu.isArray || ru.isArray { return true }
                 if lu.isUnsigned && ru.isUnsigned { return true }
@@ -5632,6 +5644,26 @@ public final class Codegen {
                     isSigned = !fieldBaseType.isUnsigned
                 }
                 // Use the bitOffset stored in the field (bit position within containing unit)
+                return (bw, field.bitOffset, unitSize, isSigned)
+            }
+        }
+        // Also check union types for bitfield members
+        if case .unionType(let rec) = t {
+            if rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                t = .unionType(completed)
+            }
+        }
+        if case .unionType(let rec) = t {
+            for field in rec.fields where (field.name ?? "") == memberName {
+                guard let bw = field.bitWidth else { return nil }
+                let unitSize = field.type.unqualified.sizeInBytes ?? 4
+                let fieldBaseType = field.type.unqualified
+                let isSigned: Bool
+                if case .enumType = fieldBaseType {
+                    isSigned = false
+                } else {
+                    isSigned = !fieldBaseType.isUnsigned
+                }
                 return (bw, field.bitOffset, unitSize, isSigned)
             }
         }
