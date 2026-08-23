@@ -2838,9 +2838,12 @@ public final class Codegen {
             // Determine if the comparison should use unsigned condition codes.
             // This is true when both operands are unsigned, or when one is unsigned
             // and the other has equal or lower rank (C99 usual arithmetic conversions).
+            // Pointer comparisons are always unsigned.
             let isUnsignedCmp: Bool = {
                 let lu = leftType.unqualified
                 let ru = rightType.unqualified
+                if lu.isPointer || ru.isPointer { return true }
+                if lu.isArray || ru.isArray { return true }
                 if lu.isUnsigned && ru.isUnsigned { return true }
                 if lu.isUnsigned && ru.isSigned {
                     let ls = lu.sizeInBytes ?? 0
