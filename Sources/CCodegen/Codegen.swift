@@ -663,9 +663,18 @@ public final class Codegen {
                 }
             } else if let val = evalConstExpr(expr) {
                 emitInitializer(.integerLiteral(IntegerLiteral(value: val, type: type ?? .int, loc: SourceLoc.unknown)), size: size, type: type)
+            } else if let dbl = evalConstFloatExpr(expr) {
+                // Float constant expression (e.g., 365.0*86400.0)
+                if let type = type, type.unqualified == .float {
+                    let bits = Float(dbl).bitPattern
+                    emitLine(".long \(bits)")
+                } else {
+                    let bits = dbl.bitPattern
+                    emitLine(".quad \(bits)")
+                }
             } else {
-                // Default: zero-fill
-                emitLine(".zero \(max(size, 8))")
+                // Default: zero-fill with the exact field size
+                emitLine(".zero \(size)")
             }
         }
     }
@@ -898,7 +907,33 @@ public final class Codegen {
         }
     }
 
-    // MARK: - Static local data
+    /// Evaluate a constant floating-point expression to a Double.
+    /// Handles float literals and arithmetic on them (e.g., 365.0*86400.0).
+    private func evalConstFloatExpr(_ expr: Expr) -> Double? {
+        switch expr {
+        case .floatLiteral(let f):
+            return f.value
+        case .binary(let b):
+            guard let lhs = evalConstFloatExpr(b.left), let rhs = evalConstFloatExpr(b.right) else { return nil }
+            switch b.op {
+            case .add: return lhs + rhs
+            case .sub: return lhs - rhs
+            case .mul: return lhs * rhs
+            case .div: return rhs != 0 ? lhs / rhs : nil
+            default: return nil
+            }
+        case .unary(let u):
+            guard let val = evalConstFloatExpr(u.operand) else { return nil }
+            switch u.op {
+            case .neg: return -val
+            default: return val
+            }
+        case .cast(let c):
+            return evalConstFloatExpr(c.expr)
+        default:
+            return nil
+        }
+    }
 
     private func emitStaticLocalData() {
         guard !staticLocalInits.isEmpty else { return }
