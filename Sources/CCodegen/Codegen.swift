@@ -3280,7 +3280,13 @@ public final class Codegen {
                 emitLine("msub \(currentReg.x), \(temp.x), \(rhsReg.x), \(currentReg.x)")
                 regAlloc.free(temp)
             case .shl: emitLine("lsl \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .shr: emitLine("asr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+            case .shr:
+                // Use lsr for unsigned, asr for signed
+                if targetType.isUnsigned {
+                    emitLine("lsr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                } else {
+                    emitLine("asr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
             case .bitAnd: emitLine("and \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
             case .bitOr: emitLine("orr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
             case .bitXor: emitLine("eor \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
