@@ -43,6 +43,9 @@ public final class Parser {
     private var currentFuncName: String? = nil
     /// Enum constants defined so far (name → value), for constant expression evaluation.
     private var parserEnumConstants: [String: Int64] = [:]
+
+    /// Global variable types (name → type), for sizeof evaluation in constant expressions.
+    private var globalVarTypes: [String: CType] = [:]
     /// Stack of #pragma pack values (for struct alignment control).
     private var packStack: [Int] = []
     /// Current pack alignment (0 = use natural alignment).
@@ -370,6 +373,7 @@ public final class Parser {
             } else {
                 let varDecl = VarDecl(name: name, type: actualType, initializer: initExpr,
                                       storageClass: storageClass, isGlobal: true, loc: loc)
+                globalVarTypes[name] = actualType
                 additionalDecls.append(.varDecl(varDecl))
                 if firstDecl == nil {
                     firstDecl = .varDecl(varDecl)
@@ -2253,6 +2257,12 @@ public final class Parser {
         case .stringLiteral(let s): return s.type
         case .floatLiteral(let f): return f.type
         case .boolLiteral: return .bool
+        case .identifier(let id):
+            // Look up global variable types for sizeof evaluation
+            if let t = globalVarTypes[id.name] {
+                return t
+            }
+            return .int
         default: return .int
         }
     }
