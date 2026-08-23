@@ -3840,12 +3840,8 @@ public final class Codegen {
             // Compute actual stack size for variadic args (structs may need 16 bytes each)
             var stackArgSize = 0
             if isInternalVariadic && evaluatedArgs.count > namedParamCount {
-                var variadicSize = 0
-                for i in namedParamCount..<evaluatedArgs.count {
-                    let argType = exprType(c.arguments[i]).unqualified
-                    let argSize = argType.sizeInBytes ?? 8
-                    variadicSize += (argSize + 7) & ~7  // round up to 8
-                }
+                // Each variadic arg takes 8 bytes (pointer/int sized)
+                let variadicSize = (evaluatedArgs.count - namedParamCount) * 8
                 stackArgSize = (variadicSize + 15) & ~15  // align to 16
             } else {
                 stackArgSize = ((numStackArgs + largeStructStackSlots) * 8 + 15) & ~15
@@ -3925,8 +3921,11 @@ public final class Codegen {
                 // For internal variadic: named params go in registers, variadic args go on stack
                 let isVariadicArg = isInternalVariadic && i >= namedParamCount
                 if isVariadicArg {
-                    let argSize = exprType(c.arguments[i]).unqualified.sizeInBytes ?? 8
-                    let slotSize = (argSize + 7) & ~7  // round up to 8
+                    // Variadic args are always passed as 8-byte values (pointers, ints,
+                    // or promoted types). Use 8 bytes regardless of the expression's
+                    // declared type (e.g., string literals are char[N] but decay to char*).
+                    let argSize = 8
+                    let slotSize = 8
                     let stackOffset = variadicStackOffset
                     variadicStackOffset += slotSize
                     if isWide {
