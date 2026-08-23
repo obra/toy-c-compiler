@@ -2012,6 +2012,21 @@ public final class Parser {
                                   arguments: [memberBase], loc: loc))
         }
 
+        // __builtin_choose_expr(const_cond, expr1, expr2) — compile-time conditional
+        if token.kind == .identifier && token.spelling == "__builtin_choose_expr" {
+            let loc = advance().loc
+            _ = try consume(kind: .punct, spelling: "(")
+            let cond = try parseAssignmentExpr()
+            _ = try consume(kind: .punct, spelling: ",")
+            let thenExpr = try parseAssignmentExpr()
+            _ = try consume(kind: .punct, spelling: ",")
+            let elseExpr = try parseAssignmentExpr()
+            _ = try consume(kind: .punct, spelling: ")")
+            // Evaluate the condition at compile time
+            let condVal = evalIntConst(cond)
+            return condVal != 0 ? thenExpr : elseExpr
+        }
+
         switch token.kind {
         case .integerLiteral:
             advance()
