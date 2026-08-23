@@ -422,6 +422,8 @@ public final class Parser {
 
         repeat {
             let (name, type, declLoc) = try parseDeclarator(baseType)
+            // Skip __attribute__ after the typedef declarator
+            skipAsmAndAttributes()
             typedefNames.insert(name)
             typedefTypes[name] = type
             let td = TypedefDecl(name: name, type: type, loc: declLoc)
@@ -657,6 +659,8 @@ public final class Parser {
                     let (baseType, _, _, _) = try parseDeclSpecifiers()
                     repeat {
                         let (fieldName, fieldType, _) = try parseDeclarator(baseType)
+                        // Skip __attribute__ after the field declarator
+                        skipAsmAndAttributes()
                         var bitWidth: Int? = nil
                         if match(kind: .punct, spelling: ":") {
                             let widthExpr = try parseConditionalExpr()
@@ -711,6 +715,8 @@ public final class Parser {
                     let (baseType, _, _, _) = try parseDeclSpecifiers()
                     repeat {
                         let (fieldName, fieldType, _) = try parseDeclarator(baseType)
+                        // Skip __attribute__ after the field declarator
+                        skipAsmAndAttributes()
                         let fieldSize = fieldType.sizeInBytes ?? 0
                         let fieldAlign = fieldType.alignOf ?? 1
                         maxAlign = max(maxAlign, fieldAlign)
