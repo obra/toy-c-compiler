@@ -1456,6 +1456,16 @@ public final class Parser {
         if isKeyword("case") {
             let loc = advance().loc
             let val = try parseConditionalExpr()
+            // GNU extension: case A ... B (range case)
+            if isPunct("...") {
+                advance()
+                let endVal = try parseConditionalExpr()
+                _ = try consume(kind: .punct, spelling: ":")
+                let stmt: Stmt? = isPunct("}") || isKeyword("case") || isKeyword("default") ? nil : try parseStmt()
+                // Encode range using initList [start, end] — codegen recognizes this in case
+                let rangeExpr: Expr = .initList(InitListExpr(values: [val, endVal], designators: [nil, nil], loc: loc))
+                return .case(CaseStmt(value: rangeExpr, stmt: stmt, loc: loc))
+            }
             _ = try consume(kind: .punct, spelling: ":")
             let stmt: Stmt? = isPunct("}") || isKeyword("case") || isKeyword("default") ? nil : try parseStmt()
             return .case(CaseStmt(value: val, stmt: stmt, loc: loc))

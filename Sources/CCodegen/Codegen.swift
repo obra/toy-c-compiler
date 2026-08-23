@@ -2077,6 +2077,25 @@ public final class Codegen {
 
         // Helper: emit a comparison and branch for a case value
         func emitCaseComparison(_ caseVal: Expr) -> String {
+            // GNU case range: encoded as initList [start, end]
+            if case .initList(let il) = caseVal, il.values.count == 2 {
+                let label = newLabel()
+                let startVal = emitExpr(il.values[0])
+                let endVal = emitExpr(il.values[1])
+                let switchTemp = regAlloc.alloc() ?? .x10
+                emitLoadFP(switchTemp.x, switchOffset)
+                // Check: switchTemp >= start && switchTemp <= end
+                emitLine("cmp \(switchTemp.x), \(startVal.x)")
+                emitLine("b.lt \(label)")
+                emitLine("cmp \(switchTemp.x), \(endVal.x)")
+                emitLine("b.gt \(label)")
+                emitLine("b \(label)")
+                regAlloc.free(switchTemp)
+                regAlloc.free(startVal)
+                regAlloc.free(endVal)
+                regAlloc.reset()
+                return label
+            }
             let label = newLabel()
             let val = emitExpr(caseVal)
             let switchTemp = regAlloc.alloc() ?? .x10
