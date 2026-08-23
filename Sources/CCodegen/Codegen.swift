@@ -267,7 +267,9 @@ public final class Codegen {
                         }
                     }
                     let hasDesignators = !designatedFields.isEmpty
-                    for field in fields {
+                    var fieldIdx = 0
+                    while fieldIdx < fields.count {
+                        let field = fields[fieldIdx]
                         let fieldOffset = field.offset
                         let fieldName = field.name ?? ""
                         // Handle designated initializers
@@ -359,6 +361,51 @@ public final class Codegen {
                         }
                         let fieldType = field.type.unqualified
                         let fieldSize = field.type.sizeInBytes ?? 0
+                        // Check for bitfield: pack into containing unit
+                        if let bw = field.bitWidth {
+                            // Accumulate bitfield values into a single unit word
+                            let unitSize = fieldType.sizeInBytes ?? 4
+                            // Process this bitfield
+                            var bitVal: UInt64 = 0
+                            if valueIdx < il.values.count {
+                                let v = il.values[valueIdx]
+                                valueIdx += 1
+                                if let val = evalConstExpr(v) {
+                                    let mask: UInt64 = (UInt64(1) << UInt64(bw)) - 1
+                                    bitVal |= (UInt64(bitPattern: val) & mask) << UInt64(field.bitOffset)
+                                }
+                            }
+                            // Look ahead for more bitfields in the same unit
+                            var nextFieldIdx = fieldIdx + 1
+                            while nextFieldIdx < rec.fields.count,
+                                  let nextBw = rec.fields[nextFieldIdx].bitWidth {
+                                // Check if this bitfield is in the same allocation unit
+                                // (same offset when rounded to unitSize, or overlapping)
+                                let nextOff = rec.fields[nextFieldIdx].offset
+                                if nextOff >= fieldOffset + unitSize { break }
+                                if valueIdx < il.values.count {
+                                    let nv = il.values[valueIdx]
+                                    valueIdx += 1
+                                    if let nval = evalConstExpr(nv) {
+                                        let nmask: UInt64 = (UInt64(1) << UInt64(nextBw)) - 1
+                                        bitVal |= (UInt64(bitPattern: nval) & nmask) << UInt64(rec.fields[nextFieldIdx].bitOffset)
+                                    }
+                                }
+                                nextFieldIdx += 1
+                            }
+                            // Emit the packed bitfield unit
+                            switch unitSize {
+                            case 1: emitLine(".byte \(bitVal & 0xFF)")
+                            case 2: emitLine(".short \(bitVal & 0xFFFF)")
+                            case 4: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                            case 8: emitLine(".quad \(bitVal)")
+                            default: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                            }
+                            currentOffset = fieldOffset + unitSize
+                            // Skip consumed bitfield fields
+                            fieldIdx = nextFieldIdx
+                            continue
+                        }
                         // Check for flexible array member (incompleteArray has size 0 but needs init)
                         let isFlexArray: Bool = {
                             if case .incompleteArray = fieldType { return true }
@@ -461,6 +508,7 @@ public final class Codegen {
                             }
                             currentOffset = fieldOffset + (field.type.sizeInBytes ?? 8)
                         }
+                        fieldIdx += 1
                     }
                     // Emit trailing padding to reach full struct size
                     let totalSize = rec.size ?? currentOffset
