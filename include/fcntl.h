@@ -21,6 +21,7 @@ extern int fsctl(const char *, unsigned long, void *, int);
 #define O_SYNC    0x0080
 #define O_DSYNC   0x400000
 #define O_NDELAY  O_NONBLOCK
+#define O_CLOEXEC 0x1000000
 
 #define F_DUPFD    0
 #define F_GETFD    1
@@ -30,6 +31,8 @@ extern int fsctl(const char *, unsigned long, void *, int);
 #define F_GETLK    7
 #define F_SETLK    8
 #define F_SETLKW   9
+#define F_PREALLOCATE 42
+#define F_FULLFSYNC 51
 
 #define FD_CLOEXEC 1
 
