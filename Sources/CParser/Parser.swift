@@ -785,9 +785,11 @@ public final class Parser {
                             if posInUnit + bw > unitBits {
                                 bitOffset = unitStart + unitBits
                             }
-                            let byteOff = bitOffset / 8
-                            let bitPosInUnit = bitOffset - (byteOff * 8)
-                            fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: bitWidth, offset: byteOff, bitOffset: bitPosInUnit))
+                            // Recompute unit start (may have advanced)
+                            let unitStart2 = (bitOffset / alignBits) * alignBits
+                            let bitPosInUnit = bitOffset - unitStart2
+                            let unitByteOff = unitStart2 / 8
+                            fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: bitWidth, offset: unitByteOff, bitOffset: bitPosInUnit))
                             bitOffset += bw
                         } else {
                             // Non-bitfield: round bit offset up to byte, then align

@@ -1374,7 +1374,7 @@ public final class Codegen {
                 ensureLocalSpace(size: regWidth * 8)
                 let offset = -(localOffset)
                 localVarOffsets[param.name ?? "_param_\(i)"] = offset
-                let isInt = pt.isInteger || pt.isPointer || pt.isFunction
+                let isInt = pt.isInteger || pt.isPointer || pt.isFunction || pt.isEnum
                 if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
@@ -3020,7 +3020,22 @@ public final class Codegen {
             let isFloatResult = resultType.isFloating
 
             let leftReg = emitExpr(b.left)
-            let rightReg = emitExpr(b.right)
+            // Save left result to stack before evaluating right — the right operand
+            // (e.g., a statement expression) may reset the register allocator and
+            // clobber leftReg. After evaluating right, restore left into the same
+            // register, moving right to a temp if needed.
+            emitLine("str \(leftReg.x), [sp, #-16]!")
+            let rightResultReg = emitExpr(b.right)
+            // If rightReg is the same as leftReg, keep right in x17 and use x17 as the right operand
+            let rightReg: ARM64Reg
+            if rightResultReg == leftReg {
+                emitLine("mov x17, \(rightResultReg.x)")
+                emitLine("ldr \(leftReg.x), [sp], #16")
+                rightReg = .x17
+            } else {
+                emitLine("ldr \(leftReg.x), [sp], #16")
+                rightReg = rightResultReg
+            }
 
             if isFloatOp {
                 // Floating-point arithmetic: use d registers (or s for float).

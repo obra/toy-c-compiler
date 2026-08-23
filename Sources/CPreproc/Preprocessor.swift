@@ -108,7 +108,6 @@ public final class Preprocessor {
         "__DBL_DIG__": "15",
         "__FLT_DIG__": "6",
         "__DECIMAL_DIG__": "17",
-        "__OPTIMIZE__": "1",
         "__ELF__": "1",
         "__DARWIN_C_LEVEL": "900000",
         "__DARWIN_C_FULL": "900000",
