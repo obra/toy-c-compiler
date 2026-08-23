@@ -873,6 +873,12 @@ public final class Codegen {
             }
         case .subscript_(let sub):
             // array[index] = *(array + index)
+            // Handle string literal base: "X"[0] → address of string literal
+            if case .stringLiteral(let sl) = sub.base,
+               let idx = evalConstExpr(sub.index) {
+                let label = addStringLiteral(sl.value)
+                return (label, idx)
+            }
             if let (sym, baseOff) = resolveSymbolAndOffset(sub.base),
                let idx = evalConstExpr(sub.index) {
                 let elemSize: Int = {
