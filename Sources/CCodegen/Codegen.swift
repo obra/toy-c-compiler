@@ -33,6 +33,7 @@ public final class Codegen {
     private var staticLocalInits: [(name: String, type: CType, init_: Expr)] = []  // pending static initializers
     private var breakLabels: [String] = []      // stack of break targets
     private var continueLabels: [String] = []   // stack of continue targets
+    private var currentFunctionReturnType: CType? = .int  // return type of the function being compiled
     private var gotoLabels: [String: String] = [:]  // C label name → assembly label
     private var vaSaveAreaOffset: Int = 0  // offset from x29 to va register save area (0 = no va)
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
@@ -1060,6 +1061,7 @@ public final class Codegen {
 
     private func emitFunction(_ fd: FuncDecl) {
         currentFuncName = fd.name
+        currentFunctionReturnType = fd.returnType
         localOffset = 0
         localVarOffsets = [:]
         localVarTypes = [:]
@@ -1666,7 +1668,11 @@ public final class Codegen {
                         // For 32-bit return types, use mov w0 (truncates to 32 bits,
                         // zero-extending to 64-bit). For 64-bit types (long, pointer),
                         // use mov x0 to preserve the full value.
-                        if (retType.isSigned32Bit || retType == .uint || retType == .ushort || retType == .uchar || retType == .bool) && !retType.isPointer {
+                        // Use the FUNCTION return type, not the expression type,
+                        // because a function returning i64 with a char expression
+                        // needs the full 64-bit return path.
+                        let funcRet = (currentFunctionReturnType ?? retType).unqualified
+                        if (funcRet.isSigned32Bit || funcRet == .uint || funcRet == .ushort || funcRet == .uchar || funcRet == .bool) && !funcRet.isPointer {
                             emitLine("mov w0, \(reg.w)")
                         } else {
                             emitLine("mov x0, \(reg.x)")
@@ -2217,6 +2223,53 @@ public final class Codegen {
                 } else {
                     // Convert to 64-bit int: fcvtzs xN, sN/dN
                     emitLine("fcvtzs \(reg.x), \(srcReg)")
+                }
+                return reg
+            }
+            // Integer-to-integer cast: may need sign/zero extension
+            if fromType.isInteger && toType.isInteger {
+                let reg = emitExpr(c.expr)
+                let srcSize = fromType.sizeInBytes ?? 8
+                let dstSize = toType.sizeInBytes ?? 8
+                if srcSize < dstSize {
+                    // Widening: extend from source size using SOURCE signedness.
+                    // (unsigned long)(int)(-1) → sign-extend → 0xFFFFFFFFFFFFFFFF
+                    // (unsigned long)(unsigned int)(0xFFFFFFFF) → zero-extend → 0x00000000FFFFFFFF
+                    if fromType.isSigned {
+                        switch srcSize {
+                        case 1: emitLine("sxtb \(reg.x), \(reg.w)")
+                        case 2: emitLine("sxth \(reg.x), \(reg.w)")
+                        case 4: emitLine("sxtw \(reg.x), \(reg.w)")
+                        default: break
+                        }
+                    } else {
+                        switch srcSize {
+                        case 1: emitLine("uxtb \(reg.x), \(reg.w)")
+                        case 2: emitLine("uxth \(reg.x), \(reg.w)")
+                        case 4: emitLine("mov \(reg.w), \(reg.w)")
+                        default: break
+                        }
+                    }
+                } else {
+                    // Narrowing or same size: truncate to dstSize, then extend
+                    // using DESTINATION signedness to reinterpret the bits.
+                    // (signed char)(unsigned char)(0xE9) → sxtb → -23
+                    // (int)(long long)(-1) → sxtw → -1
+                    if toType.isSigned {
+                        switch dstSize {
+                        case 1: emitLine("sxtb \(reg.x), \(reg.w)")
+                        case 2: emitLine("sxth \(reg.x), \(reg.w)")
+                        case 4: emitLine("sxtw \(reg.x), \(reg.w)")
+                        default: break
+                        }
+                    } else {
+                        switch dstSize {
+                        case 1: emitLine("uxtb \(reg.x), \(reg.w)")
+                        case 2: emitLine("uxth \(reg.x), \(reg.w)")
+                        case 4: emitLine("mov \(reg.w), \(reg.w)")
+                        default: break
+                        }
+                    }
                 }
                 return reg
             }
@@ -4471,8 +4524,13 @@ public final class Codegen {
             default: break
             }
             // For pointer arithmetic, result type is the pointer type
-            let lt = exprType(b.left)
-            let rt = exprType(b.right)
+            var lt = exprType(b.left)
+            var rt = exprType(b.right)
+            // Array-to-pointer decay in expressions
+            if case .array(let e, _) = lt.unqualified { lt = .pointer(to: e) }
+            else if case .incompleteArray(let e) = lt.unqualified { lt = .pointer(to: e) }
+            if case .array(let e, _) = rt.unqualified { rt = .pointer(to: e) }
+            else if case .incompleteArray(let e) = rt.unqualified { rt = .pointer(to: e) }
             if lt.isPointer && rt.isInteger { return lt }
             if lt.isInteger && rt.isPointer { return rt }
             // Shift operators: result type is the promoted left operand

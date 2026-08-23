@@ -623,11 +623,18 @@ public final class Sema {
         case .comma:
             return right
         case .add, .sub, .mul, .div, .mod, .shl, .shr, .bitAnd, .bitOr, .bitXor:
+            // Array-to-pointer decay: arrays decay to pointers in expressions
+            var l = left.unqualified
+            var r = right.unqualified
+            if case .array(let e, _) = l { l = .pointer(to: e) }
+            else if case .incompleteArray(let e) = l { l = .pointer(to: e) }
+            if case .array(let e, _) = r { r = .pointer(to: e) }
+            else if case .incompleteArray(let e) = r { r = .pointer(to: e) }
             // Pointer arithmetic
-            if left.isPointer && right.isInteger { return left }
-            if left.isInteger && right.isPointer { return right }
-            if left.isPointer && right.isPointer { return .long } // pointer difference
-            return usualArithmeticConversion(left, right)
+            if l.isPointer && r.isInteger { return l }
+            if l.isInteger && r.isPointer { return r }
+            if l.isPointer && r.isPointer { return .long } // pointer difference
+            return usualArithmeticConversion(l, r)
         }
     }
 }
