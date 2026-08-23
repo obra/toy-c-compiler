@@ -3340,7 +3340,7 @@ public final class Codegen {
         let addrReg = emitAddr(target)
 
         // Check if this is a struct assignment (needs multi-byte copy)
-        if case .structType = targetType, let size = targetType.sizeInBytes, size > 8 {
+        if case .structType = targetType, let size = targetType.sizeInBytes, size > 0 {
             // Struct assignment: copy size bytes from the source pointer to the target address.
             // The source pointer was saved on the stack. We must load it into a register
             // that is NOT addrReg (since addrReg holds the destination address).
