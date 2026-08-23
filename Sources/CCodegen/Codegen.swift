@@ -3158,8 +3158,8 @@ public final class Codegen {
 
         // Simple assignment: evaluate RHS, store to target
         let targetType = exprType(a.target).unqualified
-        if case .structType = targetType, let size = targetType.sizeInBytes, size > 8 {
-            // Struct assignment: get source address and copy bytes to target
+        if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
+            // Struct/union assignment: get source address and copy bytes to target
             let srcReg = emitAddr(a.value)
             let dstReg = emitAddr(a.target)
             var remaining = size
@@ -3339,8 +3339,8 @@ public final class Codegen {
         }
         let addrReg = emitAddr(target)
 
-        // Check if this is a struct assignment (needs multi-byte copy)
-        if case .structType = targetType, let size = targetType.sizeInBytes, size > 0 {
+        // Check if this is a struct/union assignment (needs multi-byte copy)
+        if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct assignment: copy size bytes from the source pointer to the target address.
             // The source pointer was saved on the stack. We must load it into a register
             // that is NOT addrReg (since addrReg holds the destination address).
@@ -4899,6 +4899,14 @@ public final class Codegen {
         // Load the value with the correct size based on member type
         emitLoad(addrReg, type: mt)
         return addrReg
+    }
+
+    /// Check if a type is an aggregate (struct or union) that needs byte-wise copy.
+    private func isAggregateType(_ t: CType) -> Bool {
+        switch t.unqualified {
+        case .structType, .unionType: return true
+        default: return false
+        }
     }
 
     /// Load a value from the address in reg, using the correct load instruction for the type.
