@@ -25,4 +25,11 @@ double strtod(const char *nptr, char **endptr);
 int rand(void);
 void srand(unsigned int seed);
 
+void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+
+int atexit(void (*func)(void));
+char *getenv(const char *name);
+int system(const char *command);
+
 #endif /* _STDLIB_H */

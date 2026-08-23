@@ -459,6 +459,18 @@ public final class Sema {
             return usualArithmeticConversion(t, f)
 
         case .call(let c):
+            // Handle implicit function declarations (C89):
+            // If the function is an undeclared identifier, treat it as returning int.
+            if case .identifier(let id) = c.function {
+                if currentScope.lookup(id.name) == nil && !enumConstants.keys.contains(id.name) &&
+                   !functionLabels.contains(id.name) && !id.name.hasPrefix("__builtin_") {
+                    // Not a known built-in or special function — implicit declaration
+                    for arg in c.arguments {
+                        _ = analyzeExpr(arg)
+                    }
+                    return .int
+                }
+            }
             let funcType = analyzeExpr(c.function)
             for arg in c.arguments {
                 _ = analyzeExpr(arg)

@@ -272,9 +272,44 @@ public final class Parser {
         }
     }
 
+    /// Skip C23 standard attributes: [[attr::args(...)]] — skip the whole [[...]] block.
+    private func skipC23Attributes() {
+        // We're at [[
+        while isPunct("[") && next().spelling == "[" {
+            advance() // first [
+            advance() // second [
+            // Skip until matching ]]
+            var depth = 2 // we've consumed two [
+            while !isAtEnd() && depth > 0 {
+                if isPunct("[") && next().spelling == "[" {
+                    depth += 2
+                    advance(); advance()
+                } else if isPunct("]") && next().spelling == "]" {
+                    depth -= 2
+                    advance(); advance()
+                } else if isPunct("(") {
+                    advance()
+                    var parenDepth = 1
+                    while !isAtEnd() && parenDepth > 0 {
+                        if isPunct("(") { parenDepth += 1 }
+                        else if isPunct(")") { parenDepth -= 1; if parenDepth == 0 { advance(); break } }
+                        advance()
+                    }
+                } else {
+                    advance()
+                }
+            }
+        }
+    }
+
     private func parseExternalDecl() throws -> Decl? {
         // Empty
         if isPunct(";") { advance(); return nil }
+
+        // Skip C23 standard attributes [[...]]
+        if isPunct("[") && next().spelling == "[" {
+            skipC23Attributes()
+        }
 
         // Special: _Static_assert
         if isKeyword("_Static_assert") {
@@ -506,6 +541,12 @@ public final class Parser {
         while !done && !isAtEnd() {
             let t = current()
 
+            // C23 standard attributes: [[...]] — skip (like __attribute__)
+            if isPunct("[") && next().spelling == "[" {
+                skipC23Attributes()
+                continue
+            }
+
             if t.kind == .keyword {
                 switch t.spelling {
                 // Storage classes
@@ -514,6 +555,18 @@ public final class Parser {
                 case "register": storageClass = .register; advance()
                 case "auto": storageClass = .auto; advance()
                 case "typedef": isTypedef = true; advance()
+
+                // _Alignas(...) — skip alignment specifier (C11)
+                case "_Alignas":
+                    advance()
+                    if isPunct("(") {
+                        var depth = 0
+                        while !isAtEnd() {
+                            if isPunct("(") { depth += 1; advance() }
+                            else if isPunct(")") { depth -= 1; advance(); if depth == 0 { break } }
+                            else { advance() }
+                        }
+                    }
 
                 // Type qualifiers
                 case "const": isConst = true; advance()
@@ -543,6 +596,7 @@ public final class Parser {
                 case "unsigned": typeSpecifiers.append("unsigned"); advance()
                 case "_Bool": typeSpecifiers.append("_Bool"); advance()
                 case "_Complex": typeSpecifiers.append("_Complex"); advance()
+                case "__complex__": typeSpecifiers.append("_Complex"); advance()
                 case "_Imaginary": typeSpecifiers.append("_Imaginary"); advance()
 
                 case "struct":
@@ -768,11 +822,16 @@ public final class Parser {
                         let (fieldName, fieldType, _) = try parseDeclarator(baseType)
                         // Skip __attribute__ after the field declarator
                         skipAsmAndAttributes()
+                        var bitWidth: Int? = nil
+                        if match(kind: .punct, spelling: ":") {
+                            let widthExpr = try parseConditionalExpr()
+                            bitWidth = Int(evalIntConst(widthExpr))
+                        }
                         let fieldSize = fieldType.sizeInBytes ?? 0
                         let fieldAlign = fieldType.alignOf ?? 1
                         maxAlign = max(maxAlign, fieldAlign)
                         maxSize = max(maxSize, fieldSize)
-                        fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: nil, offset: 0))
+                        fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: bitWidth, offset: 0))
                     } while match(kind: .punct, spelling: ",")
                     _ = try consume(kind: .punct, spelling: ";")
                 }
@@ -1171,6 +1230,9 @@ public final class Parser {
             }
         }
 
+        // Skip postfix __attribute__ after declarator (e.g., int a[4] __attribute__((aligned(16))))
+        skipAsmAndAttributes()
+
         return (name, type, loc)
     }
 
@@ -1510,8 +1572,10 @@ public final class Parser {
                 _ = try consume(kind: .punct, spelling: ";")
                 return .goto(GotoStmt(label: label, loc: loc))
             }
-            if isKeyword("sizeof") {
-                // sizeof as expression statement — fall through to expression parsing
+            if isKeyword("sizeof") || isKeyword("__alignof__") || isKeyword("__alignof") ||
+               isKeyword("_Alignof") || isKeyword("__real__") || isKeyword("__imag__") ||
+               isKeyword("__extension__") || isKeyword("__typeof") || isKeyword("__typeof__") {
+                // These keywords start an expression statement — fall through to expression parsing
             } else {
                 // Declaration (starts with a type keyword)
                 return .decl(try parseDeclStmt())
@@ -1828,7 +1892,29 @@ public final class Parser {
                        case .initList(let il) = initList {
                         resolvedType = .array(of: elem, count: il.values.count)
                     }
-                    return .compoundLiteral(CompoundLiteralExpr(type: resolvedType, initList: initList, loc: current().loc))
+                    var expr: Expr = .compoundLiteral(CompoundLiteralExpr(type: resolvedType, initList: initList, loc: current().loc))
+                    // Parse postfix operations on compound literal (e.g., (int[]){}[index])
+                    while isPunct("[") || isPunct(".") || isPunct("->") || isPunct("++") || isPunct("--") {
+                        if isPunct("[") {
+                            let loc = advance().loc
+                            let index = try parseExpr()
+                            _ = try consume(kind: .punct, spelling: "]")
+                            expr = .subscript_(SubscriptExpr(base: expr, index: index, loc: loc))
+                        } else if isPunct(".") {
+                            let loc = advance().loc
+                            let member = try consume(kind: .identifier).spelling
+                            expr = .member(MemberExpr(base: expr, memberName: member, isArrow: false, loc: loc))
+                        } else if isPunct("->") {
+                            let loc = advance().loc
+                            let member = try consume(kind: .identifier).spelling
+                            expr = .member(MemberExpr(base: expr, memberName: member, isArrow: true, loc: loc))
+                        } else {
+                            let opStr = advance().spelling
+                            let op: UnaryOp = opStr == "++" ? .postInc : .postDec
+                            expr = .unary(UnaryExpr(op: op, operand: expr, loc: SourceLoc.unknown))
+                        }
+                    }
+                    return expr
                 }
                 let operand = try parseCastExpr()
                 return .cast(CastExpr(type: castType, expr: operand, loc: current().loc))
@@ -1874,6 +1960,20 @@ public final class Parser {
             return .unary(UnaryExpr(op: op, operand: operand, loc: SourceLoc.unknown))
         }
 
+        // __real__ / __imag__ — GNU extensions for complex number access
+        // __real__ expr returns the real part, __imag__ returns the imaginary part.
+        // For non-complex types, __real__ is identity and __imag__ returns 0.
+        if isKeyword("__real__") || isKeyword("__imag__") {
+            let isReal = isKeyword("__real__")
+            advance() // consume keyword
+            let operand = try parseCastExpr()
+            if isReal {
+                return operand
+            } else {
+                return .integerLiteral(IntegerLiteral(value: 0, type: .int, loc: SourceLoc.unknown))
+            }
+        }
+
         // sizeof
         if isKeyword("sizeof") {
             let loc = advance().loc
@@ -1890,6 +1990,26 @@ public final class Parser {
                 }
             }
             // sizeof expr
+            let e = try parseUnaryExpr()
+            return .sizeof(SizeofExpr(expr: e, typeName: nil, loc: loc))
+        }
+
+        // __alignof__ / __alignof / _Alignof — returns alignment of a type or expression
+        if isKeyword("__alignof__") || isKeyword("__alignof") || isKeyword("_Alignof") {
+            let loc = advance().loc
+            if isPunct("(") {
+                let nextTok = next()
+                if nextTok.kind == .keyword && isTypeKeyword(nextTok.spelling) ||
+                   (nextTok.kind == .identifier && typedefNames.contains(nextTok.spelling)) {
+                    // __alignof__ ( type )
+                    advance() // (
+                    let (baseType, _, _, _) = try parseDeclSpecifiers()
+                    let (_, typeName, _) = try parseDeclarator(baseType)
+                    _ = try consume(kind: .punct, spelling: ")")
+                    return .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc))
+                }
+            }
+            // __alignof__ expr
             let e = try parseUnaryExpr()
             return .sizeof(SizeofExpr(expr: e, typeName: nil, loc: loc))
         }
