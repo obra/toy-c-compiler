@@ -3739,6 +3739,11 @@ public final class Codegen {
             }
         }
         let storedReg = storeExprResult(a.target, valueReg)
+        // Truncate the return value to match the target type width.
+        // This is critical for assignment chains like ul = us = l2 = s2 = -1
+        // where each assignment must truncate to the target width.
+        let assignTargetType = exprType(a.target).unqualified
+        truncateReg(storedReg, type: assignTargetType)
         return storedReg
     }
 
