@@ -2,6 +2,7 @@
 #define _SYS_STAT_H
 
 #include <sys/types.h>
+#include <time.h>   /* for struct timespec used in struct stat */
 
 extern int stat(const char *, struct stat *);
 extern int fstat(int, struct stat *);
@@ -13,19 +14,25 @@ extern int mkfifo(const char *, mode_t);
 extern mode_t umask(mode_t);
 
 struct stat {
-    unsigned long st_dev;
-    unsigned long st_ino;
-    unsigned int st_mode;
-    unsigned int st_nlink;
-    unsigned int st_uid;
-    unsigned int st_gid;
-    unsigned long st_rdev;
-    unsigned long long st_size;
-    long st_atime;
-    long st_mtime;
-    long st_ctime;
-    unsigned long st_blksize;
-    unsigned long long st_blocks;
+    dev_t           st_dev;         /* [0]  ID of device containing file */
+    mode_t          st_mode;        /* [4]  File mode */
+    nlink_t         st_nlink;       /* [6]  Number of hard links */
+    ino_t           st_ino;         /* [8]  File serial number */
+    uid_t           st_uid;         /* [16] User ID of file */
+    gid_t           st_gid;         /* [20] Group ID of file */
+    dev_t           st_rdev;        /* [24] Device ID (if special file) */
+    struct timespec st_atimespec;   /* [32] Last access time (ts: 16 bytes) */
+    struct timespec st_mtimespec;   /* [48] Last modification time */
+    struct timespec st_ctimespec;   /* [64] Last status change time */
+    struct timespec st_birthtimespec; /* [80] Creation time */
+    off_t           st_size;        /* [96] File size in bytes */
+    blkcnt_t        st_blocks;      /* [104] Blocks allocated */
+    blksize_t       st_blksize;     /* [112] Optimal I/O block size */
+    unsigned int    st_flags;       /* [116] User defined flags */
+    unsigned int    st_gen;         /* [120] File generation number */
+    int             st_lspare;      /* [124] Reserved */
+    long long       st_qspare[2];   /* [128] Reserved */
+    /* Total: 144 bytes */
 };
 
 #define S_IFMT   0170000
@@ -43,6 +50,12 @@ struct stat {
 #define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
 #define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
 #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
+
+/* Backward-compatible time field aliases (match macOS system headers) */
+#define st_atime    st_atimespec.tv_sec
+#define st_mtime    st_mtimespec.tv_sec
+#define st_ctime    st_ctimespec.tv_sec
+#define st_birthtime st_birthtimespec.tv_sec
 
 #define S_ISUID 04000
 #define S_ISGID 02000
