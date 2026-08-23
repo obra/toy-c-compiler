@@ -1793,6 +1793,32 @@ public final class Codegen {
         case .return(let rs):
             if let v = rs.value {
                 let retType = exprType(v).unqualified
+                let funcRet = (currentFunctionReturnType ?? retType).unqualified
+                // If function returns float/double but expression is int, convert
+                if funcRet.isFloating && !retType.isFloating {
+                    let reg = emitExpr(v)
+                    if retType.isSigned32Bit {
+                        emitLine("sxtw \(reg.x), \(reg.w)")
+                    }
+                    let cvtf = retType.isUnsigned ? "ucvtf" : "scvtf"
+                    let retFpReg = funcRet == .float ? "s0" : "d0"
+                    emitLine("\(cvtf) \(retFpReg), \(reg.x)")
+                    emitEpilogue()
+                    return
+                }
+                // If function returns int but expression is float/double, convert
+                if !funcRet.isFloating && retType.isFloating {
+                    let reg = emitExpr(v)
+                    let srcReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+                    let cvt = funcRet.isUnsigned ? "fcvtzu" : "fcvtzs"
+                    if funcRet.isSigned32Bit || (funcRet.isUnsigned && (funcRet.sizeInBytes ?? 8) <= 4) {
+                        emitLine("\(cvt) w0, \(srcReg)")
+                    } else {
+                        emitLine("\(cvt) x0, \(srcReg)")
+                    }
+                    emitEpilogue()
+                    return
+                }
                 if case .structType = retType {
                     // Struct return: depends on size and HFA status
                     let structSize = retType.sizeInBytes ?? 0
