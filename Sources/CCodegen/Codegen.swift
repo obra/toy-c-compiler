@@ -1320,7 +1320,11 @@ public final class Codegen {
         case .decl(let ds):
             for d in ds.decls {
                 if case .varDecl(let vd) = d {
-                    if vd.storageClass == .static {
+                    if vd.storageClass == .extern && vd.initializer == nil {
+                        // extern declaration inside a function body: do NOT allocate
+                        // a local. The name should resolve to the global variable.
+                        // Skip local allocation entirely.
+                    } else if vd.storageClass == .static {
                         // Static local: hoist to global scope with a mangled name
                         let globalName = "_\(currentFuncName)__\(vd.name)"
                         let isFirstTime = !staticLocalGlobals.values.contains(globalName)
@@ -1583,13 +1587,15 @@ public final class Codegen {
                                             emitLine("sxtw \(reg.x), \(reg.w)")
                                         }
                                         let fp = varType == .float ? "s" : "d"
-                                        emitLine("scvtf \(fp)\(reg.regNum), \(reg.x)")
+                                        let cvtf = initType.isUnsigned ? "ucvtf" : "scvtf"
+                                        emitLine("\(cvtf) \(fp)\(reg.regNum), \(reg.x)")
                                     } else if initType.isFloating && varType.isInteger {
                                         let srcFp = initType == .float ? "s" : "d"
-                                        if varType.isSigned32Bit {
-                                            emitLine("fcvtzs \(reg.w), \(srcFp)\(reg.regNum)")
+                                        let cvt = varType.isUnsigned ? "fcvtzu" : "fcvtzs"
+                                        if varType.isSigned32Bit || (varType.isUnsigned && (varType.sizeInBytes ?? 8) <= 4) {
+                                            emitLine("\(cvt) \(reg.w), \(srcFp)\(reg.regNum)")
                                         } else {
-                                            emitLine("fcvtzs \(reg.x), \(srcFp)\(reg.regNum)")
+                                            emitLine("\(cvt) \(reg.x), \(srcFp)\(reg.regNum)")
                                         }
                                     } else if initType.isInteger && varType.isInteger && initType != varType {
                                         // int-to-int conversion: sign-extend or zero-extend as needed
@@ -2214,29 +2220,33 @@ public final class Codegen {
                 return reg
             }
             if fromType.isInteger && toType.isFloating {
-                // int → float/double: scvtf
+                // int → float/double: scvtf (or ucvtf for unsigned)
                 let reg = emitExpr(c.expr)
                 // Sign-extend 32-bit signed ints to 64 bits first
                 if fromType.isSigned32Bit {
                     emitLine("sxtw \(reg.x), \(reg.w)")
                 }
+                let cvtf = fromType.isUnsigned ? "ucvtf" : "scvtf"
                 if toType == .float {
-                    emitLine("scvtf s\(reg.regNum), \(reg.x)")
+                    emitLine("\(cvtf) s\(reg.regNum), \(reg.x)")
                 } else {
-                    emitLine("scvtf d\(reg.regNum), \(reg.x)")
+                    emitLine("\(cvtf) d\(reg.regNum), \(reg.x)")
                 }
                 return reg
             }
             if fromType.isFloating && toType.isInteger {
-                // float/double → int: fcvtzs
+                // float/double → int: fcvtzs (signed) or fcvtzu (unsigned)
                 let reg = emitExpr(c.expr)
                 let srcReg = fromType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
+                let cvt = toType.isUnsigned ? "fcvtzu" : "fcvtzs"
                 if toType.isSigned32Bit {
-                    // Convert to 32-bit int: fcvtzs wN, sN/dN
-                    emitLine("fcvtzs \(reg.w), \(srcReg)")
+                    // Convert to 32-bit int: fcvtzs/fcvtzu wN, sN/dN
+                    emitLine("\(cvt) \(reg.w), \(srcReg)")
+                } else if toType.isUnsigned && (toType.sizeInBytes ?? 8) <= 4 {
+                    emitLine("\(cvt) \(reg.w), \(srcReg)")
                 } else {
-                    // Convert to 64-bit int: fcvtzs xN, sN/dN
-                    emitLine("fcvtzs \(reg.x), \(srcReg)")
+                    // Convert to 64-bit int: fcvtzs/fcvtzu xN, sN/dN
+                    emitLine("\(cvt) \(reg.x), \(srcReg)")
                 }
                 return reg
             }
@@ -2490,8 +2500,9 @@ public final class Codegen {
                     if exprType(b.right).unqualified.isSigned32Bit {
                         emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     }
-                    if isFloat { emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)") }
-                    else { emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)") }
+                    let cvtf = exprType(b.right).unqualified.isUnsigned ? "ucvtf" : "scvtf"
+                    if isFloat { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
+                    else { emitLine("\(cvtf) d\(rightReg.regNum), \(rightReg.x)") }
                 } else if exprType(b.right).unqualified == .float && !isFloat {
                     emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
                 } else if exprType(b.right).unqualified == .double && isFloat {
@@ -2516,8 +2527,9 @@ public final class Codegen {
                     if exprType(b.left).unqualified.isSigned32Bit {
                         emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     }
-                    if isFloat { emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)") }
-                    else { emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)") }
+                    let cvtf = exprType(b.left).unqualified.isUnsigned ? "ucvtf" : "scvtf"
+                    if isFloat { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
+                    else { emitLine("\(cvtf) d\(leftReg.regNum), \(leftReg.x)") }
                 } else if exprType(b.left).unqualified == .float && !isFloat {
                     emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
                 } else if exprType(b.left).unqualified == .double && isFloat {
@@ -2585,8 +2597,9 @@ public final class Codegen {
                     if exprType(b.right).unqualified.isSigned32Bit {
                         emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     }
-                    if isFloat { emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)") }
-                    else { emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)") }
+                    let cvtf = exprType(b.right).unqualified.isUnsigned ? "ucvtf" : "scvtf"
+                    if isFloat { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
+                    else { emitLine("\(cvtf) d\(rightReg.regNum), \(rightReg.x)") }
                 } else if exprType(b.right).unqualified == .float && !isFloat {
                     emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
                 } else if exprType(b.right).unqualified == .double && isFloat {
@@ -2610,8 +2623,9 @@ public final class Codegen {
                     if exprType(b.left).unqualified.isSigned32Bit {
                         emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     }
-                    if isFloat { emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)") }
-                    else { emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)") }
+                    let cvtf = exprType(b.left).unqualified.isUnsigned ? "ucvtf" : "scvtf"
+                    if isFloat { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
+                    else { emitLine("\(cvtf) d\(leftReg.regNum), \(leftReg.x)") }
                 } else if exprType(b.left).unqualified == .float && !isFloat {
                     emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
                 } else if exprType(b.left).unqualified == .double && isFloat {
@@ -2756,10 +2770,11 @@ public final class Codegen {
                     if leftType.isSigned32Bit {
                         emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     }
+                    let lcvtf = leftType.isUnsigned ? "ucvtf" : "scvtf"
                     if isFloat {
-                        emitLine("scvtf s\(leftReg.regNum), \(leftReg.x)")
+                        emitLine("\(lcvtf) s\(leftReg.regNum), \(leftReg.x)")
                     } else {
-                        emitLine("scvtf d\(leftReg.regNum), \(leftReg.x)")
+                        emitLine("\(lcvtf) d\(leftReg.regNum), \(leftReg.x)")
                     }
                 } else if leftType == .float && !isFloat {
                     // left is float but result is double: promote to double
@@ -2773,10 +2788,11 @@ public final class Codegen {
                     if rightType.isSigned32Bit {
                         emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     }
+                    let rcvtf = rightType.isUnsigned ? "ucvtf" : "scvtf"
                     if isFloat {
-                        emitLine("scvtf s\(rightReg.regNum), \(rightReg.x)")
+                        emitLine("\(rcvtf) s\(rightReg.regNum), \(rightReg.x)")
                     } else {
-                        emitLine("scvtf d\(rightReg.regNum), \(rightReg.x)")
+                        emitLine("\(rcvtf) d\(rightReg.regNum), \(rightReg.x)")
                     }
                 } else if rightType == .float && !isFloat {
                     emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
@@ -3218,7 +3234,8 @@ public final class Codegen {
                     emitLine("sxtw \(rhsReg.x), \(rhsReg.w)")
                 }
                 let fp = targetType == .float ? "s" : "d"
-                emitLine("scvtf \(fp)\(rhsReg.regNum), \(rhsReg.x)")
+                let cvtf = valueType.isUnsigned ? "ucvtf" : "scvtf"
+                emitLine("\(cvtf) \(fp)\(rhsReg.regNum), \(rhsReg.x)")
             } else if targetType == .double && valueType == .float {
                 emitLine("fcvt d\(rhsReg.regNum), s\(rhsReg.regNum)")
             }
@@ -3326,14 +3343,16 @@ public final class Codegen {
                 emitLine("sxtw \(valueReg.x), \(valueReg.w)")
             }
             let fp = targetType == .float ? "s" : "d"
-            emitLine("scvtf \(fp)\(valueReg.regNum), \(valueReg.x)")
+            let cvtf = valueType.isUnsigned ? "ucvtf" : "scvtf"
+            emitLine("\(cvtf) \(fp)\(valueReg.regNum), \(valueReg.x)")
         } else if valueType.isFloating && targetType.isInteger {
             // float/double → int
             let srcFp = valueType == .float ? "s" : "d"
-            if targetType.isSigned32Bit {
-                emitLine("fcvtzs \(valueReg.w), \(srcFp)\(valueReg.regNum)")
+            let cvt = targetType.isUnsigned ? "fcvtzu" : "fcvtzs"
+            if targetType.isSigned32Bit || (targetType.isUnsigned && (targetType.sizeInBytes ?? 8) <= 4) {
+                emitLine("\(cvt) \(valueReg.w), \(srcFp)\(valueReg.regNum)")
             } else {
-                emitLine("fcvtzs \(valueReg.x), \(srcFp)\(valueReg.regNum)")
+                emitLine("\(cvt) \(valueReg.x), \(srcFp)\(valueReg.regNum)")
             }
         } else if valueType.isInteger && targetType.isInteger && valueType != targetType {
             // int-to-int conversion: sign-extend or zero-extend as needed
@@ -4126,10 +4145,11 @@ public final class Codegen {
                     // Float arg but int param: convert float→int
                     let argReg = emitExpr(arg)
                     let srcFp = argType == .float ? "s" : "d"
-                    if let pt = paramType, pt.isSigned32Bit {
-                        emitLine("fcvtzs \(argReg.w), \(srcFp)\(argReg.regNum)")
+                    let cvt = (paramType?.isUnsigned ?? false) ? "fcvtzu" : "fcvtzs"
+                    if let pt = paramType, pt.isSigned32Bit || (pt.isUnsigned && (pt.sizeInBytes ?? 8) <= 4) {
+                        emitLine("\(cvt) \(argReg.w), \(srcFp)\(argReg.regNum)")
                     } else {
-                        emitLine("fcvtzs \(argReg.x), \(srcFp)\(argReg.regNum)")
+                        emitLine("\(cvt) \(argReg.x), \(srcFp)\(argReg.regNum)")
                     }
                     emitLine("str \(argReg.x), [sp, #-16]!")
                     evaluatedArgs.append(argReg)
@@ -4156,11 +4176,12 @@ public final class Codegen {
                     if argType.isSigned32Bit {
                         emitLine("sxtw \(argReg.x), \(argReg.w)")
                     }
+                    let cvtf = argType.isUnsigned ? "ucvtf" : "scvtf"
                     if paramType == .float {
-                        emitLine("scvtf s\(argReg.regNum), \(argReg.x)")
+                        emitLine("\(cvtf) s\(argReg.regNum), \(argReg.x)")
                         emitLine("fcvt d\(argReg.regNum), s\(argReg.regNum)")
                     } else {
-                        emitLine("scvtf d\(argReg.regNum), \(argReg.x)")
+                        emitLine("\(cvtf) d\(argReg.regNum), \(argReg.x)")
                     }
                     emitLine("str d\(argReg.regNum), [sp, #-16]!")
                     evaluatedArgs.append(argReg)

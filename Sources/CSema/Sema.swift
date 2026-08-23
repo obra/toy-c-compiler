@@ -268,10 +268,16 @@ public final class Sema {
         case .decl(let ds):
             for d in ds.decls {
                 if case .varDecl(let vd) = d {
-                    let type = resolveType(vd.type)
-                    currentScope.insert(.variable(name: vd.name, type: type, isGlobal: false))
-                    if let init_ = vd.initializer {
-                        _ = analyzeExpr(init_)
+                    if vd.storageClass == .extern && vd.initializer == nil {
+                        // extern declaration inside a function body: do NOT create
+                        // a new local variable. The name should resolve to the
+                        // existing global declaration.
+                    } else {
+                        let type = resolveType(vd.type)
+                        currentScope.insert(.variable(name: vd.name, type: type, isGlobal: false))
+                        if let init_ = vd.initializer {
+                            _ = analyzeExpr(init_)
+                        }
                     }
                 } else if case .typedefDecl(let td) = d {
                     let type = resolveType(td.type)
