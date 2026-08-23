@@ -1941,11 +1941,19 @@ public final class Codegen {
     }
 
     private func emitIfStmt(_ is_: IfStmt) {
+        let condType = exprType(is_.condition).unqualified
         let condReg = emitExpr(is_.condition)
         regAlloc.reset()
         let elseLabel = newLabel()
         let endLabel = newLabel()
-        emitLine("cbz \(condReg.x), \(elseLabel)")
+        if condType.isFloating {
+            // Float/double condition: compare against 0.0
+            let fpReg = condType == .float ? "s\(condReg.regNum)" : "d\(condReg.regNum)"
+            emitLine("fcmp \(fpReg), #0.0")
+            emitLine("b.eq \(elseLabel)")
+        } else {
+            emitLine("cbz \(condReg.x), \(elseLabel)")
+        }
         emitStmt(is_.thenStmt)
         regAlloc.reset()
         emitLine("b \(endLabel)")
@@ -1962,8 +1970,15 @@ public final class Codegen {
         let endLabel = newLabel()
         emitLine("\(startLabel):")
         regAlloc.reset()
+        let condType = exprType(ws.condition).unqualified
         let condReg = emitExpr(ws.condition)
-        emitLine("cbz \(condReg.x), \(endLabel)")
+        if condType.isFloating {
+            let fpReg = condType == .float ? "s\(condReg.regNum)" : "d\(condReg.regNum)"
+            emitLine("fcmp \(fpReg), #0.0")
+            emitLine("b.eq \(endLabel)")
+        } else {
+            emitLine("cbz \(condReg.x), \(endLabel)")
+        }
         regAlloc.reset()
         breakLabels.append(endLabel)
         continueLabels.append(startLabel)
