@@ -3538,16 +3538,27 @@ public final class Codegen {
             case .div:
                 if targetType.isFloating {
                     emitLine("fdiv \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
-                } else if targetType.sizeInBytes == 4 {
-                    if targetType.isUnsigned {
-                        emitLine("udiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
-                    } else {
-                        emitLine("sdiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
-                    }
-                } else if targetType.isUnsigned {
-                    emitLine("udiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 } else {
-                    emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    // Determine the operation type after integer promotion
+                    func promote(_ t: CType) -> CType {
+                        let u = t.unqualified
+                        switch u {
+                        case .bool, .char, .schar, .uchar, .short, .ushort: return .int
+                        default: return t
+                        }
+                    }
+                    let opType = promote(targetType).unqualified
+                    if opType == .int || opType == .uint {
+                        if opType == .uint {
+                            emitLine("udiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                        } else {
+                            emitLine("sdiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                        }
+                    } else if opType.isUnsigned {
+                        emitLine("udiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    }
                 }
             case .mod:
                 // result = current - (current / rhs) * rhs
@@ -4980,8 +4991,18 @@ public final class Codegen {
                 return lt
             }
             // Apply usual arithmetic conversions to determine result type.
-            let lu = lt.unqualified
-            let ru = rt.unqualified
+            // First, apply integer promotion to both operands
+            func integerPromote(_ t: CType) -> CType {
+                let u = t.unqualified
+                switch u {
+                case .bool, .char, .schar, .uchar, .short, .ushort:
+                    return .int
+                default:
+                    return t
+                }
+            }
+            let lu = integerPromote(lt).unqualified
+            let ru = integerPromote(rt).unqualified
             if lu.isArithmetic && ru.isArithmetic {
                 // Complex type rules (C99 6.3.1.8)
                 if lu == .complexLongDouble || ru == .complexLongDouble { return .complexLongDouble }
