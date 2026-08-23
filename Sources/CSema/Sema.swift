@@ -356,6 +356,13 @@ public final class Sema {
                 return .function(params: [.long, .long],
                                  returnType: .long, variadic: false)
             }
+            // Common C library functions used without #include in torture tests
+            if id.name == "abort" {
+                return .function(params: [], returnType: .void, variadic: false)
+            }
+            if id.name == "exit" {
+                return .function(params: [.int], returnType: .void, variadic: false)
+            }
             // Undefined — report error but don't crash
             diags.error("use of undeclared identifier '\(id.name)'", at: id.loc)
             return .int

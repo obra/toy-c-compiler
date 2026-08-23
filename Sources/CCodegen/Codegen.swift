@@ -3421,7 +3421,12 @@ public final class Codegen {
             emitLine("cmp \(operandReg.x), #0")
             emitLine("cset \(operandReg.x), eq")
         case .bitNot:
-            emitLine("mvn \(operandReg.x), \(operandReg.x)")
+            let operandType = exprType(u.operand).unqualified
+            if operandType.sizeInBytes == 4 {
+                emitLine("mvn \(operandReg.w), \(operandReg.w)")
+            } else {
+                emitLine("mvn \(operandReg.x), \(operandReg.x)")
+            }
         default:
             break
         }
