@@ -4419,7 +4419,15 @@ public final class Codegen {
             }
         } else {
             if resultReg != .x0 {
-                emitLine("mov \(resultReg.x), x0")
+                // For 32-bit return types (int, uint, short, char, bool, enum),
+                // use mov w0 (32-bit) to avoid copying garbage upper bits from x0.
+                // The callee only set w0 (32-bit); the upper 32 bits of x0 may
+                // contain garbage from prior 64-bit operations.
+                if (callReturnType.isSigned32Bit || callReturnType == .uint || callReturnType == .ushort || callReturnType == .uchar || callReturnType == .bool) && !callReturnType.isPointer {
+                    emitLine("mov \(resultReg.w), w0")
+                } else {
+                    emitLine("mov \(resultReg.x), x0")
+                }
             }
         }
         return resultReg
