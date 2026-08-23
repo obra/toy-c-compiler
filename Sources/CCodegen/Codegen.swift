@@ -557,12 +557,13 @@ public final class Codegen {
                elemType.isChar {
                 // Initializing a char array — emit string bytes inline
                 let bytes = sl.value
-                if bytes.count <= count {
-                    // Emit as .ascii with null padding
+                let decodedLen = countDecodedBytes(bytes)
+                if decodedLen <= count {
+                    // Emit as .asciz with null padding
                     emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
                     // Pad remaining bytes
-                    // .asciz already adds 1 null byte; total emitted = bytes.count + 1
-                    let emitted = bytes.count + 1
+                    // .asciz already adds 1 null byte; total emitted = decodedLen + 1
+                    let emitted = decodedLen + 1
                     if count > emitted {
                         emitLine(".zero \(count - emitted)")
                     }
@@ -1075,6 +1076,40 @@ public final class Codegen {
         return result
     }
 
+    /// Count the decoded byte length of a string literal value.
+    /// Bytes >= 128 are stored as `\NNN` octal escape sequences (4 chars for 1 byte)
+    /// by parseStringLiteralValue, so `str.count` overcounts.
+    private func countDecodedBytes(_ s: String) -> Int {
+        let scalars = s.unicodeScalars
+        var count = 0
+        var i = scalars.startIndex
+        while i < scalars.endIndex {
+            if scalars[i] == "\\" {
+                let next = scalars.index(after: i)
+                if next < scalars.endIndex && scalars[next] >= "0" && scalars[next] <= "7" {
+                    // Octal escape \NNN — consume up to 3 octal digits, counts as 1 byte
+                    count += 1
+                    var j = next
+                    var digits = 0
+                    while j < scalars.endIndex && scalars[j] >= "0" && scalars[j] <= "7" && digits < 3 {
+                        j = scalars.index(after: j)
+                        digits += 1
+                    }
+                    i = j
+                    continue
+                }
+                // Other escape sequences (\n, \t, \\, etc.) are 1 decoded byte each
+                count += 1
+                i = scalars.index(after: i)
+                if i < scalars.endIndex { i = scalars.index(after: i) }
+                continue
+            }
+            count += 1
+            i = scalars.index(after: i)
+        }
+        return count
+    }
+
     // MARK: - Function emission
 
     private func emitFunction(_ fd: FuncDecl) {
@@ -1472,8 +1507,8 @@ public final class Codegen {
                                     emitLine("adrp \(srcReg.x), \(label)@PAGE")
                                     emitLine("add \(srcReg.x), \(srcReg.x), \(label)@PAGEOFF")
                                     // Copy up to count bytes (string + null terminator)
-                                    let bytes = Array(sl.value.utf8)
-                                    for i in 0..<min(count, bytes.count + 1) {
+                                    let decodedLen = countDecodedBytes(sl.value)
+                                    for i in 0..<min(count, decodedLen + 1) {
                                         if i > 0 {
                                             emitLine("ldrb w16, [\(srcReg.x), #\(i)]")
                                             emitLine("strb w16, [\(addrReg.x), #\(i)]")
@@ -1481,6 +1516,11 @@ public final class Codegen {
                                             emitLine("ldrb w16, [\(srcReg.x)]")
                                             emitLine("strb w16, [\(addrReg.x)]")
                                         }
+                                    }
+                                    // Zero-fill remaining bytes (C standard: uninitialized
+                                    // elements of a partially-initialized array are zeroed)
+                                    for i in (decodedLen + 1)..<count {
+                                        emitLine("strb wzr, [\(addrReg.x), #\(i)]")
                                     }
                                     regAlloc.free(srcReg)
                                 }
@@ -2273,10 +2313,26 @@ public final class Codegen {
                 let srcSize = fromType.sizeInBytes ?? 8
                 let dstSize = toType.sizeInBytes ?? 8
                 if srcSize < dstSize {
-                    // Widening: extend from source size using SOURCE signedness.
-                    // (unsigned long)(int)(-1) → sign-extend → 0xFFFFFFFFFFFFFFFF
-                    // (unsigned long)(unsigned int)(0xFFFFFFFF) → zero-extend → 0x00000000FFFFFFFF
-                    if fromType.isSigned {
+                    // Widening: extend from source size.
+                    // For signed→unsigned (e.g. (unsigned short)(signed char)(-1)):
+                    // C says the value is reduced mod 2^dstBits, then the result
+                    // is zero-extended. So sign-extend to dstSize, then truncate
+                    // to dstSize and zero-extend to 64 bits.
+                    if fromType.isSigned && toType.isUnsigned {
+                        // Sign-extend from srcSize, then zero-extend from dstSize
+                        switch srcSize {
+                        case 1: emitLine("sxtb \(reg.w), \(reg.w)")
+                        case 2: emitLine("sxth \(reg.w), \(reg.w)")
+                        case 4: emitLine("sxtw \(reg.x), \(reg.w)")
+                        default: break
+                        }
+                        // Now truncate to dstSize and zero-extend to 64 bits
+                        switch dstSize {
+                        case 2: emitLine("uxth \(reg.x), \(reg.w)")
+                        case 4: emitLine("mov \(reg.w), \(reg.w)")
+                        default: break
+                        }
+                    } else if fromType.isSigned {
                         switch srcSize {
                         case 1: emitLine("sxtb \(reg.x), \(reg.w)")
                         case 2: emitLine("sxth \(reg.x), \(reg.w)")
@@ -2941,7 +2997,13 @@ public final class Codegen {
 
             switch b.op {
             case .add:
-                emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if isPtrArith {
+                    emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("add \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .sub:
                 if leftIsPtr && rightIsPtr {
                     // pointer - pointer: subtract then divide by element size
@@ -2965,28 +3027,51 @@ public final class Codegen {
                             emitLine("udiv \(leftReg.x), \(leftReg.x), x16")
                         }
                     }
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("sub \(leftReg.w), \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("sub \(leftReg.x), \(leftReg.x), \(rightReg.x)")
                 }
             case .mul:
-                emitLine("mul \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    emitLine("mul \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("mul \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .div:
                 // Use udiv for unsigned types, sdiv for signed types
-                if resultType.isUnsigned {
-                    emitLine("udiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    if resultType.isUnsigned {
+                        emitLine("udiv \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                    } else {
+                        emitLine("sdiv \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                    }
                 } else {
-                    emitLine("sdiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    if resultType.isUnsigned {
+                        emitLine("udiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    } else {
+                        emitLine("sdiv \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    }
                 }
             case .mod:
                 // udiv/sdiv temp, left, right  → temp = left / right
                 // msub left, temp, right, left  → left = left - temp * right
                 // Need a scratch register since rightReg holds the divisor
-                if resultType.isUnsigned {
-                    emitLine("udiv x16, \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    if resultType.isUnsigned {
+                        emitLine("udiv w16, \(leftReg.w), \(rightReg.w)")
+                    } else {
+                        emitLine("sdiv w16, \(leftReg.w), \(rightReg.w)")
+                    }
+                    emitLine("msub \(leftReg.w), w16, \(rightReg.w), \(leftReg.w)")
                 } else {
-                    emitLine("sdiv x16, \(leftReg.x), \(rightReg.x)")
+                    if resultType.isUnsigned {
+                        emitLine("udiv x16, \(leftReg.x), \(rightReg.x)")
+                    } else {
+                        emitLine("sdiv x16, \(leftReg.x), \(rightReg.x)")
+                    }
+                    emitLine("msub \(leftReg.x), x16, \(rightReg.x), \(leftReg.x)")
                 }
-                emitLine("msub \(leftReg.x), x16, \(rightReg.x), \(leftReg.x)")
             case .shl:
                 if resultType.sizeInBytes == 4 {
                     emitLine("lsl \(leftReg.w), \(leftReg.w), \(rightReg.w)")
@@ -3009,11 +3094,23 @@ public final class Codegen {
                     }
                 }
             case .bitAnd:
-                emitLine("and \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    emitLine("and \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("and \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .bitOr:
-                emitLine("orr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    emitLine("orr \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("orr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .bitXor:
-                emitLine("eor \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                if resultType.sizeInBytes == 4 {
+                    emitLine("eor \(leftReg.w), \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("eor \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                }
             case .eq:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
@@ -3269,24 +3366,36 @@ public final class Codegen {
             case .add:
                 if targetType.isFloating {
                     emitLine("fadd \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
+                } else if targetType.sizeInBytes == 4 {
+                    emitLine("add \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
                 } else {
                     emitLine("add \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .sub:
                 if targetType.isFloating {
                     emitLine("fsub \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
+                } else if targetType.sizeInBytes == 4 {
+                    emitLine("sub \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
                 } else {
                     emitLine("sub \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .mul:
                 if targetType.isFloating {
                     emitLine("fmul \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
+                } else if targetType.sizeInBytes == 4 {
+                    emitLine("mul \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
                 } else {
                     emitLine("mul \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 }
             case .div:
                 if targetType.isFloating {
                     emitLine("fdiv \(opFp)\(currentReg.regNum), \(opFp)\(currentReg.regNum), \(opFp)\(rhsReg.regNum)")
+                } else if targetType.sizeInBytes == 4 {
+                    if targetType.isUnsigned {
+                        emitLine("udiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                    } else {
+                        emitLine("sdiv \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                    }
                 } else if targetType.isUnsigned {
                     emitLine("udiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
                 } else {
@@ -3295,24 +3404,61 @@ public final class Codegen {
             case .mod:
                 // result = current - (current / rhs) * rhs
                 let temp = regAlloc.alloc() ?? .x9
-                if targetType.isUnsigned {
-                    emitLine("udiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                if targetType.sizeInBytes == 4 {
+                    if targetType.isUnsigned {
+                        emitLine("udiv \(temp.w), \(currentReg.w), \(rhsReg.w)")
+                    } else {
+                        emitLine("sdiv \(temp.w), \(currentReg.w), \(rhsReg.w)")
+                    }
+                    emitLine("msub \(currentReg.w), \(temp.w), \(rhsReg.w), \(currentReg.w)")
                 } else {
-                    emitLine("sdiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                    if targetType.isUnsigned {
+                        emitLine("udiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("sdiv \(temp.x), \(currentReg.x), \(rhsReg.x)")
+                    }
+                    emitLine("msub \(currentReg.x), \(temp.x), \(rhsReg.x), \(currentReg.x)")
                 }
-                emitLine("msub \(currentReg.x), \(temp.x), \(rhsReg.x), \(currentReg.x)")
                 regAlloc.free(temp)
-            case .shl: emitLine("lsl \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+            case .shl:
+                if targetType.sizeInBytes == 4 {
+                    emitLine("lsl \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                } else {
+                    emitLine("lsl \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
             case .shr:
                 // Use lsr for unsigned, asr for signed
-                if targetType.isUnsigned {
-                    emitLine("lsr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                if targetType.sizeInBytes == 4 {
+                    if targetType.isUnsigned {
+                        emitLine("lsr \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                    } else {
+                        emitLine("asr \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                    }
                 } else {
-                    emitLine("asr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    if targetType.isUnsigned {
+                        emitLine("lsr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("asr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    }
                 }
-            case .bitAnd: emitLine("and \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .bitOr: emitLine("orr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
-            case .bitXor: emitLine("eor \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+            case .bitAnd:
+                if targetType.sizeInBytes == 4 {
+                    emitLine("and \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                } else {
+                    emitLine("and \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
+            case .bitOr:
+                if targetType.sizeInBytes == 4 {
+                    emitLine("orr \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                } else {
+                    emitLine("orr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
+            case .bitXor:
+                if targetType.sizeInBytes == 4 {
+                    emitLine("eor \(currentReg.w), \(currentReg.w), \(rhsReg.w)")
+                } else {
+                    emitLine("eor \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                }
             default: break
             }
             regAlloc.free(rhsReg)

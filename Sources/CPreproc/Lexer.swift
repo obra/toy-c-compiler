@@ -439,6 +439,17 @@ public final class Lexer {
     // MARK: - Utility
 
     private func bytesToString(_ from: Int, _ to: Int) -> String {
-        return String(bytes: bytes[from..<to], encoding: .utf8) ?? ""
+        // C source can contain raw bytes >= 128 in string/char literals that are
+        // not valid UTF-8. Use lossy UTF-8 decoding so those bytes become Unicode
+        // scalars (U+FFFD) rather than causing the entire string to fail.
+        // However, for round-trip correctness with parseStringLiteralValue, we
+        // need to preserve the exact byte values. Use ISO-8859-1 (Latin-1) which
+        // maps bytes 0x00-0xFF to Unicode scalars U+0000-U+00FF one-to-one.
+        var result = ""
+        result.reserveCapacity(to - from)
+        for idx in from..<to {
+            result.append(Character(UnicodeScalar(bytes[idx])))
+        }
+        return result
     }
 }
