@@ -348,6 +348,7 @@ public final class Codegen {
                                 }
                                 currentOffset = fieldOffset + (field.type.sizeInBytes ?? 0)
                                 } // end for idx in designatedIndices
+                                fieldIdx += 1
                                 continue
                             }
                             // No designator for this field — emit zeros
@@ -359,6 +360,7 @@ public final class Codegen {
                                 emitLine(".zero \(fieldSize)")
                             }
                             currentOffset = fieldOffset + fieldSize
+                            fieldIdx += 1
                             continue
                         }
                         // Emit padding before this field if needed
@@ -423,6 +425,7 @@ public final class Codegen {
                                 valueIdx += 1
                             }
                             currentOffset = fieldOffset
+                            fieldIdx += 1
                             continue
                         }
                         if isFlexArray, valueIdx < il.values.count {

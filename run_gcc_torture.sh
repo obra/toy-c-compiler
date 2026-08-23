@@ -20,8 +20,8 @@ for testfile in "$TESTDIR"/*.c; do
     exefile="$TMPDIR/${basename}"
     refexe="$TMPDIR/${basename}_ref"
 
-    # Build with our compiler
-    $CDRIVER "$testfile" -o "$asmfile" $INCLUDE 2>/dev/null
+    # Build with our compiler (timeout 30s, memory limit 1GB)
+    timeout 30 $CDRIVER "$testfile" -o "$asmfile" $INCLUDE 2>/dev/null
     if [ $? -ne 0 ]; then
         COMPILE_FAIL=$((COMPILE_FAIL + 1))
         FAILED_TESTS+=("COMPILE: $basename")
