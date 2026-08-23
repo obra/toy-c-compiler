@@ -359,12 +359,33 @@ public final class Codegen {
                         }
                         let fieldType = field.type.unqualified
                         let fieldSize = field.type.sizeInBytes ?? 0
-                        if fieldSize == 0 {
+                        // Check for flexible array member (incompleteArray has size 0 but needs init)
+                        let isFlexArray: Bool = {
+                            if case .incompleteArray = fieldType { return true }
+                            return false
+                        }()
+                        if fieldSize == 0 && !isFlexArray {
                             // Empty struct field: consume the value but emit nothing
                             if valueIdx < il.values.count {
                                 valueIdx += 1
                             }
                             currentOffset = fieldOffset
+                            continue
+                        }
+                        if isFlexArray, valueIdx < il.values.count {
+                            // Flexible array member: emit the initializer inline
+                            let v = il.values[valueIdx]
+                            valueIdx += 1
+                            if case .stringLiteral(let sl) = v, case .incompleteArray(let elemType) = fieldType, elemType.isChar {
+                                emitLine(".asciz \"\(escapeStringLiteral(sl.value))\"")
+                            } else if case .initList(let subIl) = v {
+                                for subV in subIl.values {
+                                    if case .incompleteArray(let elemType) = fieldType {
+                                        emitInitializer(subV, size: elemType.sizeInBytes ?? 1, type: elemType)
+                                    }
+                                }
+                            }
+                            // Flexible array members don't advance currentOffset
                             continue
                         }
                         if case .array(let elemType, let count) = fieldType {
@@ -423,8 +444,12 @@ public final class Codegen {
                                 } else if case .structType(let subRec) = fieldType {
                                     // Flat init for a struct field: consume values for sub-fields
                                     emitFlatStructInit(il.values, idx: &valueIdx, rec: subRec)
-                                } else if case .stringLiteral = v, field.type.sizeInBytes ?? 0 > 0 {
-                                    // String literal for a field (e.g., char array or char field)
+                                } else if case .stringLiteral = v, (field.type.sizeInBytes ?? 0 > 0) || {
+                                    if case .incompleteArray = field.type.unqualified { return true }
+                                    return false
+                                }() {
+                                    // String literal for a field (e.g., char array, char field,
+                                    // or flexible array member)
                                     valueIdx += 1
                                     emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
                                 } else {
@@ -571,6 +596,10 @@ public final class Codegen {
                     // String too long — truncate
                     emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
                 }
+            } else if let type = type, case .incompleteArray(let elemType) = type.unqualified,
+               elemType.isChar {
+                // Initializing a flexible array member (char a[]) — emit string bytes inline
+                emitLine(".asciz \"\(escapeStringLiteral(sl.value))\"")
             } else {
                 // Not a char array — emit address of string
                 let label = addStringLiteral(sl.value)
@@ -692,7 +721,15 @@ public final class Codegen {
     private func emitFlatStructInit(_ allValues: [Expr], idx: inout Int, rec: RecordType) {
         for field in rec.fields {
             let fieldSize = field.type.sizeInBytes ?? 0
-            if fieldSize == 0 { continue }
+            // Skip padding fields (size 0) but NOT flexible array members
+            // (incompleteArray has sizeInBytes = nil → 0, but still needs initialization)
+            let isFlexArray: Bool = {
+                if case .incompleteArray = field.type.unqualified { return true }
+                return false
+            }()
+            if fieldSize == 0 && !isFlexArray {
+                continue
+            }
             let fieldOffset = field.offset
             // Emit padding if needed (caller handles padding for top-level; for nested flat,
             // we assume values map to consecutive fields)
@@ -708,14 +745,27 @@ public final class Codegen {
                     idx += 1
                     if case .stringLiteral(let sl) = v {
                         let bytes = sl.value
-                        if bytes.count <= count {
+                        let decodedLen = countDecodedBytes(bytes)
+                        if decodedLen <= count {
                             emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
-                            let emitted = bytes.count + 1
+                            let emitted = decodedLen + 1
                             if count > emitted {
                                 emitLine(".zero \(count - emitted)")
                             }
                         } else {
                             emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
+                        }
+                    }
+                } else if case .stringLiteral(let sl) = v, case .incompleteArray(let elemType) = field.type.unqualified, elemType.isChar {
+                    // String literal for flexible array member (char a3p[]) — emit inline bytes
+                    idx += 1
+                    emitLine(".asciz \"\(escapeStringLiteral(sl.value))\"")
+                } else if case .initList = v, case .incompleteArray(let elemType) = field.type.unqualified {
+                    // Init list for flexible array member — emit each element
+                    idx += 1
+                    if case .initList(let il) = v {
+                        for elem in il.values {
+                            emitInitializer(elem, size: elemType.sizeInBytes ?? 1, type: elemType)
                         }
                     }
                 } else if case .structType(let subRec) = field.type.unqualified {
