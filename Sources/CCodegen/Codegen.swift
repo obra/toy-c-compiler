@@ -2738,21 +2738,33 @@ public final class Codegen {
             // Also sign-extend 32-bit signed int operands to 64 bits.
             // Skip when BOTH operands are pointers (that's pointer difference,
             // handled separately in the .sub case below).
-            let isPtrArith = (leftType.isPointer || rightType.isPointer) && !(leftType.isPointer && rightType.isPointer)
+            // Array types decay to pointers in arithmetic context.
+            let leftIsPtr = leftType.isPointer || leftType.isArray
+            let rightIsPtr = rightType.isPointer || rightType.isArray
+            let isPtrArith = (leftIsPtr || rightIsPtr) && !(leftIsPtr && rightIsPtr)
             if isPtrArith && (b.op == .add || b.op == .sub) {
                 // Determine which operand is the pointer and get the pointee size
-                let ptrType: CType = leftType.isPointer ? leftType : rightType
+                let ptrType: CType = leftIsPtr ? leftType : rightType
                 let pointeeSize: Int = {
-                    if case .pointer(let to) = ptrType.unqualified {
+                    let pt = ptrType.unqualified
+                    if case .pointer(let to) = pt {
                         let t = to.unqualified
+                        return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
+                    }
+                    if case .array(let elemType, _) = pt {
+                        let t = elemType.unqualified
+                        return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
+                    }
+                    if case .incompleteArray(let elemType) = pt {
+                        let t = elemType.unqualified
                         return t.isPointer ? 8 : (t.sizeInBytes ?? 4)
                     }
                     return 4
                 }()
 
                 // Sign-extend 32-bit signed int operands and scale by pointee size
-                let intReg = leftType.isPointer ? rightReg : leftReg
-                if (leftType.isPointer ? rightType : leftType).isSigned32Bit {
+                let intReg = leftIsPtr ? rightReg : leftReg
+                if (leftIsPtr ? rightType : leftType).isSigned32Bit {
                     emitLine("sxtw \(intReg.x), \(intReg.w)")
                 }
                 if pointeeSize > 1 {
@@ -2773,7 +2785,7 @@ public final class Codegen {
             case .add:
                 emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
             case .sub:
-                if leftType.isPointer && rightType.isPointer {
+                if leftIsPtr && rightIsPtr {
                     // pointer - pointer: subtract then divide by element size
                     emitLine("sub \(leftReg.x), \(leftReg.x), \(rightReg.x)")
                     let pointeeSize: Int = {
