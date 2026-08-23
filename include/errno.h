@@ -13,10 +13,11 @@ extern int errno;
 #define ENOEXEC   8
 #define EBADF     9
 #define ECHILD    10
-#define EAGAIN    11
+#define EDEADLK   11
 #define ENOMEM    12
 #define EACCES    13
 #define EFAULT    14
+#define ENOTBLK   15
 #define EBUSY     16
 #define EEXIST    17
 #define EXDEV     18
@@ -36,13 +37,16 @@ extern int errno;
 #define EPIPE     32
 #define EDOM      33
 #define ERANGE    34
-#define EDEADLK   35
-#define ENAMETOOLONG 36
-#define ENOLCK    37
-#define ENOSYS    38
-#define ENOTEMPTY 39
-#define ELOOP     40
-#define EOVERFLOW 75
+#define EAGAIN    35
+#define EWOULDBLOCK EAGAIN
+#define ENOTSUP   45
+#define ELOOP     62
+#define ENAMETOOLONG 63
+#define ENOTEMPTY 66
 #define ETIMEDOUT 60
+#define ENOLCK    77
+#define ENOSYS    78
+#define EOVERFLOW 84
+#define EOPNOTSUPP 102
 
 #endif /* _ERRNO_H */
