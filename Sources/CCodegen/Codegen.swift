@@ -5183,6 +5183,13 @@ public final class Codegen {
             }
         case .int, .uint:
             emitLine("ldr \(reg.w), [\(reg.x)]")
+            if t == .int {
+                // Sign-extend 32-bit signed int to 64 bits so that subsequent
+                // 64-bit arithmetic (mul, add, sub) produces correct results.
+                // Without this, negative int values like -315 are zero-extended
+                // to 4294966981 instead of sign-extended to -315.
+                emitLine("sxtw \(reg.x), \(reg.w)")
+            }
         case .float:
             emitLine("ldr s\(reg.regNum), [\(reg.x)]")
         case .double, .longDouble:
