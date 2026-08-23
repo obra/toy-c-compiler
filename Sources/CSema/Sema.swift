@@ -61,6 +61,8 @@ public final class Sema {
     public private(set) var enumConstants: [String: Int64] = [:]
     private var functionReturnType: CType = .int
     private var inFunction: Bool = false
+    /// Labels seen in the current function (for &&label computed goto support)
+    private var functionLabels: Set<String> = []
 
     public init(_ diags: DiagnosticEngine) {
         self.diags = diags
@@ -200,16 +202,44 @@ public final class Sema {
         currentScope = Scope(parent: globalScope, isFunctionScope: true)
         inFunction = true
         functionReturnType = resolveType(fd.returnType)
+        functionLabels.removeAll()
 
         // Add parameters to scope
         for param in fd.params {
             currentScope.insert(.variable(name: param.name ?? "", type: resolveType(param.type), isGlobal: false))
         }
 
+        // Pre-pass: collect all label names in the function body (for &&label forward refs)
+        for s in body.statements { collectLabels(s) }
+
         analyzeCompoundStmt(body)
 
         currentScope = globalScope
         inFunction = false
+    }
+
+    /// Recursively collect label names from statements (for computed goto support).
+    private func collectLabels(_ stmt: Stmt) {
+        switch stmt {
+        case .label(let ls):
+            functionLabels.insert(ls.name)
+            collectLabels(ls.stmt)
+        case .compound(let cs):
+            for s in cs.statements { collectLabels(s) }
+        case .if(let s):
+            collectLabels(s.thenStmt)
+            if let e = s.elseStmt { collectLabels(e) }
+        case .while(let s): collectLabels(s.body)
+        case .doWhile(let s): collectLabels(s.body)
+        case .for(let s):
+            if let init_ = s.initStmt { collectLabels(init_) }
+            collectLabels(s.body)
+        case .switch(let s):
+            for c in s.cases { collectLabels(c) }
+        case .case(let s): if let st = s.stmt { collectLabels(st) }
+        case .default(let s): if let st = s.stmt { collectLabels(st) }
+        default: break
+        }
     }
 
     // MARK: - Statement analysis
@@ -256,13 +286,14 @@ public final class Sema {
         case .default(let ds):
             if let s = ds.stmt { analyzeStmt(s) }
 
-        case .break, .continue, .empty, .goto, .asm:
+        case .break, .continue, .empty, .goto, .computedGoto, .asm:
             break
 
         case .return(let rs):
             if let v = rs.value { _ = analyzeExpr(v) }
 
         case .label(let ls):
+            functionLabels.insert(ls.name)
             analyzeStmt(ls.stmt)
 
         case .decl(let ds):
@@ -367,6 +398,11 @@ public final class Sema {
                 return .function(params: [.long], returnType: .pointer(to: .void), variadic: false)
             }
             // Undefined — report error but don't crash
+            // Exception: if this is a label name (used in &&label for computed goto),
+            // don't error — it's valid
+            if functionLabels.contains(id.name) {
+                return .pointer(to: .void)
+            }
             diags.error("use of undeclared identifier '\(id.name)'", at: id.loc)
             return .int
 
@@ -388,6 +424,10 @@ public final class Sema {
                 }
                 return .int
             case .addressOf:
+                // &&label (computed goto) yields void*
+                if case .identifier = u.operand, operandType == .int {
+                    return .pointer(to: .void)
+                }
                 return .pointer(to: operandType)
             case .preInc, .preDec, .postInc, .postDec:
                 return operandType

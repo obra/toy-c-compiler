@@ -190,6 +190,7 @@ public indirect enum Stmt: ASTNode, Equatable {
     case `continue`(ContinueStmt)
     case `return`(ReturnStmt)
     case `goto`(GotoStmt)
+    case computedGoto(ComputedGotoStmt)
     case label(LabelStmt)
     case decl(DeclStmt)
     case empty(EmptyStmt)
@@ -211,6 +212,7 @@ public indirect enum Stmt: ASTNode, Equatable {
         case .continue(let s): return s.loc
         case .return(let s): return s.loc
         case .goto(let s): return s.loc
+        case .computedGoto(let s): return s.loc
         case .label(let s): return s.loc
         case .decl(let s): return s.loc
         case .empty(let s): return s.loc
@@ -306,6 +308,12 @@ public struct GotoStmt: Equatable {
     public let label: String
     public let loc: SourceLoc
     public init(label: String, loc: SourceLoc) { self.label = label; self.loc = loc }
+}
+
+public struct ComputedGotoStmt: Equatable {
+    public let target: Expr
+    public let loc: SourceLoc
+    public init(target: Expr, loc: SourceLoc) { self.target = target; self.loc = loc }
 }
 
 public struct LabelStmt: Equatable {

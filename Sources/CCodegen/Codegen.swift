@@ -30,11 +30,14 @@ public final class Codegen {
     private var functionParamCounts: [String: Int] = [:]  // function name → number of named params
     private var functionParamTypes: [String: [CType]] = [:]  // function name → param types
     private var staticLocalGlobals: [String: String] = [:]  // local name → mangled global name
-    private var staticLocalInits: [(name: String, type: CType, init_: Expr)] = []  // pending static initializers
+    private var staticLocalInits: [(name: String, type: CType, init_: Expr, funcName: String)] = []  // pending static initializers
     private var breakLabels: [String] = []      // stack of break targets
     private var continueLabels: [String] = []   // stack of continue targets
     private var currentFunctionReturnType: CType? = .int  // return type of the function being compiled
     private var gotoLabels: [String: String] = [:]  // C label name → assembly label
+    /// Persistent label addresses across functions: "funcName.labelName" → asm label
+    /// Used for static local initializers with &&label (computed goto)
+    private var allFunctionLabels: [String: String] = [:]
     private var vaSaveAreaOffset: Int = 0  // offset from x29 to va register save area (0 = no va)
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
     private var compoundLiterals: [(label: String, type: CType, init_: Expr)] = []
@@ -670,8 +673,13 @@ public final class Codegen {
             } else if case .integerLiteral(let l) = u.operand, l.value == 0 {
                 emitLine(".quad 0")
             } else if case .identifier(let id) = u.operand {
-                // &globalVar or &staticLocal — emit address of the symbol
-                if globalLabels.contains(id.name) {
+                // Check if this is a label reference (&&label for computed goto)
+                if let labelAsm = gotoLabels[id.name] {
+                    emitLine(".quad \(labelAsm)")
+                } else if let labelAsm = allFunctionLabels["\(currentFuncName).\(id.name)"] {
+                    emitLine(".quad \(labelAsm)")
+                } else if globalLabels.contains(id.name) {
+                    // &globalVar or &staticLocal — emit address of the symbol
                     emitLine(".quad _\(id.name)")
                 } else if let mangled = staticLocalGlobals[id.name] {
                     emitLine(".quad \(mangled)")
@@ -1059,15 +1067,18 @@ public final class Codegen {
         guard !staticLocalInits.isEmpty else { return }
         var emitted: Set<String> = []
         emitLine(".section __DATA,__data")
+        let savedFuncName = currentFuncName
         for item in staticLocalInits {
             if emitted.contains(item.name) { continue }
             emitted.insert(item.name)
+            currentFuncName = item.funcName
             let size = item.type.sizeInBytes ?? 8
             emitLine(".globl \(item.name)")
             emitLine(".p2align 3")
             emitLine("\(item.name):")
             emitInitializer(item.init_, size: size, type: item.type)
         }
+        currentFuncName = savedFuncName
     }
 
     // MARK: - String literals
@@ -1493,10 +1504,10 @@ public final class Codegen {
                         if isFirstTime {
                             globalLabels.insert(globalName)
                             if let init_ = vd.initializer {
-                                staticLocalInits.append((name: globalName, type: vd.type, init_: init_))
+                                staticLocalInits.append((name: globalName, type: vd.type, init_: init_, funcName: currentFuncName))
                             } else {
                                 // BSS
-                                staticLocalInits.append((name: globalName, type: vd.type, init_: .integerLiteral(IntegerLiteral(value: 0, type: .int, loc: SourceLoc.unknown))))
+                                staticLocalInits.append((name: globalName, type: vd.type, init_: .integerLiteral(IntegerLiteral(value: 0, type: .int, loc: SourceLoc.unknown)), funcName: currentFuncName))
                             }
                             // Don't add to localVarOffsets — static locals are resolved
                             // via staticLocalGlobals in emitExpr/emitAddr
@@ -1924,8 +1935,15 @@ public final class Codegen {
                 labelCounter += 1
                 asmLabel = "L_\(currentFuncName)_G\(labelCounter)"
                 gotoLabels[g.label] = asmLabel
+                allFunctionLabels["\(currentFuncName).\(g.label)"] = asmLabel
             }
             emitLine("b \(asmLabel)")
+
+        case .computedGoto(let g):
+            // Computed goto: branch to the address in the expression
+            let targetReg = emitExpr(g.target)
+            emitLine("br \(targetReg.x)")
+            regAlloc.free(targetReg)
 
         case .label(let l):
             // Use existing label if goto already created one, else create new
@@ -1936,6 +1954,7 @@ public final class Codegen {
                 labelCounter += 1
                 asmLabel = "L_\(currentFuncName)_G\(labelCounter)"
                 gotoLabels[l.name] = asmLabel
+                allFunctionLabels["\(currentFuncName).\(l.name)"] = asmLabel
             }
             emitLine("\(asmLabel):")
             emitStmt(l.stmt)
@@ -5459,6 +5478,11 @@ public final class Codegen {
         switch expr {
         case .identifier(let id):
             let reg = regAlloc.alloc() ?? .x9
+            // Check if this is a label reference (&&label for computed goto)
+            if let labelAsm = gotoLabels[id.name] {
+                emitLine("adr \(reg.x), \(labelAsm)")
+                return reg
+            }
             if vlaBasePointers.contains(id.name), let offset = localVarOffsets[id.name] {
                 // VLA base pointer: load the pointer value from the local variable
                 if offset >= -256 && offset <= 255 {

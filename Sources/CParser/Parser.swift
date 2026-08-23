@@ -57,6 +57,10 @@ public final class Parser {
         // Filter out EOF for easier processing, we'll add it back at the end
         self.tokens = tokens.filter { $0.kind != .eof }
         self.diags = diags
+        // Predefined typedefs for GNU builtins
+        // __builtin_va_list is a pointer-sized type on AArch64 (like char* or a struct of pointers)
+        self.typedefNames.insert("__builtin_va_list")
+        self.typedefTypes["__builtin_va_list"] = .pointer(to: .char)
     }
 
     // MARK: - Public API
@@ -187,6 +191,25 @@ public final class Parser {
         return current().kind == .keyword && current().spelling == s
     }
 
+    /// Check if the current token could start a K&R-style parameter declaration
+    /// (a type specifier keyword, struct/union/enum, or a typedef name).
+    private func isKAndRParamDeclStart() -> Bool {
+        if current().kind == .keyword {
+            switch current().spelling {
+            case "char", "short", "int", "long", "float", "double", "void",
+                 "signed", "unsigned", "const", "volatile", "restrict",
+                 "struct", "union", "enum",
+                 "__const", "__const__", "__volatile", "__volatile__",
+                 "__restrict", "__restrict__", "__signed", "__signed__":
+                return true
+            default:
+                return false
+            }
+        }
+        if isTypedefName() { return true }
+        return false
+    }
+
     private func isIdentifier(_ s: String? = nil) -> Bool {
         if current().kind != .identifier { return false }
         if let s = s { return current().spelling == s }
@@ -289,15 +312,43 @@ public final class Parser {
             let (name, type, loc) = try parseDeclarator(baseType)
             skipAsmAndAttributes()
 
-            if isPunct("{") && type.isFunction {
+            if type.isFunction && (isPunct("{") || isKAndRParamDeclStart()) {
                 // Function definition — parse the body and return immediately
                 // (no semicolon after a function definition)
                 // Save params BEFORE parsing body — body may contain function pointer
                 // declarations that overwrite lastFuncParams via parseFunctionParams
-                let savedParams = lastFuncParams
+                var savedParams = lastFuncParams
                 let savedVariadic = lastFuncVariadic
                 let savedFuncName = currentFuncName
                 currentFuncName = name
+
+                // K&R-style: parse parameter declaration list before the {
+                // e.g., foo(p) int *p; { ... }
+                while !isPunct("{") && !isAtEnd() {
+                    // Parse a declaration (e.g., "int *p;" or "float *x, *y;")
+                    let (krBaseType, _, _, _) = try parseDeclSpecifiers()
+                    repeat {
+                        let (krName, krType, _) = try parseDeclarator(krBaseType)
+                        // Match this param name to update its type
+                        for i in 0..<savedParams.count {
+                            if savedParams[i].name == krName {
+                                // Array types decay to pointers in function params
+                                var actualType = krType
+                                if case .array(let elem, _) = actualType.unqualified {
+                                    actualType = .pointer(to: elem)
+                                } else if case .incompleteArray(let elem) = actualType.unqualified {
+                                    actualType = .pointer(to: elem)
+                                }
+                                savedParams[i] = Param(name: krName, type: actualType, loc: savedParams[i].loc)
+                            }
+                        }
+                        if !match(kind: .punct, spelling: ",") {
+                            break
+                        }
+                    } while true
+                    _ = match(kind: .punct, spelling: ";")
+                }
+
                 let body = try parseCompoundStmt()
                 currentFuncName = savedFuncName
                 // Extract the return type from the function type
@@ -808,8 +859,13 @@ public final class Parser {
                   isKeyword("__restrict") || isKeyword("__restrict__") {
                 advance()
             }
+            // Skip __attribute__ after pointer qualifiers (e.g., void *__attribute__((noinline)) baz())
+            skipAsmAndAttributes()
             type = .pointer(to: type)
         }
+        // Also skip __attribute__ that appears between base type and declarator name
+        // (e.g., void __attribute__((noinline)) baz() — attribute applies to the function)
+        skipAsmAndAttributes()
 
         // Parenthesized declarator (for function pointers)
         if isPunct("(") {
@@ -1187,6 +1243,33 @@ public final class Parser {
             return ([], false, returnType)
         }
 
+        // K&R-style identifier list: (a, b, c) with no type specifiers
+        // The types are declared after the ) in a separate declaration list.
+        if current().kind == .identifier && next().kind == .punct &&
+           (next().spelling == "," || next().spelling == ")") {
+            // Parse identifier list — all params default to int
+            while !isPunct(")") && !isAtEnd() {
+                if isPunct("...") {
+                    advance()
+                    variadic = true
+                    break
+                }
+                let paramName = current().spelling
+                let paramLoc = current().loc
+                advance()
+                params.append(Param(name: paramName, type: .int, loc: paramLoc))
+                if !match(kind: .punct, spelling: ",") {
+                    break
+                }
+            }
+            _ = try consume(kind: .punct, spelling: ")")
+            lastFuncParams = params
+            lastFuncVariadic = variadic
+            // Signal K&R style by returning a special marker
+            // The caller will parse the declaration list before the body
+            return (params, variadic, returnType)
+        }
+
         while !isPunct(")") && !isAtEnd() {
             if isPunct("...") {
                 advance()
@@ -1404,7 +1487,19 @@ public final class Parser {
             if isKeyword("break") { let loc = advance().loc; _ = try consume(kind: .punct, spelling: ";"); return .break(BreakStmt(loc: loc)) }
             if isKeyword("continue") { let loc = advance().loc; _ = try consume(kind: .punct, spelling: ";"); return .continue(ContinueStmt(loc: loc)) }
             if isKeyword("return") { let loc = advance().loc; var val: Expr? = nil; if !isPunct(";") { val = try parseExpr() }; _ = try consume(kind: .punct, spelling: ";"); return .return(ReturnStmt(value: val, loc: loc)) }
-            if isKeyword("goto") { let loc = advance().loc; let label = try consume(kind: .identifier).spelling; _ = try consume(kind: .punct, spelling: ";"); return .goto(GotoStmt(label: label, loc: loc)) }
+            if isKeyword("goto") {
+                let loc = advance().loc
+                if isPunct("*") {
+                    // Computed goto: goto *expr;
+                    advance() // consume *
+                    let target = try parseExpr()
+                    _ = try consume(kind: .punct, spelling: ";")
+                    return .computedGoto(ComputedGotoStmt(target: target, loc: loc))
+                }
+                let label = try consume(kind: .identifier).spelling
+                _ = try consume(kind: .punct, spelling: ";")
+                return .goto(GotoStmt(label: label, loc: loc))
+            }
             if isKeyword("sizeof") {
                 // sizeof as expression statement — fall through to expression parsing
             } else {
@@ -1740,6 +1835,15 @@ public final class Parser {
     }
 
     private func parseUnaryExpr() throws -> Expr {
+        // GNU extension: &&label (address-of-label for computed goto)
+        if isPunct("&&") && next().kind == .identifier {
+            let loc = advance().loc // consume &&
+            let labelName = advance().spelling // consume label name
+            return .unary(UnaryExpr(op: .addressOf,
+                                    operand: .identifier(Identifier(name: labelName, loc: loc)),
+                                    loc: loc))
+        }
+
         // Prefix operators
         if isPunct("!") || isPunct("~") || isPunct("-") || isPunct("+") ||
            isPunct("*") || isPunct("&") || isPunct("++") || isPunct("--") {

@@ -27,6 +27,11 @@ int scanf(const char *format, ...);
 int fscanf(FILE *stream, const char *format, ...);
 int sscanf(const char *str, const char *format, ...);
 
+int vprintf(const char *format, __builtin_va_list ap);
+int vfprintf(FILE *stream, const char *format, __builtin_va_list ap);
+int vsprintf(char *str, const char *format, __builtin_va_list ap);
+int vsnprintf(char *str, size_t size, const char *format, __builtin_va_list ap);
+
 int puts(const char *s);
 int putchar(int c);
 int fputs(const char *s, FILE *stream);
