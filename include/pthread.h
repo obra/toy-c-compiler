@@ -14,7 +14,7 @@ typedef struct {
 
 typedef struct {
     long __sig;
-    char __opaque[56];
+    char __opaque[8];
 } pthread_mutexattr_t;
 
 typedef struct {
@@ -29,16 +29,17 @@ typedef struct {
 
 typedef struct {
     long __sig;
-    char __opaque[24];
+    char __opaque[8];
 } pthread_condattr_t;
 
 typedef struct {
+    long __sig;
     char __opaque[8];
 } pthread_once_t;
 
 #define PTHREAD_MUTEX_INITIALIZER { 0x32AAABA7, {0} }
 #define PTHREAD_COND_INITIALIZER { 0x3CB0B1BB, {0} }
-#define PTHREAD_ONCE_INIT { 0x30D1BB1 }
+#define PTHREAD_ONCE_INIT { 0x30D1BB1, {0} }
 
 #define PTHREAD_MUTEX_RECURSIVE 2
 
@@ -69,5 +70,7 @@ void *pthread_getspecific(pthread_key_t key);
 int pthread_setspecific(pthread_key_t key, const void *value);
 
 int pthread_once(pthread_once_t *once, void (*init)(void));
+
+int pthread_detach(pthread_t thread);
 
 #endif /* _PTHREAD_H */
