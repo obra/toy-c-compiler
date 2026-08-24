@@ -604,19 +604,25 @@ public final class Codegen {
                             // Flexible array members don't advance currentOffset
                             continue
                         }
-                        if case .array(let elemType, let count) = fieldType {
-                            // Check if the current value is a string literal for a char array
-                            if valueIdx < il.values.count, elemType.isChar,
-                               case .stringLiteral(let sl) = il.values[valueIdx] {
-                                // Emit string literal inline for char array
-                                valueIdx += 1
-                                let bytes = sl.value
-                                if bytes.count <= count {
-                                    emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
-                                    let emitted = bytes.count + 1
-                                    if count > emitted {
-                                        emitLine(".zero \(count - emitted)")
-                                    }
+                            if case .array(let elemType, let count) = fieldType {
+                                // Check if the current value is a string literal for a char array
+                                if valueIdx < il.values.count, elemType.isChar,
+                                   case .stringLiteral(let sl) = il.values[valueIdx] {
+                                    // Emit string literal inline for char array
+                                    valueIdx += 1
+                                    let bytes = sl.value
+                                    if bytes.count <= count {
+                                        if bytes.count < count {
+                                            // Room for null terminator: use .asciz
+                                            emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
+                                            let emitted = bytes.count + 1
+                                            if count > emitted {
+                                                emitLine(".zero \(count - emitted)")
+                                            }
+                                        } else {
+                                            // Exact fit: no room for null, use .ascii
+                                            emitLine(".ascii \"\(escapeStringLiteral(bytes))\"")
+                                        }
                                 } else {
                                     emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
                                 }
@@ -801,13 +807,18 @@ public final class Codegen {
                 let bytes = sl.value
                 let decodedLen = countDecodedBytes(bytes)
                 if decodedLen <= count {
-                    // Emit as .asciz with null padding
-                    emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
-                    // Pad remaining bytes
-                    // .asciz already adds 1 null byte; total emitted = decodedLen + 1
-                    let emitted = decodedLen + 1
-                    if count > emitted {
-                        emitLine(".zero \(count - emitted)")
+                    if decodedLen < count {
+                        // Room for null terminator: use .asciz
+                        emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
+                        // Pad remaining bytes
+                        // .asciz already adds 1 null byte; total emitted = decodedLen + 1
+                        let emitted = decodedLen + 1
+                        if count > emitted {
+                            emitLine(".zero \(count - emitted)")
+                        }
+                    } else {
+                        // Exact fit: no room for null, use .ascii
+                        emitLine(".ascii \"\(escapeStringLiteral(bytes))\"")
                     }
                 } else {
                     // String too long — truncate
@@ -991,13 +1002,15 @@ public final class Codegen {
                         let bytes = sl.value
                         let decodedLen = countDecodedBytes(bytes)
                         if decodedLen <= count {
-                            emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
-                            let emitted = decodedLen + 1
-                            if count > emitted {
-                                emitLine(".zero \(count - emitted)")
+                            if decodedLen < count {
+                                emitLine(".asciz \"\(escapeStringLiteral(bytes))\"")
+                                let emitted = decodedLen + 1
+                                if count > emitted {
+                                    emitLine(".zero \(count - emitted)")
+                                }
+                            } else {
+                                emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
                             }
-                        } else {
-                            emitLine(".ascii \"\(escapeStringLiteral(String(bytes.prefix(count))))\"")
                         }
                     }
                 } else if case .stringLiteral(let sl) = v, case .incompleteArray(let elemType) = field.type.unqualified, elemType.isChar {
@@ -1610,8 +1623,8 @@ public final class Codegen {
             } else if case .structType = pt, paramSize > 8, paramSize <= 16 {
                 regWidth = 2
             } else if case .structType = pt, paramSize > 16 {
-                // Large struct: entirely on stack, rounded up to 8-byte slots
-                regWidth = (paramSize + 7) / 8
+                // Large struct: entirely on stack, does NOT consume GP registers
+                regWidth = 0
             } else {
                 regWidth = 1
             }
@@ -1638,7 +1651,7 @@ public final class Codegen {
                 }
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 fpRegIndex += hfaCount
-                regIndex += hfaCount  // HFA also consumes integer register slots
+                // HFA does NOT consume integer register slots in AAPCS64.
             } else if isHFA {
                 // HFA overflow: entire HFA passed on the stack
                 // Read from caller's stack at [x29, #16 + (regIndex-8)*8]
@@ -1685,6 +1698,22 @@ public final class Codegen {
                 emitStoreFP("d9", localOff)
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 stackParamIdx += 1
+            } else if !isHFA, case .structType = pt, paramSize > 16 {
+                // Large struct (>16 bytes): entirely on the stack.
+                // The caller copies the struct to [x29, #16 + stackParamIdx*8].
+                // Copy it to a local variable for consistent access.
+                let numChunks = (paramSize + 7) / 8
+                ensureLocalSpace(size: numChunks * 8)
+                let localOff = -(localOffset)
+                localVarOffsets[param.name ?? "_param_\(i)"] = localOff
+                localVarTypes[param.name ?? "_param_\(i)"] = param.type
+                for j in 0..<numChunks {
+                    let stackSrcOffset = 16 + (stackParamIdx + j) * 8
+                    emitLoadFP("x9", stackSrcOffset)
+                    emitStoreFP("x9", localOff + j * 8)
+                }
+                // Large structs do NOT consume GP register slots.
+                stackParamIdx += numChunks
             } else if !isHFA && regIndex < 8 && regWidth <= 2 {
                 // Parameters come in x0-x7 (int), store them on the stack
                 // Large structs (regWidth > 2) always go on the stack path below.
@@ -2320,8 +2349,14 @@ public final class Codegen {
                 if retType.isFloating {
                     // Float/double return value goes in s0 (float) or d0 (double)
                     let reg = emitExpr(v)
-                    let fpReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
-                    let retFpReg = retType == .float ? "s0" : "d0"
+                    // Convert float↔double if the expression type differs from the return type
+                    if retType == .float && (funcRet == .double || funcRet == .longDouble) {
+                        emitLine("fcvt d\(reg.regNum), s\(reg.regNum)")
+                    } else if retType == .double && funcRet == .float {
+                        emitLine("fcvt s\(reg.regNum), d\(reg.regNum)")
+                    }
+                    let retFpReg = funcRet == .float ? "s0" : "d0"
+                    let fpReg = funcRet == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
                     if reg != .x0 {
                         emitLine("fmov \(retFpReg), \(fpReg)")
                     }
@@ -4269,9 +4304,55 @@ public final class Codegen {
             } else {
                 emitLine("str \(rhsResult.x), [sp, #-16]!")
             }
-            let currentReg = emitExpr(a.target)
+
+            // Evaluate the target address ONCE and save it, so that the read and write
+            // use the same address. This is critical for targets with side effects like
+            // *p++ (where evaluating the address increments p). If we called emitExpr
+            // for the read and storeExprResult for the write, p would be incremented twice.
+            let targetType = exprType(a.target).unqualified
+            let targetAddr = emitAddr(a.target)
+            // Save the address to the stack before reading the current value
+            emitLine("str \(targetAddr.x), [sp, #-16]!")
+            regAlloc.free(targetAddr)
+
+            // Read the current value from the target address
+            let targetAddr2 = regAlloc.alloc() ?? .x10
+            emitLine("ldr \(targetAddr2.x), [sp], #16")  // pop the saved address
+            // Load the current value into currentReg using the target address
+            let currentReg = regAlloc.alloc() ?? .x9
+            // Use emitLoadFromAddr to load from targetAddr2 into currentReg
+            // We need to load with the correct size based on targetType
+            switch targetType {
+            case .char, .schar, .uchar, .bool:
+                if targetType.isSigned {
+                    emitLine("ldrsb \(currentReg.w), [\(targetAddr2.x)]")
+                } else {
+                    emitLine("ldrb \(currentReg.w), [\(targetAddr2.x)]")
+                }
+            case .short, .ushort:
+                if targetType.isSigned {
+                    emitLine("ldrsh \(currentReg.w), [\(targetAddr2.x)]")
+                } else {
+                    emitLine("ldrh \(currentReg.w), [\(targetAddr2.x)]")
+                }
+            case .int, .uint, .enumType:
+                if targetType.isSigned {
+                    emitLine("ldr \(currentReg.w), [\(targetAddr2.x)]")
+                } else {
+                    emitLine("ldr \(currentReg.w), [\(targetAddr2.x)]")
+                }
+            case .long, .ulong, .longLong, .ulongLong, .pointer, .function:
+                emitLine("ldr \(currentReg.x), [\(targetAddr2.x)]")
+            case .float:
+                emitLine("ldr s\(currentReg.regNum), [\(targetAddr2.x)]")
+            case .double, .longDouble:
+                emitLine("ldr d\(currentReg.regNum), [\(targetAddr2.x)]")
+            default:
+                emitLine("ldr \(currentReg.x), [\(targetAddr2.x)]")
+            }
+
             // Restore RHS from stack
-            let rhsReg = regAlloc.alloc() ?? .x9
+            let rhsReg = regAlloc.alloc() ?? .x11
             if rhsIsFloat {
                 let fpReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
                 emitLine("ldr \(fpReg), [sp], #16")
@@ -4297,7 +4378,6 @@ public final class Codegen {
             }
 
             // For pointer arithmetic in compound assignments, scale the int by sizeof(pointee)
-            let targetType = exprType(a.target).unqualified
             let valueType = exprType(a.value).unqualified
             let targetIsPtr = targetType.isPointer || targetType.isArray
             let valueIsPtr = valueType.isPointer || valueType.isArray
@@ -4477,8 +4557,11 @@ public final class Codegen {
                 emitLine("fcvt s\(currentReg.regNum), d\(currentReg.regNum)")
             }
 
-            // Store the result back to the target
-            storeExprResult(a.target, currentReg)
+            // Store the result back to the target address (which was saved in targetAddr2).
+            // We use emitStoreToAddr with the saved address to avoid re-evaluating the
+            // target expression (which would cause double side effects like *p++).
+            emitStoreToAddr(targetAddr2, currentReg, type: targetType)
+            regAlloc.free(targetAddr2)
             return currentReg
         }
 
