@@ -42,6 +42,11 @@ public final class Codegen {
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
     private var compoundLiterals: [(label: String, type: CType, init_: Expr)] = []
     private var compoundLiteralCounter = 0
+    /// Stack of (name, savedOffset) for extern declarations that shadow locals.
+    /// When an extern declaration inside a block shadows a local from an outer scope,
+    /// we temporarily remove the local from localVarOffsets and restore it when
+    /// the block scope ends.
+    private var externShadowStack: [(name: String, savedOffset: Int)] = []
 
     public init(enumConstants: [String: Int64] = [:]) {
         self.enumConstants = enumConstants
@@ -1515,8 +1520,14 @@ public final class Codegen {
     // MARK: - Statement emission
 
     private func emitCompoundStmt(_ cs: CompoundStmt) {
+        let shadowCount = externShadowStack.count
         for stmt in cs.statements {
             emitStmt(stmt)
+        }
+        // Restore any locals shadowed by extern declarations in this block
+        while externShadowStack.count > shadowCount {
+            let entry = externShadowStack.popLast()!
+            localVarOffsets[entry.name] = entry.savedOffset
         }
     }
 
@@ -1576,7 +1587,13 @@ public final class Codegen {
                     if vd.storageClass == .extern && vd.initializer == nil {
                         // extern declaration inside a function body: do NOT allocate
                         // a local. The name should resolve to the global variable.
-                        // Skip local allocation entirely.
+                        // If a local with this name exists (from an outer scope),
+                        // temporarily remove it so references in this scope resolve
+                        // to the global instead.
+                        if let savedOffset = localVarOffsets[vd.name] {
+                            externShadowStack.append((name: vd.name, savedOffset: savedOffset))
+                            localVarOffsets.removeValue(forKey: vd.name)
+                        }
                     } else if vd.storageClass == .static {
                         // Static local: hoist to global scope with a mangled name
                         let globalName = "_\(currentFuncName)__\(vd.name)"

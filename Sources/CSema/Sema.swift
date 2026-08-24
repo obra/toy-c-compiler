@@ -301,8 +301,11 @@ public final class Sema {
                 if case .varDecl(let vd) = d {
                     if vd.storageClass == .extern && vd.initializer == nil {
                         // extern declaration inside a function body: do NOT create
-                        // a new local variable. The name should resolve to the
-                        // existing global declaration.
+                        // a new local variable. Instead, insert a global variable
+                        // symbol into the current scope so that references to this
+                        // name resolve to the global, not a shadowing local.
+                        let type = resolveType(vd.type)
+                        currentScope.insert(.variable(name: vd.name, type: type, isGlobal: true))
                     } else {
                         let type = resolveType(vd.type)
                         currentScope.insert(.variable(name: vd.name, type: type, isGlobal: false))
