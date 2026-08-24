@@ -2210,7 +2210,8 @@ public final class Parser {
     private func isTypeKeyword(_ s: String) -> Bool {
         return ["void", "char", "short", "int", "long", "float", "double",
                 "signed", "unsigned", "const", "volatile", "struct", "union",
-                "enum", "_Bool", "restrict", "_Complex", "_Imaginary"].contains(s)
+                "enum", "_Bool", "restrict", "_Complex", "_Imaginary",
+                "typeof", "__typeof", "__typeof__"].contains(s)
     }
 
     private func parseUnaryExpr() throws -> Expr {
