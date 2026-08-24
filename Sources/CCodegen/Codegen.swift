@@ -3195,6 +3195,25 @@ public final class Codegen {
                 return false
             }()
 
+            // Determine if both operands are 32-bit after integer promotion.
+            // This controls whether to use 32-bit (w) or 64-bit (x) cmp instruction.
+            let is32BitOperand: Bool = {
+                func intPromote2(_ t: CType) -> CType {
+                    let u = t.unqualified
+                    switch u {
+                    case .bool, .char, .schar, .uchar, .short, .ushort:
+                        return .int
+                    default:
+                        return t
+                    }
+                }
+                let lp = intPromote2(leftType).unqualified
+                let rp = intPromote2(rightType).unqualified
+                if lp.isPointer || rp.isPointer { return false }
+                if lp.isArray || rp.isArray { return false }
+                return (lp.sizeInBytes ?? 8) == 4 && (rp.sizeInBytes ?? 8) == 4
+            }()
+
             // For pointer arithmetic (pointer + int or pointer - int), multiply
             // the integer operand by sizeof(pointee) before the add/sub.
             // Also sign-extend 32-bit signed int operands to 64 bits.
@@ -3247,7 +3266,7 @@ public final class Codegen {
             case .add:
                 if isPtrArith {
                     emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("add \(leftReg.w), \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("add \(leftReg.x), \(leftReg.x), \(rightReg.x)")
@@ -3275,7 +3294,7 @@ public final class Codegen {
                             emitLine("udiv \(leftReg.x), \(leftReg.x), x16")
                         }
                     }
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("sub \(leftReg.w), \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("sub \(leftReg.x), \(leftReg.x), \(rightReg.x)")
@@ -3364,7 +3383,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -3375,7 +3394,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -3386,7 +3405,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -3397,7 +3416,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -3408,7 +3427,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -3419,7 +3438,7 @@ public final class Codegen {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if resultType.sizeInBytes == 4 {
+                } else if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
