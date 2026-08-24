@@ -4722,7 +4722,15 @@ public final class Codegen {
             // If the RHS is a function call returning a struct, handle it specially.
             if case .call = a.value {
                 let dstReg = emitAddr(a.target)
-                if size <= 16 {
+                if let hfaInfo = isHFA(targetType) {
+                    // HFA struct: returned in d0-d3 (or s0-s3)
+                    _ = emitExpr(a.value)
+                    let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                    for j in 0..<hfaInfo.count {
+                        let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                        emitLine("str \(fpPrefix)\(j), [\(dstReg.x), #\(memberOff)]")
+                    }
+                } else if size <= 16 {
                     // Small struct (≤16 bytes): returned in x0/x1
                     _ = emitExpr(a.value)
                     emitLine("str x0, [\(dstReg.x)]")
