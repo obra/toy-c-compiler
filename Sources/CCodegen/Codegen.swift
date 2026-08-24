@@ -4291,6 +4291,12 @@ public final class Codegen {
                     if mask > 0xffff {
                         emitLine("movk \(unitReg.x), #\((mask >> 16) & 0xffff), lsl #16")
                     }
+                    if mask > 0xffffff {
+                        emitLine("movk \(unitReg.x), #\((mask >> 32) & 0xffff), lsl #32")
+                    }
+                    if mask > 0xffffffffffff {
+                        emitLine("movk \(unitReg.x), #\((mask >> 48) & 0xffff), lsl #48")
+                    }
                     emitLine("and \(reg.x), \(reg.x), \(unitReg.x)")
                 }
             }
@@ -5954,9 +5960,32 @@ public final class Codegen {
                     default: return 0
                     }
                 }
-                if rank(lu) >= 4 || rank(ru) >= 4 { return rank(lu) >= rank(ru) ? lu : ru }
-                if rank(lu) >= 3 || rank(ru) >= 3 { return rank(lu) >= rank(ru) ? lu : ru }
-                if rank(lu) >= 2 || rank(ru) >= 2 { return rank(lu) >= rank(ru) ? lu : ru }
+                // C99 6.3.1.8: usual arithmetic conversions for integer types
+                if lu == ru { return lu }
+                let luSigned = lu.isSigned
+                let ruSigned = ru.isSigned
+                let luRank = rank(lu)
+                let ruRank = rank(ru)
+                if luSigned == ruSigned {
+                    // Same signedness: use higher rank
+                    return luRank >= ruRank ? lu : ru
+                }
+                // Different signedness: if unsigned type has rank >= signed type, use unsigned
+                let unsignedType = luSigned ? ru : lu
+                let unsignedRank = luSigned ? ruRank : luRank
+                let signedType = luSigned ? lu : ru
+                let signedRank = luSigned ? luRank : ruRank
+                if unsignedRank >= signedRank { return unsignedType }
+                // If signed type can represent all values of unsigned type, use signed
+                // (true when signed type is strictly larger)
+                if signedRank > unsignedRank { return signedType }
+                // Otherwise use unsigned version of the signed type
+                switch signedType {
+                case .longLong: return .ulongLong
+                case .long: return .ulong
+                case .int: return .uint
+                default: return unsignedType
+                }
             }
             return lu.isArithmetic ? lt : rt
         case .unary(let u):
@@ -6728,7 +6757,7 @@ public final class Codegen {
             }
             // Mask to bitWidth bits
             if bf.bitWidth < 64 {
-                let mask = (1 << bf.bitWidth) - 1
+                let mask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth)) - 1
                 if mask <= 255 {
                     emitLine("and \(addrReg.x), \(addrReg.x), #\(mask)")
                 } else if mask <= 65535 {
@@ -6741,6 +6770,9 @@ public final class Codegen {
                     }
                     if mask > 0xffffff {
                         emitLine("movk x16, #\((mask >> 32) & 0xffff), lsl #32")
+                    }
+                    if mask > 0xffffffffffff {
+                        emitLine("movk x16, #\((mask >> 48) & 0xffff), lsl #48")
                     }
                     emitLine("and \(addrReg.x), \(addrReg.x), x16")
                 }
