@@ -1301,7 +1301,7 @@ public final class Codegen {
             case 0x0D: result += "\\r"
             case 0x5C: result += "\\\\"
             case 0x22: result += "\\\""
-            case 0x00: result += "\\0"
+            case 0x00: result += "\\000"
             case 0x20...0x7E: result += String(UnicodeScalar(byte))
             default: result += String(format: "\\%03o", byte)
             }
@@ -1339,7 +1339,7 @@ public final class Codegen {
             case "\n": result += "\\n"
             case "\t": result += "\\t"
             case "\r": result += "\\r"
-            case "\0": result += "\\0"
+            case "\0": result += "\\000"
             default:
                 if c.value >= 32 && c.value < 127 {
                     result += String(c)
