@@ -871,6 +871,10 @@ public final class Codegen {
     /// Returns (symbol, offset) where symbol is like "_arr" and offset is a byte offset.
     private func resolveSymbolAndOffset(_ expr: Expr) -> (String, Int64)? {
         switch expr {
+        case .stringLiteral(let sl):
+            // String literal in pointer context — emit its label
+            let label = addStringLiteral(sl.value)
+            return (label, 0)
         case .identifier(let id):
             if globalLabels.contains(id.name) {
                 return ("_\(id.name)", 0)
