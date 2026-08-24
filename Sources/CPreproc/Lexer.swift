@@ -19,7 +19,7 @@ private let cKeywords: Set<String> = [
     "__volatile__", "__restrict", "__restrict__", "__signed",
     "__signed__", "__unaligned",
     "__alignof", "__alignof__", "__label__",
-    "__complex__", "__real__", "__imag__",
+    "__complex__", "__complex", "__real__", "__real", "__imag__", "__imag",
 ]
 
 /// Lexer: converts raw bytes into a sequence of C tokens.

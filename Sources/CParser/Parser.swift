@@ -751,6 +751,7 @@ public final class Parser {
                 case "_Bool": typeSpecifiers.append("_Bool"); advance()
                 case "_Complex": typeSpecifiers.append("_Complex"); advance()
                 case "__complex__": typeSpecifiers.append("_Complex"); advance()
+                case "__complex": typeSpecifiers.append("_Complex"); advance()
                 case "_Imaginary": typeSpecifiers.append("_Imaginary"); advance()
 
                 case "struct":
@@ -1788,7 +1789,8 @@ public final class Parser {
                 return .goto(GotoStmt(label: label, loc: loc))
             }
             if isKeyword("sizeof") || isKeyword("__alignof__") || isKeyword("__alignof") ||
-               isKeyword("_Alignof") || isKeyword("__real__") || isKeyword("__imag__") ||
+               isKeyword("_Alignof") || isKeyword("__real__") || isKeyword("__real") ||
+               isKeyword("__imag__") || isKeyword("__imag") ||
                isKeyword("__typeof") || isKeyword("__typeof__") {
                 // These keywords start an expression statement — fall through to expression parsing
             } else {
@@ -2198,8 +2200,8 @@ public final class Parser {
         // __real__ / __imag__ — GNU extensions for complex number access
         // __real__ expr returns the real part, __imag__ returns the imaginary part.
         // For non-complex types, __real__ is identity and __imag__ returns 0.
-        if isKeyword("__real__") || isKeyword("__imag__") {
-            let isReal = isKeyword("__real__")
+        if isKeyword("__real__") || isKeyword("__real") || isKeyword("__imag__") || isKeyword("__imag") {
+            let isReal = isKeyword("__real__") || isKeyword("__real")
             advance() // consume keyword
             let operand = try parseCastExpr()
             if isReal {
