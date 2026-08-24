@@ -3804,6 +3804,32 @@ public final class Codegen {
 
         // For pre/post inc/dec, load, modify, store
         if u.op == .preInc || u.op == .preDec || u.op == .postInc || u.op == .postDec {
+            // Bitfield pre/post inc/dec: use storeExprResult for read-modify-write
+            if case .member(let m) = u.operand,
+               let bf = bitfieldInfo(exprType(m.base), m.memberName) {
+                // Load current bitfield value
+                let curReg = emitExpr(u.operand)
+                // Save current value for post-inc/dec
+                let origReg: ARM64Reg
+                if u.op == .postInc || u.op == .postDec {
+                    origReg = regAlloc.alloc() ?? .x9
+                    emitLine("mov \(origReg.x), \(curReg.x)")
+                } else {
+                    origReg = curReg
+                }
+                // Modify
+                if u.op == .preInc || u.op == .postInc {
+                    emitLine("add \(curReg.x), \(curReg.x), #1")
+                } else {
+                    emitLine("sub \(curReg.x), \(curReg.x), #1")
+                }
+                // Store back via bitfield write path
+                storeExprResult(u.operand, curReg)
+                if u.op == .postInc || u.op == .postDec {
+                    regAlloc.free(curReg)
+                }
+                return origReg
+            }
             let addrReg = emitAddr(u.operand)
             let valReg = regAlloc.alloc() ?? .x9
             // Determine the increment size (1 for scalars, sizeof(pointed) for pointers)
