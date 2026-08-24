@@ -1099,13 +1099,13 @@ public final class Codegen {
         case .binary(let b):
             guard let lhs = evalConstExpr(b.left), let rhs = evalConstExpr(b.right) else { return nil }
             switch b.op {
-            case .add: return lhs + rhs
-            case .sub: return lhs - rhs
-            case .mul: return lhs * rhs
+            case .add: return lhs &+ rhs
+            case .sub: return lhs &- rhs
+            case .mul: return lhs &* rhs
             case .div: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) / UInt64(bitPattern: rhs)) : nil
             case .mod: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) % UInt64(bitPattern: rhs)) : nil
-            case .shl: return lhs << rhs
-            case .shr: return lhs >> rhs
+            case .shl: return Int64(bitPattern: UInt64(bitPattern: lhs) &<< UInt64(rhs))
+            case .shr: return Int64(bitPattern: UInt64(bitPattern: lhs) >> UInt64(rhs))
             case .bitAnd: return lhs & rhs
             case .bitOr: return lhs | rhs
             case .bitXor: return lhs ^ rhs
@@ -1122,7 +1122,7 @@ public final class Codegen {
         case .unary(let u):
             guard let val = evalConstExpr(u.operand) else { return nil }
             switch u.op {
-            case .neg: return -val
+            case .neg: return 0 &- val
             case .bitNot: return ~val
             case .not: return val == 0 ? 1 : 0
             default: return val

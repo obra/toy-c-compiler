@@ -2832,13 +2832,13 @@ public final class Parser {
             let l = evalIntConst(b.left)
             let r = evalIntConst(b.right)
             switch b.op {
-            case .add: return l + r
-            case .sub: return l - r
-            case .mul: return l * r
+            case .add: return l &+ r
+            case .sub: return l &- r
+            case .mul: return l &* r
             case .div: return r != 0 ? l / r : 0
             case .mod: return r != 0 ? l % r : 0
-            case .shl: return l << r
-            case .shr: return l >> r
+            case .shl: return Int64(bitPattern: UInt64(bitPattern: l) &<< UInt64(r))
+            case .shr: return Int64(bitPattern: UInt64(bitPattern: l) >> UInt64(r))
             case .bitAnd: return l & r
             case .bitOr: return l | r
             case .bitXor: return l ^ r
@@ -2855,7 +2855,7 @@ public final class Parser {
         case .unary(let u):
             let v = evalIntConst(u.operand)
             switch u.op {
-            case .neg: return -v
+            case .neg: return 0 &- v
             case .pos: return v
             case .not: return v == 0 ? 1 : 0
             case .bitNot: return ~v
