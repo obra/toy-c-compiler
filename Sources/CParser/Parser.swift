@@ -1528,8 +1528,10 @@ public final class Parser {
 
         // K&R-style identifier list: (a, b, c) with no type specifiers
         // The types are declared after the ) in a separate declaration list.
+        // Only treat as K&R if the first identifier is NOT a typedef name.
         if current().kind == .identifier && next().kind == .punct &&
-           (next().spelling == "," || next().spelling == ")") {
+           (next().spelling == "," || next().spelling == ")") &&
+           !typedefNames.contains(current().spelling) {
             // Parse identifier list — all params default to int
             while !isPunct(")") && !isAtEnd() {
                 if isPunct("...") {
