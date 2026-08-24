@@ -2248,6 +2248,7 @@ public final class Parser {
         return ["void", "char", "short", "int", "long", "float", "double",
                 "signed", "unsigned", "const", "volatile", "struct", "union",
                 "enum", "_Bool", "restrict", "_Complex", "_Imaginary",
+                "__complex__", "__complex",
                 "typeof", "__typeof", "__typeof__"].contains(s)
     }
 

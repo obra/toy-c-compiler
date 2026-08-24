@@ -4322,6 +4322,108 @@ public final class Codegen {
     private func emitAssignExpr(_ a: AssignExpr) -> ARM64Reg {
         // For compound assignments (+=, -=, etc.), we need to read, operate, and write
         if a.op != .assign {
+            // Bitfield compound assignment: read the bitfield value (masked),
+            // apply the operation, then write back via the bitfield read-modify-write
+            // path (storeExprResult). This prevents clobbering adjacent bitfields.
+            if case .member(let m) = a.target,
+               let bf = bitfieldInfo(exprType(m.base), m.memberName) {
+                // Evaluate RHS first (matches GCC evaluation order: RHS before LHS read).
+                let rhsResult = emitExpr(a.value)
+                let rhsType = exprType(a.value).unqualified
+                let rhsIsFloat = rhsType.isFloating
+                // Save RHS to stack
+                if rhsIsFloat {
+                    let fpReg = rhsType == .float ? "s\(rhsResult.regNum)" : "d\(rhsResult.regNum)"
+                    emitLine("str \(fpReg), [sp, #-16]!")
+                } else {
+                    emitLine("str \(rhsResult.x), [sp, #-16]!")
+                }
+                regAlloc.free(rhsResult)
+
+                // Read the current bitfield value (already masked + sign-extended by emitMemberExpr).
+                let curReg = emitExpr(a.target)
+                // Restore RHS
+                let rhsReg = regAlloc.alloc() ?? .x10
+                if rhsIsFloat {
+                    let fpReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
+                    emitLine("ldr \(fpReg), [sp], #16")
+                } else {
+                    emitLine("ldr \(rhsReg.x), [sp], #16")
+                }
+
+                // Read the current bitfield value (already masked + sign-extended by emitMemberExpr).
+                let resultReg = curReg
+                switch a.op {
+                case .addAssign:
+                    emitLine("add \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .subAssign:
+                    emitLine("sub \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .mulAssign:
+                    emitLine("mul \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .divAssign:
+                    if bf.isSigned {
+                        emitLine("sdiv \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("udiv \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                    }
+                case .modAssign:
+                    let temp = regAlloc.alloc() ?? .x16
+                    if bf.isSigned {
+                        emitLine("sdiv \(temp.x), \(resultReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("udiv \(temp.x), \(resultReg.x), \(rhsReg.x)")
+                    }
+                    emitLine("msub \(resultReg.x), \(temp.x), \(rhsReg.x), \(resultReg.x)")
+                    regAlloc.free(temp)
+                case .shlAssign:
+                    emitLine("lsl \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .shrAssign:
+                    if bf.isSigned {
+                        emitLine("asr \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                    } else {
+                        emitLine("lsr \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                    }
+                case .andAssign:
+                    emitLine("and \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .orAssign:
+                    emitLine("orr \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                case .xorAssign:
+                    emitLine("eor \(resultReg.x), \(resultReg.x), \(rhsReg.x)")
+                default: break
+                }
+                regAlloc.free(rhsReg)
+
+                // Truncate the result to the bitfield width (mask)
+                if !bf.isSigned && bf.bitWidth < 64 {
+                    let mask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth)) - 1
+                    if mask <= 255 {
+                        emitLine("and \(resultReg.x), \(resultReg.x), #\(mask)")
+                    } else if mask <= 65535 {
+                        emitLine("mov x16, #\(mask)")
+                        emitLine("and \(resultReg.x), \(resultReg.x), x16")
+                    } else {
+                        emitLine("mov x16, #\(mask & 0xffff)")
+                        if mask > 0xffff {
+                            emitLine("movk x16, #\((mask >> 16) & 0xffff), lsl #16")
+                        }
+                        if mask > 0xffffff {
+                            emitLine("movk x16, #\((mask >> 32) & 0xffff), lsl #32")
+                        }
+                        if mask > 0xffffffffffff {
+                            emitLine("movk x16, #\((mask >> 48) & 0xffff), lsl #48")
+                        }
+                        emitLine("and \(resultReg.x), \(resultReg.x), x16")
+                    }
+                }
+
+                // Write back via bitfield read-modify-write path
+                let storedReg = storeExprResult(a.target, resultReg)
+                // Truncate return value to bitfield width for assignment chain
+                let targetBfType: CType = bf.isSigned ? .int : .uint
+                truncateReg(storedReg, type: targetBfType)
+                return storedReg
+            }
+
             // Evaluate RHS first, then load the current value of the target.
             // This matches GCC behavior: the RHS is evaluated before reading the LHS,
             // which matters when the RHS has side effects that modify the target.
@@ -6606,6 +6708,14 @@ public final class Codegen {
                 ]
                 if let t = builtinReturnTypes[id.name] {
                     return t
+                }
+                // Check if it's a local variable (function pointer) being called
+                if let t = localVarTypes[id.name] {
+                    let tu = t.unqualified
+                    if case .function(_, let ret, _) = tu { return ret }
+                    if case .pointer(let to) = tu {
+                        if case .function(_, let ret, _) = to.unqualified { return ret }
+                    }
                 }
                 // Check if it's a known function
                 return .int
