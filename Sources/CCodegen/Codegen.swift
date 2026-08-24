@@ -182,11 +182,15 @@ public final class Codegen {
                 }
                 // Emit global variable
                 let size = vd.type.sizeInBytes ?? 0
+                let typeAlign = vd.type.alignOf ?? 8
+                var p2align = 0
+                var a = typeAlign
+                while a > 1 { p2align += 1; a >>= 1 }
                 if let init_ = vd.initializer {
                     // Emit initialized global
                     emitLine(".section __DATA,__data")
                     emitLine(".globl _\(vd.name)")
-                    emitLine(".p2align 3")
+                    emitLine(".p2align \(p2align)")
                     emitLine("_\(vd.name):")
                     emitInitializer(init_, size: size, type: vd.type)
                 } else if vd.storageClass == .extern {
@@ -195,7 +199,7 @@ public final class Codegen {
                     // BSS (zero-initialized)
                     emitLine(".section __DATA,__bss")
                     emitLine(".globl _\(vd.name)")
-                    emitLine(".p2align 3")
+                    emitLine(".p2align \(p2align)")
                     emitLine("_\(vd.name):")
                     // Use at least 8 bytes for scalar types, actual size for aggregates
                     let bssSize = vd.type.isScalar ? max(size, 8) : max(size, 1)
@@ -1042,6 +1046,15 @@ public final class Codegen {
             guard let cond = evalConstExpr(c.condition) else { return nil }
             return cond != 0 ? evalConstExpr(c.trueExpr) : evalConstExpr(c.falseExpr)
         case .sizeof(let s):
+            if s.isAlignof {
+                if let typeName = s.typeName {
+                    return Int64(typeName.alignOf ?? 0)
+                }
+                if let e = s.expr {
+                    return Int64(exprType(e).alignOf ?? 0)
+                }
+                return 0
+            }
             if let typeName = s.typeName {
                 // sizeof(type) — resolve type size
                 return Int64(typeName.sizeInBytes ?? 0)
@@ -2592,6 +2605,26 @@ public final class Codegen {
 
         case .sizeof(let s):
             let reg = regAlloc.alloc() ?? .x9
+            if s.isAlignof {
+                // __alignof__/_Alignof: return alignment of the type or expression
+                let align: Int
+                if let typeName = s.typeName {
+                    var t = typeName.unqualified
+                    if case .structType(let rec) = t, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                        t = .structType(completed)
+                    }
+                    if case .unionType(let rec) = t, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                        t = .unionType(completed)
+                    }
+                    align = t.alignOf ?? 0
+                } else if let e = s.expr {
+                    align = exprType(e).alignOf ?? 0
+                } else {
+                    align = 0
+                }
+                emitLoadImm(reg.x, Int64(align))
+                return reg
+            }
             let size: Int
             if let typeName = s.typeName {
                 // Resolve incomplete struct types via known records

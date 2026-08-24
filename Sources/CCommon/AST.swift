@@ -629,10 +629,13 @@ public struct SizeofExpr: Equatable {
     public let typeName: CType?
     public var resolvedType: CType?
     public let loc: SourceLoc
-    public init(expr: Expr?, typeName: CType?, loc: SourceLoc) {
+    /// True if this was created by __alignof__/_Alignof (returns alignment, not size)
+    public let isAlignof: Bool
+    public init(expr: Expr?, typeName: CType?, loc: SourceLoc, isAlignof: Bool = false) {
         self.expr = expr; self.typeName = typeName
         self.resolvedType = .ulong  // sizeof returns size_t = unsigned long on LP64
         self.loc = loc
+        self.isAlignof = isAlignof
     }
 }
 

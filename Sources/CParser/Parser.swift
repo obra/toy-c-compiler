@@ -372,6 +372,60 @@ public final class Parser {
         }
     }
 
+    /// Extract alignment from __attribute__((aligned(N))) or __attribute__((aligned)).
+    /// Returns the alignment in bytes, or nil if no aligned attribute found.
+    private func extractAlignment() -> Int? {
+        var result: Int? = nil
+        let savedPos = pos
+        while isKeyword("__attribute__") || isKeyword("__attribute") {
+            advance() // consume the keyword
+            if isPunct("(") {
+                advance() // outer (
+                if isPunct("(") {
+                    advance() // inner (
+                    // Parse attribute list
+                    while !isPunct(")") && !isAtEnd() {
+                        if isPunct(",") { advance(); continue }
+                        if current().kind == .identifier {
+                            let attrName = current().spelling
+                            advance()
+                            if attrName == "aligned" || attrName == "__aligned__" {
+                                if isPunct("(") {
+                                    advance()
+                                    // Parse the alignment expression
+                                    if let alignExpr = try? parseAssignmentExpr() {
+                                        let v = evalIntConst(alignExpr)
+                                        if v > 0 { result = Int(v) }
+                                    }
+                                    if isPunct(")") { advance() }
+                                } else {
+                                    // aligned with no arg = natural alignment (e.g., 16 for long double)
+                                    result = 16
+                                }
+                            } else {
+                                // Skip any arguments for unknown attributes
+                                if isPunct("(") {
+                                    var depth = 0
+                                    while !isAtEnd() {
+                                        if isPunct("(") { depth += 1 }
+                                        else if isPunct(")") { depth -= 1; if depth == 0 { advance(); break } }
+                                        advance()
+                                    }
+                                }
+                            }
+                        } else {
+                            advance()
+                        }
+                    }
+                    if isPunct(")") { advance() } // inner )
+                }
+                if isPunct(")") { advance() } // outer )
+            }
+        }
+        _ = savedPos
+        return result
+    }
+
     /// Skip C23 standard attributes: [[attr::args(...)]] — skip the whole [[...]] block.
     private func skipC23Attributes() {
         // We're at [[
@@ -929,8 +983,11 @@ public final class Parser {
                     _ = try consume(kind: .punct, spelling: ";")
                 }
                 _ = try consume(kind: .punct, spelling: "}")
+                // Parse __attribute__((aligned(N))) after the closing brace
+                let attrAlign = extractAlignment()
                 // Round up bitOffset to bytes, then to maxAlign
                 var totalBytes = (bitOffset + 7) / 8
+                if let aa = attrAlign { maxAlign = max(maxAlign, aa) }
                 totalBytes = (totalBytes + maxAlign - 1) & ~(maxAlign - 1)
                 let rec = RecordType(name: tag ?? "", fields: fields, size: totalBytes, alignment: maxAlign)
                 if let tag = tag {
@@ -2184,12 +2241,12 @@ public final class Parser {
                     let (baseType, _, _, _) = try parseDeclSpecifiers()
                     let (_, typeName, _) = try parseDeclarator(baseType)
                     _ = try consume(kind: .punct, spelling: ")")
-                    return .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc))
+                    return .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc, isAlignof: true))
                 }
             }
             // __alignof__ expr
             let e = try parseUnaryExpr()
-            return .sizeof(SizeofExpr(expr: e, typeName: nil, loc: loc))
+            return .sizeof(SizeofExpr(expr: e, typeName: nil, loc: loc, isAlignof: true))
         }
 
         // _Generic(expr, type: expr, ..., default: expr)
