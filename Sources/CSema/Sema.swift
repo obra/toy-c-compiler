@@ -206,6 +206,8 @@ public final class Sema {
 
     /// Saved local variable names from each function, for nested function analysis.
     private var functionLocalNames: [String: Set<String>] = [:]
+    /// Saved __label__ names from each function, for nested function &&label resolution.
+    private var functionLocalLabels: [String: Set<String>] = [:]
     /// Current function name being analyzed
     private var currentFuncName: String = ""
 
@@ -223,6 +225,10 @@ public final class Sema {
         if fd.parentFuncName != nil {
             inNestedFunction = true
             parentLocalNames = functionLocalNames[fd.parentFuncName!] ?? []
+            // Add parent's __label__ names so &&label resolves in nested functions
+            if let parentLabels = functionLocalLabels[fd.parentFuncName!] {
+                for l in parentLabels { functionLabels.insert(l) }
+            }
         }
 
         // Add parameters to scope
@@ -243,6 +249,7 @@ public final class Sema {
             if let pn = param.name { localNames.insert(pn) }
         }
         functionLocalNames[fd.name] = localNames
+        functionLocalLabels[fd.name] = Set(fd.localLabels)
 
         currentScope = globalScope
         inFunction = false

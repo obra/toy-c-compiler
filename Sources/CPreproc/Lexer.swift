@@ -260,6 +260,10 @@ public final class Lexer {
             } else if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
                 // i I j J — imaginary suffix
                 pos += 1
+                // Optional float/long suffix after imaginary: iF, if, iL, il (GNU)
+                if pos < bytes.count && (bytes[pos] == 0x66 || bytes[pos] == 0x46 || bytes[pos] == 0x6C || bytes[pos] == 0x4C) {
+                    pos += 1
+                }
             }
             tokens.append(Token(kind: .floatLiteral, spelling: bytesToString(start, pos),
                                 loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))
@@ -313,6 +317,10 @@ public final class Lexer {
             } else if pos < bytes.count && (bytes[pos] == 0x69 || bytes[pos] == 0x49 || bytes[pos] == 0x6A || bytes[pos] == 0x4A) {
                 // i I j J — imaginary suffix
                 pos += 1
+                // Optional float/long suffix after imaginary: iF, if, iL, il (GNU)
+                if pos < bytes.count && (bytes[pos] == 0x66 || bytes[pos] == 0x46 || bytes[pos] == 0x6C || bytes[pos] == 0x4C) {
+                    pos += 1
+                }
             }
             tokens.append(Token(kind: .floatLiteral, spelling: bytesToString(start, pos),
                                 loc: SourceLoc(fileId: fileId, offset: start), hasLeadingSpace: consumeSpace()))

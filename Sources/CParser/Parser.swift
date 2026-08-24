@@ -2042,8 +2042,15 @@ public final class Parser {
         let cond = try parseLogicalOrExpr()
         if isPunct("?") {
             let loc = advance().loc
-            let trueE = try parseExpr()
-            _ = try consume(kind: .punct, spelling: ":")
+            // GNU extension: x ?: y — missing middle operand uses x as the true expr
+            let trueE: Expr
+            if isPunct(":") {
+                trueE = cond
+                _ = try consume(kind: .punct, spelling: ":")
+            } else {
+                trueE = try parseExpr()
+                _ = try consume(kind: .punct, spelling: ":")
+            }
             let falseE = try parseConditionalExpr()
             return .conditional(ConditionalExpr(condition: cond, trueExpr: trueE, falseExpr: falseE, loc: loc))
         }
