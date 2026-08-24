@@ -290,6 +290,50 @@ public final class Codegen {
                         let field = fields[fieldIdx]
                         let fieldOffset = field.offset
                         let fieldName = field.name ?? ""
+                        // Handle bitfield units in designated initializers specially:
+                        // collect all designated values for bitfields in the same unit,
+                        // pack them into a single word, and emit it.
+                        if hasDesignators, let bw = field.bitWidth {
+                            let unitSize = field.type.sizeInBytes ?? 4
+                            // Find all bitfields in this allocation unit
+                            var unitEnd = fieldIdx + 1
+                            while unitEnd < fields.count,
+                                  let _ = fields[unitEnd].bitWidth,
+                                  fields[unitEnd].offset < fieldOffset + unitSize {
+                                unitEnd += 1
+                            }
+                            // Collect designated values for bitfields in this unit
+                            var bitVal: UInt64 = 0
+                            var anyDesignated = false
+                            for bi in fieldIdx..<unitEnd {
+                                let bf = fields[bi]
+                                let bfName = bf.name ?? ""
+                                if !bfName.isEmpty, let indices = designatedFields[bfName] {
+                                    for idx in indices {
+                                        if let val = evalConstExpr(il.values[idx]) {
+                                            let mask: UInt64 = (UInt64(1) << UInt64(bf.bitWidth!)) - 1
+                                            bitVal |= (UInt64(bitPattern: val) & mask) << UInt64(bf.bitOffset)
+                                            anyDesignated = true
+                                        }
+                                    }
+                                }
+                            }
+                            // Emit padding before this unit
+                            if fieldOffset > currentOffset {
+                                emitLine(".zero \(fieldOffset - currentOffset)")
+                            }
+                            // Emit the packed bitfield unit
+                            switch unitSize {
+                            case 1: emitLine(".byte \(bitVal & 0xFF)")
+                            case 2: emitLine(".short \(bitVal & 0xFFFF)")
+                            case 4: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                            case 8: emitLine(".quad \(bitVal)")
+                            default: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                            }
+                            currentOffset = fieldOffset + unitSize
+                            fieldIdx = unitEnd
+                            continue
+                        }
                         // Handle designated initializers
                         if hasDesignators {
                             var designatedIndices: [Int] = []
@@ -355,10 +399,33 @@ public final class Codegen {
                                     emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
                                 } else if case .compoundLiteral(let cl) = v {
                                     emitInitializer(cl.initList, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                } else if let bw = field.bitWidth {
+                                    // Designated bitfield: pack value into the containing unit
+                                    // at the correct bit offset.
+                                    if let val = evalConstExpr(v) {
+                                        let unitSize = field.type.sizeInBytes ?? 4
+                                        // Compute the full unit value: anonymous bitfields
+                                        // before this field are zero, this field's value is
+                                        // shifted to its bit offset.
+                                        let mask: UInt64 = (UInt64(1) << UInt64(bw)) - 1
+                                        let bitVal = (UInt64(bitPattern: val) & mask) << UInt64(field.bitOffset)
+                                        // Emit padding before this unit if needed
+                                        if fieldOffset > currentOffset {
+                                            emitLine(".zero \(fieldOffset - currentOffset)")
+                                        }
+                                        switch unitSize {
+                                        case 1: emitLine(".byte \(bitVal & 0xFF)")
+                                        case 2: emitLine(".short \(bitVal & 0xFFFF)")
+                                        case 4: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                                        case 8: emitLine(".quad \(bitVal)")
+                                        default: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                                        }
+                                        currentOffset = fieldOffset + unitSize
+                                    }
                                 } else {
                                     emitInitializer(v, size: field.type.sizeInBytes ?? 8, type: field.type)
+                                    currentOffset = fieldOffset + (field.type.sizeInBytes ?? 0)
                                 }
-                                currentOffset = fieldOffset + (field.type.sizeInBytes ?? 0)
                                 } // end for idx in designatedIndices
                                 fieldIdx += 1
                                 continue
@@ -366,6 +433,21 @@ public final class Codegen {
                             // No designator for this field — emit zeros
                             if fieldOffset > currentOffset {
                                 emitLine(".zero \(fieldOffset - currentOffset)")
+                            }
+                            // For bitfields, skip ahead past all bitfields in the
+                            // same allocation unit and emit zeros for the whole unit.
+                            if let bw = field.bitWidth {
+                                let unitSize = field.type.sizeInBytes ?? 4
+                                var nextIdx = fieldIdx + 1
+                                while nextIdx < fields.count,
+                                      let nextBw = fields[nextIdx].bitWidth,
+                                      fields[nextIdx].offset < fieldOffset + unitSize {
+                                    nextIdx += 1
+                                }
+                                emitLine(".zero \(unitSize)")
+                                currentOffset = fieldOffset + unitSize
+                                fieldIdx = nextIdx
+                                continue
                             }
                             let fieldSize = field.type.sizeInBytes ?? 0
                             if fieldSize > 0 {
