@@ -358,14 +358,23 @@ public final class MacroExpander {
 
         // Variadic: __VA_ARGS__ gets all remaining args
         if macro.isVariadic {
+            // For named variadic (e.g. #define f(args...)), the last param
+            // collects all remaining args and also maps to __VA_ARGS__.
+            let nFixedParams = macro.isVariadic && macro.params.last != "__VA_ARGS__"
+                ? macro.params.count - 1  // last param is the variadic name
+                : macro.params.count
             var vaArgs: [Token] = []
-            for idx in macro.params.count..<args.count {
+            for idx in nFixedParams..<args.count {
                 if !vaArgs.isEmpty {
                     vaArgs.append(Token(kind: .punct, spelling: ",", loc: invocationLoc))
                 }
                 vaArgs.append(contentsOf: args[idx])
             }
             argMap["__VA_ARGS__"] = vaArgs
+            // Also map the named variadic param (e.g. args) to the same tokens
+            if macro.params.count > nFixedParams {
+                argMap[macro.params[nFixedParams]] = vaArgs
+            }
         }
 
         let result = substitute(macro.body, params: macro.params, args: argMap, macro: macro,
