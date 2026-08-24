@@ -299,6 +299,7 @@ public final class Parser {
             case "char", "short", "int", "long", "float", "double", "void",
                  "signed", "unsigned", "const", "volatile", "restrict",
                  "struct", "union", "enum",
+                 "register", "auto", "static", "extern",
                  "__const", "__const__", "__volatile", "__volatile__",
                  "__restrict", "__restrict__", "__signed", "__signed__":
                 return true
