@@ -3574,9 +3574,17 @@ public final class Codegen {
     private func emitAssignExpr(_ a: AssignExpr) -> ARM64Reg {
         // For compound assignments (+=, -=, etc.), we need to read, operate, and write
         if a.op != .assign {
-            // Load the current value of the target
+            // Evaluate RHS first, then load the current value of the target.
+            // This matches GCC behavior: the RHS is evaluated before reading the LHS,
+            // which matters when the RHS has side effects that modify the target.
+            let rhsResult = emitExpr(a.value)
+            // Save RHS to stack before loading target (emitExpr may clobber rhsResult)
+            emitLine("str \(rhsResult.x), [sp, #-16]!")
             let currentReg = emitExpr(a.target)
-            let rhsReg = emitExpr(a.value)
+            // Restore RHS from stack
+            let rhsReg = regAlloc.alloc() ?? .x9
+            emitLine("ldr \(rhsReg.x), [sp], #16")
+            _ = rhsResult
 
             // Apply the operation
             let binaryOp: BinaryOp
