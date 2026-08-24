@@ -3884,15 +3884,24 @@ public final class Codegen {
         if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct/union assignment: get source address and copy bytes to target
             let dstReg = emitAddr(a.target)
-            // If the RHS is a function call returning a struct, the struct is in x0/x1.
-            // We need to store the return registers to a temp, then copy.
+            // If the RHS is a function call returning a struct, handle it specially.
             if case .call = a.value {
-                // Emit the call (struct returned in x0/x1)
-                _ = emitExpr(a.value)
-                // Store return registers to the destination
-                emitLine("str x0, [\(dstReg.x)]")
-                if size > 8 {
-                    emitLine("str x1, [\(dstReg.x), #8]")
+                if size <= 16 {
+                    // Small struct (≤16 bytes): returned in x0/x1
+                    _ = emitExpr(a.value)
+                    emitLine("str x0, [\(dstReg.x)]")
+                    if size > 8 {
+                        emitLine("str x1, [\(dstReg.x), #8]")
+                    }
+                } else {
+                    // Large struct (>16 bytes): caller passes destination address in x8.
+                    // The callee writes directly to [x8]. We must set x8 = dstReg before the call.
+                    // Save dstReg to stack since emitExpr may clobber it.
+                    emitLine("str \(dstReg.x), [sp, #-16]!")
+                    emitLine("mov x8, \(dstReg.x)")
+                    _ = emitExpr(a.value)
+                    // Restore dstReg (not strictly needed but keeps reg state clean)
+                    emitLine("ldr \(dstReg.x), [sp], #16")
                 }
                 regAlloc.free(dstReg)
                 return dstReg
