@@ -3363,43 +3363,67 @@ public final class Codegen {
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), eq")
             case .ne:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), ne")
             case .lt:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "lo" : "lt")")
             case .le:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "ls" : "le")")
             case .gt:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hi" : "gt")")
             case .ge:
                 if is32BitSigned {
                     emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
+                } else if resultType.sizeInBytes == 4 {
+                    emitLine("cmp \(leftReg.w), \(rightReg.w)")
+                } else {
+                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
-                emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hs" : "ge")")
             default:
                 break
