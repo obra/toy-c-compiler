@@ -3050,16 +3050,32 @@ public final class Codegen {
             // (e.g., a statement expression) may reset the register allocator and
             // clobber leftReg. After evaluating right, restore left into the same
             // register, moving right to a temp if needed.
-            emitLine("str \(leftReg.x), [sp, #-16]!")
+            // For FP: save/restore the d register, not the x register.
+            if isFloatOp {
+                let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                emitLine("str \(fpLeftReg), [sp, #-16]!")
+            } else {
+                emitLine("str \(leftReg.x), [sp, #-16]!")
+            }
             let rightResultReg = emitExpr(b.right)
             // If rightReg is the same as leftReg, keep right in x17 and use x17 as the right operand
             let rightReg: ARM64Reg
             if rightResultReg == leftReg {
                 emitLine("mov x17, \(rightResultReg.x)")
-                emitLine("ldr \(leftReg.x), [sp], #16")
+                if isFloatOp {
+                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                    emitLine("ldr \(fpLeftReg), [sp], #16")
+                } else {
+                    emitLine("ldr \(leftReg.x), [sp], #16")
+                }
                 rightReg = .x17
             } else {
-                emitLine("ldr \(leftReg.x), [sp], #16")
+                if isFloatOp {
+                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                    emitLine("ldr \(fpLeftReg), [sp], #16")
+                } else {
+                    emitLine("ldr \(leftReg.x), [sp], #16")
+                }
                 rightReg = rightResultReg
             }
 
