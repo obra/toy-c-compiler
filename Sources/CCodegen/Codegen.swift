@@ -3561,6 +3561,21 @@ public final class Codegen {
                 }
             }
 
+            // When one operand is 64-bit and the other is 32-bit signed, the
+            // 32-bit signed operand must be sign-extended to 64 bits (C99
+            // integer conversion rules). This matters for comparisons and
+            // arithmetic where the result type is 64-bit.
+            if !is32BitOperand && !isPtrArith {
+                let lp = leftType.unqualified
+                let rp = rightType.unqualified
+                if lp.isSigned32Bit && (rp.sizeInBytes ?? 4) == 8 {
+                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                }
+                if rp.isSigned32Bit && (lp.sizeInBytes ?? 4) == 8 {
+                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
+                }
+            }
+
             switch b.op {
             case .add:
                 if isPtrArith {
