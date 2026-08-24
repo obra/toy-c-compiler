@@ -4500,57 +4500,56 @@ public final class Codegen {
             return resultReg
         }
 
-        // __builtin_ffs(x) → find first set bit (1-indexed, 0 if x==0)
-        if case .identifier(let id) = c.function, id.name == "__builtin_ffs", c.arguments.count >= 1 {
-            let argReg = emitExpr(c.arguments[0])
-            // If x == 0, result is 0; otherwise rbit + clz + 1
-            emitLine("cmp \(argReg.x), #0")
-            let label = newLabel()
-            emitLine("b.eq \(label)")
-            emitLine("rbit \(argReg.x), \(argReg.x)")
-            emitLine("clz \(argReg.x), \(argReg.x)")
-            emitLine("add \(argReg.x), \(argReg.x), #1")
-            emitLine("\(label):")
-            return argReg
-        }
-
-        // __builtin_ctz(x) → count trailing zeros
-        if case .identifier(let id) = c.function, id.name == "__builtin_ctz", c.arguments.count >= 1 {
-            let argReg = emitExpr(c.arguments[0])
-            // rbit + clz gives ctz
-            emitLine("rbit \(argReg.x), \(argReg.x)")
-            emitLine("clz \(argReg.x), \(argReg.x)")
-            return argReg
-        }
+        // __builtin_ffs, __builtin_ctz, __builtin_clz are handled by the
+        // combined l/ll handlers below.
 
         // __builtin_clz(x) → count leading zeros
-        // __builtin_clzl and __builtin_clzll are the same on LP64
+        // __builtin_clzl and __builtin_clzll are the same on LP64 (64-bit)
+        // __builtin_clz operates on unsigned int (32-bit): clz64(x) - 32
         if case .identifier(let id) = c.function,
            ["__builtin_clz", "__builtin_clzl", "__builtin_clzll"].contains(id.name), c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
             emitLine("clz \(argReg.x), \(argReg.x)")
+            if id.name == "__builtin_clz" {
+                emitLine("sub \(argReg.x), \(argReg.x), #32")
+            }
             return argReg
         }
 
         // __builtin_ctz{l,ll}(x) → count trailing zeros
+        // For 32-bit (__builtin_ctz): rbit w, w (32-bit reverse) + clz64 - 32
         if case .identifier(let id) = c.function,
            ["__builtin_ctz", "__builtin_ctzl", "__builtin_ctzll"].contains(id.name), c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
-            emitLine("rbit \(argReg.x), \(argReg.x)")
+            if id.name == "__builtin_ctz" {
+                emitLine("rbit w\(argReg.regNum), w\(argReg.regNum)")
+            } else {
+                emitLine("rbit \(argReg.x), \(argReg.x)")
+            }
             emitLine("clz \(argReg.x), \(argReg.x)")
+            if id.name == "__builtin_ctz" {
+                emitLine("sub \(argReg.x), \(argReg.x), #32")
+            }
             return argReg
         }
 
         // __builtin_ffs{l,ll}(x) → find first set bit (1-indexed, 0 if x==0)
+        // For 32-bit (__builtin_ffs): rbit w, w + clz64 - 32 + 1
         if case .identifier(let id) = c.function,
            ["__builtin_ffs", "__builtin_ffsl", "__builtin_ffsll"].contains(id.name), c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
             emitLine("cmp \(argReg.x), #0")
             let label = newLabel()
             emitLine("b.eq \(label)")
-            emitLine("rbit \(argReg.x), \(argReg.x)")
-            emitLine("clz \(argReg.x), \(argReg.x)")
-            emitLine("add \(argReg.x), \(argReg.x), #1")
+            if id.name == "__builtin_ffs" {
+                emitLine("rbit w\(argReg.regNum), w\(argReg.regNum)")
+                emitLine("clz \(argReg.x), \(argReg.x)")
+                emitLine("sub \(argReg.x), \(argReg.x), #31")
+            } else {
+                emitLine("rbit \(argReg.x), \(argReg.x)")
+                emitLine("clz \(argReg.x), \(argReg.x)")
+                emitLine("add \(argReg.x), \(argReg.x), #1")
+            }
             emitLine("\(label):")
             return argReg
         }
@@ -4564,8 +4563,8 @@ public final class Codegen {
             emitLine("movk x16, #0x5555, lsl #16")
             emitLine("movk x16, #0x5555, lsl #32")
             emitLine("movk x16, #0x5555, lsl #48")
-            emitLine("and x17, \(argReg.x), x16")
-            emitLine("lsr x17, x17, #1")
+            emitLine("lsr x17, \(argReg.x), #1")
+            emitLine("and x17, x17, x16")
             emitLine("sub \(argReg.x), \(argReg.x), x17")
             // v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333)
             emitLine("mov x16, #0x3333")
@@ -4581,8 +4580,7 @@ public final class Codegen {
             emitLine("movk x16, #0x0F0F, lsl #16")
             emitLine("movk x16, #0x0F0F, lsl #32")
             emitLine("movk x16, #0x0F0F, lsl #48")
-            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x)")
-            emitLine("lsr \(argReg.x), \(argReg.x), #4")
+            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x), lsr #4")
             emitLine("and \(argReg.x), \(argReg.x), x16")
             // Multiply by 0x0101010101010101 to sum bytes
             emitLine("mov x16, #0x0101")
@@ -4599,12 +4597,18 @@ public final class Codegen {
         if case .identifier(let id) = c.function,
            ["__builtin_clrsb", "__builtin_clrsbl", "__builtin_clrsbll"].contains(id.name), c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
-            // clrsb(x) = clz(x ^ (x >> 63)) - 1  (for 64-bit)
-            // If x >= 0: x >> 63 = 0, so clz(x) - 1
-            // If x < 0:  x >> 63 = -1, so x ^ -1 = ~x, clz(~x) - 1
-            emitLine("eor x16, \(argReg.x), \(argReg.x), asr #63")
-            emitLine("clz \(argReg.x), x16")
-            emitLine("sub \(argReg.x), \(argReg.x), #1")
+            // clrsb(x) = clz(x ^ (x >> (bits-1)) - 1
+            if id.name == "__builtin_clrsb" {
+                // 32-bit: use w registers and asr #31
+                emitLine("eor w16, w\(argReg.regNum), w\(argReg.regNum), asr #31")
+                emitLine("clz \(argReg.x), x16")
+                emitLine("sub \(argReg.x), \(argReg.x), #33")  // clz_64 - 32 - 1 = clz_32 - 1
+            } else {
+                // 64-bit: use x registers and asr #63
+                emitLine("eor x16, \(argReg.x), \(argReg.x), asr #63")
+                emitLine("clz \(argReg.x), x16")
+                emitLine("sub \(argReg.x), \(argReg.x), #1")
+            }
             return argReg
         }
 
@@ -4617,8 +4621,8 @@ public final class Codegen {
             emitLine("movk x16, #0x5555, lsl #16")
             emitLine("movk x16, #0x5555, lsl #32")
             emitLine("movk x16, #0x5555, lsl #48")
-            emitLine("and x17, \(argReg.x), x16")
-            emitLine("lsr x17, x17, #1")
+            emitLine("lsr x17, \(argReg.x), #1")
+            emitLine("and x17, x17, x16")
             emitLine("sub \(argReg.x), \(argReg.x), x17")
             emitLine("mov x16, #0x3333")
             emitLine("movk x16, #0x3333, lsl #16")
@@ -4632,8 +4636,7 @@ public final class Codegen {
             emitLine("movk x16, #0x0F0F, lsl #16")
             emitLine("movk x16, #0x0F0F, lsl #32")
             emitLine("movk x16, #0x0F0F, lsl #48")
-            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x)")
-            emitLine("lsr \(argReg.x), \(argReg.x), #4")
+            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x), lsr #4")
             emitLine("and \(argReg.x), \(argReg.x), x16")
             emitLine("mov x16, #0x0101")
             emitLine("movk x16, #0x0101, lsl #16")
@@ -4776,45 +4779,7 @@ public final class Codegen {
             return resultReg
         }
 
-        // __builtin_popcount(x) → population count (software implementation)
-        // ARM64 'cnt' is a NEON instruction (not general-purpose), so use a
-        // shift-and-add approach: x = (x & 0x55) + ((x>>1) & 0x55); etc.
-        if case .identifier(let id) = c.function, id.name == "__builtin_popcount", c.arguments.count >= 1 {
-            let argReg = emitExpr(c.arguments[0])
-            // v = v - ((v >> 1) & 0x5555555555555555)
-            emitLine("mov x16, #0x5555")
-            emitLine("movk x16, #0x5555, lsl #16")
-            emitLine("movk x16, #0x5555, lsl #32")
-            emitLine("movk x16, #0x5555, lsl #48")
-            emitLine("lsr x17, \(argReg.x), #1")
-            emitLine("and x17, x17, x16")
-            emitLine("sub \(argReg.x), \(argReg.x), x17")
-            // v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333)
-            emitLine("mov x16, #0x3333")
-            emitLine("movk x16, #0x3333, lsl #16")
-            emitLine("movk x16, #0x3333, lsl #32")
-            emitLine("movk x16, #0x3333, lsl #48")
-            emitLine("and x17, \(argReg.x), x16")
-            emitLine("lsr \(argReg.x), \(argReg.x), #2")
-            emitLine("and \(argReg.x), \(argReg.x), x16")
-            emitLine("add \(argReg.x), \(argReg.x), x17")
-            // v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0F
-            emitLine("mov x16, #0x0F0F")
-            emitLine("movk x16, #0x0F0F, lsl #16")
-            emitLine("movk x16, #0x0F0F, lsl #32")
-            emitLine("movk x16, #0x0F0F, lsl #48")
-            emitLine("lsr x17, \(argReg.x), #4")
-            emitLine("add \(argReg.x), \(argReg.x), x17")
-            emitLine("and \(argReg.x), \(argReg.x), x16")
-            // v * 0x0101010101010101 >> 56 gives the count in the top byte
-            emitLine("mov x16, #0x0101")
-            emitLine("movk x16, #0x0101, lsl #16")
-            emitLine("movk x16, #0x0101, lsl #32")
-            emitLine("movk x16, #0x0101, lsl #48")
-            emitLine("mul \(argReg.x), \(argReg.x), x16")
-            emitLine("lsr \(argReg.x), \(argReg.x), #56")
-            return argReg
-        }
+        // Old __builtin_popcount handler removed — handled by combined handler above.
 
         // __builtin_add_overflow(a, b, &res) → 1 if overflow, stores a+b in *res
         if case .identifier(let id) = c.function, id.name == "__builtin_add_overflow", c.arguments.count >= 3 {
