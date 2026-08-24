@@ -39,3 +39,17 @@ __attribute__((weak)) void *mempcpy(void *dest, const void *src, unsigned long n
 
 /* builtin-prefetch-2: gx is a global function */
 __attribute__((weak)) void gx(void) { abort(); }
+
+/* 930513-1: sprintf is referenced by function pointer but macOS doesn't
+ * export a plain _sprintf symbol (only ___sprintf_chk). Provide a wrapper
+ * using vsnprintf which IS available. */
+#include <stdarg.h>
+#include <stdio.h>
+#undef sprintf
+__attribute__((weak)) int sprintf(char *str, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(str, 256, fmt, ap);
+    va_end(ap);
+    return n;
+}
