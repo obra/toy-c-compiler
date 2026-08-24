@@ -1287,6 +1287,9 @@ public final class Codegen {
         gotoLabels = [:]
         frameSize = 0
         labelCounter = 0
+        // Pre-register all labels in the function body so that &&label
+        // references in initializers before the label definition can resolve.
+        preRegisterLabels(fd.body)
         // Save static local map so function-specific statics don't leak to other functions
         let savedStaticLocals = staticLocalGlobals
 
@@ -1514,6 +1517,45 @@ public final class Codegen {
     private func emitCompoundStmt(_ cs: CompoundStmt) {
         for stmt in cs.statements {
             emitStmt(stmt)
+        }
+    }
+
+    /// Recursively scan statements for label declarations and pre-register them
+    /// so that &&label references before the label definition can resolve.
+    private func preRegisterLabels(_ body: CompoundStmt?) {
+        guard let body = body else { return }
+        for stmt in body.statements {
+            preRegisterLabelsStmt(stmt)
+        }
+    }
+
+    private func preRegisterLabelsStmt(_ stmt: Stmt) {
+        switch stmt {
+        case .label(let l):
+            if gotoLabels[l.name] == nil {
+                labelCounter += 1
+                let asmLabel = "L_\(currentFuncName)_G\(labelCounter)"
+                gotoLabels[l.name] = asmLabel
+                allFunctionLabels["\(currentFuncName).\(l.name)"] = asmLabel
+            }
+            preRegisterLabelsStmt(l.stmt)
+        case .compound(let c):
+            for s in c.statements { preRegisterLabelsStmt(s) }
+        case .if(let i):
+            preRegisterLabelsStmt(i.thenStmt)
+            if let elseStmt = i.elseStmt { preRegisterLabelsStmt(elseStmt) }
+        case .while(let w):
+            preRegisterLabelsStmt(w.body)
+        case .doWhile(let d):
+            preRegisterLabelsStmt(d.body)
+        case .for(let f):
+            preRegisterLabelsStmt(f.body)
+        case .switch(let s):
+            for c in s.cases {
+                preRegisterLabelsStmt(c)
+            }
+        default:
+            break
         }
     }
 
