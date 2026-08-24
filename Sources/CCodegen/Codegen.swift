@@ -1238,7 +1238,14 @@ public final class Codegen {
             case .div: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) / UInt64(bitPattern: rhs)) : nil
             case .mod: return rhs != 0 ? Int64(bitPattern: UInt64(bitPattern: lhs) % UInt64(bitPattern: rhs)) : nil
             case .shl: return Int64(bitPattern: UInt64(bitPattern: lhs) &<< UInt64(rhs))
-            case .shr: return Int64(bitPattern: UInt64(bitPattern: lhs) >> UInt64(rhs))
+            case .shr:
+                // Arithmetic shift for signed types, logical for unsigned.
+                let leftType = exprType(b.left).unqualified
+                if leftType.isUnsigned {
+                    return Int64(bitPattern: UInt64(bitPattern: lhs) >> UInt64(rhs))
+                } else {
+                    return lhs >> rhs  // Swift Int64 >> is arithmetic
+                }
             case .bitAnd: return lhs & rhs
             case .bitOr: return lhs | rhs
             case .bitXor: return lhs ^ rhs
