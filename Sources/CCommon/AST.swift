@@ -78,12 +78,16 @@ public struct FuncDecl: Equatable {
     public var capturedLocals: [String]
     /// Names of __label__ declarations (GNU nonlocal labels) in this function.
     public var localLabels: [String]
+    /// VLA dimension expressions for parameters that are VLAs (e.g. int b[a++]).
+    /// Each entry is the list of dimension expressions for that parameter,
+    /// in parameter order. These must be evaluated at the call site for side effects.
+    public var paramVLAExprs: [[Expr]]
 
     public init(name: String, returnType: CType, params: [Param], variadic: Bool,
                 body: CompoundStmt? = nil, storageClass: StorageClass = .none,
                 isInline: Bool = false, loc: SourceLoc,
                 parentFuncName: String? = nil, capturedLocals: [String] = [],
-                localLabels: [String] = []) {
+                localLabels: [String] = [], paramVLAExprs: [[Expr]] = []) {
         self.name = name
         self.returnType = returnType
         self.params = params
@@ -95,6 +99,7 @@ public struct FuncDecl: Equatable {
         self.parentFuncName = parentFuncName
         self.capturedLocals = capturedLocals
         self.localLabels = localLabels
+        self.paramVLAExprs = paramVLAExprs
     }
 }
 
@@ -454,10 +459,10 @@ public struct FloatLiteral: Equatable {
 }
 
 public struct CharLiteral: Equatable {
-    public let value: UInt8
+    public let value: UInt32
     public let type: CType
     public let loc: SourceLoc
-    public init(value: UInt8, type: CType = .int, loc: SourceLoc) {
+    public init(value: UInt32, type: CType = .int, loc: SourceLoc) {
         self.value = value; self.type = type; self.loc = loc
     }
 }

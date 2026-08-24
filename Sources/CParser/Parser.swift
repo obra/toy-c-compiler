@@ -39,6 +39,9 @@ public final class Parser {
     private var pendingVLASizeExprs: [Expr] = []
     private var pendingVLASizeExpr: Expr? { pendingVLASizeExprs.last }
     private var lastFuncVariadic: Bool = false
+    /// VLA dimension expressions for each parameter in the last parsed function.
+    /// Each entry is the list of dimension expressions for that parameter.
+    private var lastFuncParamVLAExprs: [[Expr]] = []
     /// Current function name (for __func__ predefined identifier).
     private var currentFuncName: String? = nil
     /// Enum constants defined so far (name → value), for constant expression evaluation.
@@ -142,6 +145,10 @@ public final class Parser {
     private var packStack: [Int] = []
     /// Current pack alignment (0 = use natural alignment).
     private var currentPack: Int = 0
+    /// Pending __attribute__((aligned(N))) extracted from the last call to
+    /// parseDeclSpecifiers (applied between the base type and the declarator,
+    /// e.g. `int __attribute__((aligned(8))) a`). Reset after each field.
+    private var pendingDeclAligned: Int? = nil
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
     private var pendingExternalDecls: [Decl] = []
     /// Nested function definitions discovered during function body parsing.
@@ -515,6 +522,7 @@ public final class Parser {
                 // declarations that overwrite lastFuncParams via parseFunctionParams
                 var savedParams = lastFuncParams
                 let savedVariadic = lastFuncVariadic
+                let savedParamVLAExprs = lastFuncParamVLAExprs
                 let savedFuncName = currentFuncName
                 currentFuncName = name
                 // Push a new label scope for this function
@@ -562,7 +570,7 @@ public final class Parser {
                                         params: savedParams,
                                         variadic: savedVariadic,
                                         body: body, storageClass: storageClass, isInline: isInline, loc: loc,
-                                        localLabels: labels)
+                                        localLabels: labels, paramVLAExprs: savedParamVLAExprs)
                 return .funcDecl(funcDecl)
             }
 
@@ -618,7 +626,8 @@ public final class Parser {
                 let fd = FuncDecl(name: name, returnType: returnType,
                                   params: lastFuncParams,
                                   variadic: lastFuncVariadic,
-                                  body: nil, storageClass: storageClass, isInline: isInline, loc: loc)
+                                  body: nil, storageClass: storageClass, isInline: isInline, loc: loc,
+                                  paramVLAExprs: lastFuncParamVLAExprs)
                 if firstDecl == nil {
                     firstDecl = .funcDecl(fd)
                 }
@@ -775,14 +784,10 @@ public final class Parser {
 
                 // GCC extensions — skip
                 case "__attribute__", "__attribute":
-                    advance()
-                    if isPunct("(") {
-                        var depth = 0
-                        while !isAtEnd() {
-                            if isPunct("(") { depth += 1; advance() }
-                            else if isPunct(")") { depth -= 1; advance(); if depth == 0 { break } }
-                            else { advance() }
-                        }
+                    // Extract any aligned(N) for application to the declared type
+                    // (e.g. `int __attribute__((aligned(8))) a` in a struct field).
+                    if let aa = extractAlignment() {
+                        pendingDeclAligned = max(pendingDeclAligned ?? 0, aa)
                     }
                 case "__asm", "__asm__":
                     advance()
@@ -983,7 +988,20 @@ public final class Parser {
                         } else {
                             // Non-bitfield: round bit offset up to byte, then align
                             var byteOff = (bitOffset + 7) / 8
-                            let fieldAlign = fieldType.alignOf ?? 1
+                            var fieldAlign = fieldType.alignOf ?? 1
+                            // Apply __attribute__((aligned(N))) — either from the
+                            // field declarator (parsed above via skipAsmAndAttributes)
+                            // or from between the base type and declarator (captured
+                            // by parseDeclSpecifiers into pendingDeclAligned).
+                            if let attrAlign = extractAlignment() {
+                                fieldAlign = max(fieldAlign, attrAlign)
+                            } else {
+                                skipAsmAndAttributes()
+                            }
+                            if let pa = pendingDeclAligned {
+                                fieldAlign = max(fieldAlign, pa)
+                            }
+                            pendingDeclAligned = nil
                             let fieldSize = fieldType.sizeInBytes ?? 0
                             // Apply #pragma pack: effective alignment is min(natural, pack)
                             let effectiveAlign = currentPack > 0 ? min(fieldAlign, currentPack) : fieldAlign
@@ -1497,14 +1515,20 @@ public final class Parser {
         // — already skipped above. Now parse the size expression.
         let sizeExpr = try parseAssignmentExpr()
         _ = try consume(kind: .punct, spelling: "]")
-        // Try to evaluate as constant
-        let constVal = evalIntConst(sizeExpr)
-        if constVal != 0 {
-            return (Int(constVal), nil)
-        }
-        // Check if it's actually constant 0 (valid) or a non-constant expression (VLA)
-        if case .integerLiteral = sizeExpr {
-            return (0, nil)  // [0] is a zero-size array (GCC extension)
+        // Only treat as a fixed-size array if the expression is a true compile-time
+        // constant. evalIntConst returns 0 for unknown identifiers, so an expression
+        // like `n + 1` would otherwise fold to `0 + 1 = 1` and be misidentified as a
+        // fixed array of size 1 instead of a VLA. Any variable reference makes the
+        // dimension a VLA.
+        if isConstantExpr(sizeExpr) {
+            let constVal = evalIntConst(sizeExpr)
+            if constVal != 0 {
+                return (Int(constVal), nil)
+            }
+            // [0] is a zero-size array (GCC extension); only valid as a constant.
+            if case .integerLiteral = sizeExpr {
+                return (0, nil)
+            }
         }
         // Non-constant expression: VLA
         return (nil, sizeExpr)
@@ -1555,6 +1579,7 @@ public final class Parser {
             return (params, variadic, returnType)
         }
 
+        var paramVLAExprs: [[Expr]] = []
         while !isPunct(")") && !isAtEnd() {
             if isPunct("...") {
                 advance()
@@ -1564,6 +1589,9 @@ public final class Parser {
 
             let (baseType, _, _, _) = try parseDeclSpecifiers()
             let (paramName, paramType, paramLoc) = try parseDeclarator(baseType)
+            // Capture VLA dimension expressions (for side effects like a++)
+            let vlaExprs = pendingVLASizeExprs
+            pendingVLASizeExprs = []
             // In function params, array types decay to pointers
             var actualType = paramType
             if case .array(let elem, _) = actualType.unqualified {
@@ -1572,6 +1600,7 @@ public final class Parser {
                 actualType = .pointer(to: elem)
             }
             params.append(Param(name: paramName.isEmpty ? nil : paramName, type: actualType, loc: paramLoc))
+            paramVLAExprs.append(vlaExprs)
 
             if !match(kind: .punct, spelling: ",") {
                 break
@@ -1580,6 +1609,7 @@ public final class Parser {
         _ = try consume(kind: .punct, spelling: ")")
         lastFuncParams = params
         lastFuncVariadic = variadic
+        lastFuncParamVLAExprs = paramVLAExprs
         return (params, variadic, returnType)
     }
 
@@ -2719,7 +2749,7 @@ public final class Parser {
         return Double(s) ?? 0.0
     }
 
-    private func parseCharLiteralValue(_ spelling: String) -> UInt8 {
+    private func parseCharLiteralValue(_ spelling: String) -> UInt32 {
         // Strip quotes and prefix
         var s = spelling
         if s.hasPrefix("L") || s.hasPrefix("u") || s.hasPrefix("U") { s = String(s.dropFirst()) }
@@ -2729,7 +2759,8 @@ public final class Parser {
         if s.hasPrefix("\\") {
             return parseEscape(String(s.dropFirst()))
         }
-        return Array(s.utf8).first ?? 0
+        // Use the first Unicode scalar (not first UTF-8 byte) for wide char support
+        return s.unicodeScalars.first.map { $0.value } ?? UInt32(Array(s.utf8).first ?? 0)
     }
 
     /// Count the decoded byte length of a string literal value produced by
@@ -2844,7 +2875,7 @@ public final class Parser {
         return result
     }
 
-    private func parseEscape(_ s: String) -> UInt8 {
+    private func parseEscape(_ s: String) -> UInt32 {
         guard let first = s.first else { return 0 }
         switch first {
         case "a": return 0x07
@@ -2859,19 +2890,48 @@ public final class Parser {
         case "\"": return 0x22
         case "?": return 0x3F
         case "x":
-            // Hex escape: \xHH (up to 2 hex digits)
+            // Hex escape: \xHH (up to 2 hex digits for char, more for wide)
             let hex = String(s.dropFirst())
-            return UInt8(hex.prefix(2), radix: 16) ?? 0
+            return UInt32(hex, radix: 16) ?? 0
         default:
             // Octal escape: \0, \0XX, \1XX, etc. (up to 3 octal digits)
             if first >= "0" && first <= "7" {
-                return UInt8(s.prefix(3), radix: 8) ?? 0
+                return UInt32(s.prefix(3), radix: 8) ?? 0
             }
-            return Array(String(first).utf8).first ?? 0
+            return UInt32(Array(String(first).utf8).first ?? 0)
         }
     }
 
     // MARK: - Constant expression evaluation
+
+    /// Returns true if `expr` is a compile-time integer constant: integer/char
+    /// literals, enum constants, sizeof, or constant folds of the above. Any
+    /// reference to a variable (an identifier that is not an enum constant)
+    /// makes this return false, so VLA dimensions like `n + 1` are recognized
+    /// as variable-length rather than folded against an unknown identifier's
+    /// default value of 0.
+    private func isConstantExpr(_ expr: Expr) -> Bool {
+        switch expr {
+        case .integerLiteral, .charLiteral, .boolLiteral:
+            return true
+        case .floatLiteral:
+            return true
+        case .identifier(let id):
+            return parserEnumConstants[id.name] != nil
+        case .binary(let b):
+            return isConstantExpr(b.left) && isConstantExpr(b.right)
+        case .unary(let u):
+            return isConstantExpr(u.operand)
+        case .conditional(let c):
+            return isConstantExpr(c.condition) && isConstantExpr(c.trueExpr) && isConstantExpr(c.falseExpr)
+        case .cast(let c):
+            return isConstantExpr(c.expr)
+        case .sizeof:
+            return true
+        default:
+            return false
+        }
+    }
 
     private func evalIntConst(_ expr: Expr) -> Int64 {
         switch expr {

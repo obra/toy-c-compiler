@@ -29,6 +29,8 @@ public final class Codegen {
     private var variadicFunctions: Set<String> = []  // functions with variadic params (...)
     private var functionParamCounts: [String: Int] = [:]  // function name → number of named params
     private var functionParamTypes: [String: [CType]] = [:]  // function name → param types
+    private var functionParamVLAExprs: [String: [[Expr]]] = [:]  // function name → VLA dim exprs per param
+    private var globalFuncDecls: [String: FuncDecl] = [:]  // function name → FuncDecl
     private var staticLocalGlobals: [String: String] = [:]  // local name → mangled global name
     private var staticLocalInits: [(name: String, type: CType, init_: Expr, funcName: String)] = []  // pending static initializers
     private var breakLabels: [String] = []      // stack of break targets
@@ -38,6 +40,17 @@ public final class Codegen {
     /// Persistent label addresses across functions: "funcName.labelName" → asm label
     /// Used for static local initializers with &&label (computed goto)
     private var allFunctionLabels: [String: String] = [:]
+    /// Labels that have been emitted (asm label text) so far in the current function.
+    /// Used to detect backward gotos (target already emitted) for VLA deallocation.
+    private var emittedLabels: Set<String> = []
+    /// True if the current function contains any VLA allocation. Set during the
+    /// preRegisterLabels scan so label emission knows to save sp even before the
+    /// VLA decl is reached in emission order.
+    private var functionHasVLA = false
+    /// Stack offset (from x29) of a slot holding the post-fixed-frame sp value,
+    /// saved once in the prologue. Backward gotos in VLA functions restore sp from
+    /// here to deallocate VLAs allocated since function entry. Nil until allocated.
+    private var vlaSpSaveOffset: Int? = nil
     private var vaSaveAreaOffset: Int = 0  // offset from x29 to va register save area (0 = no va)
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
     private var compoundLiterals: [(label: String, type: CType, init_: Expr)] = []
@@ -93,6 +106,9 @@ public final class Codegen {
                             // Array of scalars: count = number of values
                             varType = .array(of: elemType, count: il.values.count)
                         }
+                    } else if case .stringLiteral(let sl) = init_ {
+                        // String/wide-string initializer: use the string literal's array type
+                        varType = sl.type
                     }
                 }
                 globalVarTypes[vd.name] = varType
@@ -116,6 +132,11 @@ public final class Codegen {
                 }
                 functionParamCounts[fd.name] = fd.params.count
                 functionParamTypes[fd.name] = fd.params.map { $0.type }
+                // Store VLA dimension expressions (for side effects at call site)
+                if !fd.paramVLAExprs.isEmpty {
+                    functionParamVLAExprs[fd.name] = fd.paramVLAExprs
+                }
+                globalFuncDecls[fd.name] = fd
             }
         }
 
@@ -232,8 +253,8 @@ public final class Codegen {
                     emitLine(".globl _\(vd.name)")
                     emitLine(".p2align \(p2align)")
                     emitLine("_\(vd.name):")
-                    // Use at least 8 bytes for scalar types, actual size for aggregates
-                    let bssSize = vd.type.isScalar ? max(size, 8) : max(size, 1)
+                    // Use the actual size of the type (at least 1 for zero-size aggregates)
+                    let bssSize = max(size, 1)
                     emitLine(".zero \(bssSize)")
                 }
             }
@@ -495,7 +516,8 @@ public final class Codegen {
                             let unitSize = fieldType.sizeInBytes ?? 4
                             // Process this bitfield
                             var bitVal: UInt64 = 0
-                            if valueIdx < il.values.count {
+                            let fieldName0 = field.name ?? ""
+                            if !fieldName0.isEmpty, valueIdx < il.values.count {
                                 let v = il.values[valueIdx]
                                 valueIdx += 1
                                 if let val = evalConstExpr(v) {
@@ -511,7 +533,10 @@ public final class Codegen {
                                 // (same offset when rounded to unitSize, or overlapping)
                                 let nextOff = rec.fields[nextFieldIdx].offset
                                 if nextOff >= fieldOffset + unitSize { break }
-                                if valueIdx < il.values.count {
+                                // Unnamed bitfields are padding and do NOT consume
+                                // initializer values.
+                                let nextName = rec.fields[nextFieldIdx].name ?? ""
+                                if !nextName.isEmpty, valueIdx < il.values.count {
                                     let nv = il.values[valueIdx]
                                     valueIdx += 1
                                     if let nval = evalConstExpr(nv) {
@@ -521,15 +546,30 @@ public final class Codegen {
                                 }
                                 nextFieldIdx += 1
                             }
-                            // Emit the packed bitfield unit
-                            switch unitSize {
-                            case 1: emitLine(".byte \(bitVal & 0xFF)")
-                            case 2: emitLine(".short \(bitVal & 0xFFFF)")
-                            case 4: emitLine(".long \(bitVal & 0xFFFFFFFF)")
-                            case 8: emitLine(".quad \(bitVal)")
-                            default: emitLine(".long \(bitVal & 0xFFFFFFFF)")
+                            // Emit the packed bitfield unit. If the next field
+                            // starts within this unit (e.g., a 1-bit bitfield
+                            // followed by a char array at byte 1), only emit the
+                            // bytes up to the next field's offset.
+                            let emitSize: Int = {
+                                if nextFieldIdx < rec.fields.count {
+                                    let nextOff = rec.fields[nextFieldIdx].offset
+                                    if nextOff < fieldOffset + unitSize {
+                                        return nextOff - fieldOffset
+                                    }
+                                }
+                                return unitSize
+                            }()
+                            // Emit partial bytes for the bitfield unit
+                            for bi in 0..<emitSize {
+                                let byteVal = (bitVal >> UInt64(bi * 8)) & 0xFF
+                                emitLine(".byte \(byteVal)")
                             }
-                            currentOffset = fieldOffset + unitSize
+                            if emitSize < unitSize {
+                                // The rest of the unit is shared with the next field
+                                currentOffset = fieldOffset + emitSize
+                            } else {
+                                currentOffset = fieldOffset + unitSize
+                            }
                             // Skip consumed bitfield fields
                             fieldIdx = nextFieldIdx
                             continue
@@ -851,8 +891,30 @@ public final class Codegen {
                 emitLine(".quad 0")
             }
         case .cast(let c):
-            // Cast in initializer — just emit the underlying value
-            emitInitializer(c.expr, size: size, type: type)
+            // Cast in initializer — evaluate the constant with the cast applied,
+            // then emit using the variable's type.
+            if let folded = evalConstExpr(expr) {
+                // Emit the folded value directly based on the variable's type
+                if let type = type {
+                    let t = type.unqualified
+                    switch t {
+                    case .bool, .char, .schar, .uchar:
+                        emitLine(".byte \(folded & 0xFF)")
+                    case .short, .ushort:
+                        emitLine(".short \(folded & 0xFFFF)")
+                    case .int, .uint:
+                        emitLine(".long \(folded & 0xFFFFFFFF)")
+                    case .long, .ulong, .longLong, .ulongLong, .pointer, .function:
+                        emitLine(".quad \(folded)")
+                    default:
+                        emitLine(".quad \(folded)")
+                    }
+                } else {
+                    emitLine(".quad \(folded)")
+                }
+            } else {
+                emitInitializer(c.expr, size: size, type: type)
+            }
         case .compoundLiteral(let cl):
             // Compound literal in initializer — emit its init list
             emitInitializer(cl.initList, size: size, type: type)
@@ -1154,7 +1216,24 @@ public final class Codegen {
             default: return val
             }
         case .cast(let c):
-            return evalConstExpr(c.expr)
+            // Apply the cast to the constant value: truncate to the target type's
+            // bit width, then sign-extend if the target type is signed.
+            guard let val = evalConstExpr(c.expr) else { return nil }
+            let toType = c.type.unqualified
+            if toType.isInteger, let size = toType.sizeInBytes, size < 8 {
+                let bits = UInt64(size) * 8
+                let mask = (UInt64(1) << bits) - 1
+                let truncated = UInt64(bitPattern: val) & mask
+                if toType.isSigned {
+                    // Sign-extend from the truncated value
+                    let signBit = UInt64(1) << (bits - 1)
+                    let extended = truncated | (truncated & signBit != 0 ? (~mask) : 0)
+                    return Int64(bitPattern: extended)
+                } else {
+                    return Int64(bitPattern: truncated)
+                }
+            }
+            return val
         case .conditional(let c):
             guard let cond = evalConstExpr(c.condition) else { return nil }
             return cond != 0 ? evalConstExpr(c.trueExpr) : evalConstExpr(c.falseExpr)
@@ -1423,6 +1502,9 @@ public final class Codegen {
         vlaInnerDims = [:]
         vlaAllDims = [:]
         gotoLabels = [:]
+        emittedLabels = []
+        functionHasVLA = false
+        vlaSpSaveOffset = nil
         // Seed gotoLabels with parent's nonlocal labels (after reset)
         for (cname, asmname) in pendingNonlocalLabels {
             gotoLabels[cname] = asmname
@@ -1434,6 +1516,13 @@ public final class Codegen {
         // Pre-register all labels in the function body so that &&label
         // references in initializers before the label definition can resolve.
         preRegisterLabels(fd.body)
+        // If this function has VLAs, allocate a slot to save the post-fixed-frame
+        // sp value. Backward gotos restore sp from this slot to deallocate VLAs.
+        // Allocated before the prologue so its offset is known for the save insn.
+        if functionHasVLA {
+            allocLocal(name: "__vla_sp_save", type: .long)
+            vlaSpSaveOffset = localVarOffsets["__vla_sp_save"]
+        }
         // Pre-register __label__ (nonlocal) labels so nested functions can reference them.
         // These get assembly labels in the parent function's namespace.
         if !fd.localLabels.isEmpty {
@@ -1487,6 +1576,19 @@ public final class Codegen {
         // Allocate space for local variables (will be patched after we know the size)
         let frameAllocLine = "sub sp, sp, #0  ; FRAME_SIZE_PLACEHOLDER"
         emitLine(frameAllocLine)
+        // Save the post-fixed-frame sp for VLA deallocation on backward gotos.
+        // sp here is x29 - frameSize (after the fixed frame is carved out, before
+        // any VLA allocation). VLAs decrement sp further; restoring this value
+        // deallocates all of them.
+        if functionHasVLA, let off = vlaSpSaveOffset {
+            emitLine("mov x16, sp")
+            if off >= -256 && off <= 255 {
+                emitLine("str x16, [x29, #\(off)]")
+            } else {
+                emitLoadImm("x17", Int64(off))
+                emitLine("str x16, [x29, x17]")
+            }
+        }
 
         // Add parameters to local variables
         // Track how many registers each parameter consumes (1 for most types, 2 for 9-16 byte structs)
@@ -1765,6 +1867,13 @@ public final class Codegen {
         case .switch(let s):
             for c in s.cases {
                 preRegisterLabelsStmt(c)
+            }
+        case .decl(let d):
+            // Detect VLA declarations so we know to save/restore sp around labels.
+            for decl in d.decls {
+                if case .varDecl(let vd) = decl, vd.vlaSizeExpr != nil {
+                    functionHasVLA = true
+                }
             }
         default:
             break
@@ -2229,8 +2338,45 @@ public final class Codegen {
                         let funcRet = (currentFunctionReturnType ?? retType).unqualified
                         if (funcRet.isSigned32Bit || funcRet == .uint || funcRet == .ushort || funcRet == .uchar || funcRet == .bool) && !funcRet.isPointer {
                             emitLine("mov w0, \(reg.w)")
+                            // Narrow to the exact return type width so callers see
+                            // the correct sign-extended or zero-extended value.
+                            // E.g. returning signed char: must sxtb so the value
+                            // is correctly sign-extended to 32/64 bits.
+                            if let retSize = funcRet.sizeInBytes, retSize < 4 {
+                                if funcRet.isSigned {
+                                    switch retSize {
+                                    case 1: emitLine("sxtb w0, w0")
+                                    case 2: emitLine("sxth w0, w0")
+                                    default: break
+                                    }
+                                } else {
+                                    switch retSize {
+                                    case 1: emitLine("uxtb w0, w0")
+                                    case 2: emitLine("uxth w0, w0")
+                                    default: break
+                                    }
+                                }
+                            }
                         } else {
                             emitLine("mov x0, \(reg.x)")
+                            // Narrow 64-bit-wide smaller types (e.g. long returning short)
+                            if let retSize = funcRet.sizeInBytes, retSize < 8 {
+                                if funcRet.isSigned {
+                                    switch retSize {
+                                    case 1: emitLine("sxtb x0, w0")
+                                    case 2: emitLine("sxth x0, w0")
+                                    case 4: emitLine("sxtw x0, w0")
+                                    default: break
+                                    }
+                                } else {
+                                    switch retSize {
+                                    case 1: emitLine("uxtb x0, w0")
+                                    case 2: emitLine("uxth x0, w0")
+                                    case 4: emitLine("mov w0, w0")
+                                    default: break
+                                    }
+                                }
+                            }
                         }
                     }
                     regAlloc.free(reg)
@@ -2275,6 +2421,23 @@ public final class Codegen {
                 emitFrameRestore()
                 emitLine("b \(asmLabel)")
             } else {
+                // Backward goto (target label already emitted): if the function has VLAs,
+                // restore sp to the value saved after the fixed frame allocation. This
+                // deallocates any VLAs allocated between the function entry and this goto,
+                // preventing stack growth on loop back-edges. The save slot is always
+                // initialized (written in the prologue path) even if the target label is
+                // in a dead branch (e.g., `if (0) { lab:; }`).
+                if emittedLabels.contains(asmLabel),
+                   functionHasVLA,
+                   let off = vlaSpSaveOffset {
+                    if off >= -256 && off <= 255 {
+                        emitLine("ldr x16, [x29, #\(off)]")
+                    } else {
+                        emitLoadImm("x17", Int64(off))
+                        emitLine("ldr x16, [x29, x17]")
+                    }
+                    emitLine("mov sp, x16")
+                }
                 emitLine("b \(asmLabel)")
             }
 
@@ -2296,6 +2459,7 @@ public final class Codegen {
                 allFunctionLabels["\(currentFuncName).\(l.name)"] = asmLabel
             }
             emitLine("\(asmLabel):")
+            emittedLabels.insert(asmLabel)
             emitStmt(l.stmt)
 
         case .empty:
@@ -3433,17 +3597,26 @@ public final class Codegen {
                 emitLine("str \(leftReg.x), [sp, #-16]!")
             }
             let rightResultReg = emitExpr(b.right)
-            // If rightReg is the same as leftReg, keep right in x17 and use x17 as the right operand
+            // If rightReg is the same as leftReg, keep right in a temp and use it as the right operand
             let rightReg: ARM64Reg
             if rightResultReg == leftReg {
-                emitLine("mov x17, \(rightResultReg.x)")
                 if isFloatOp {
+                    // For float ops, the value is in the FP register (s/d), not the integer register.
+                    // Save the right FP value to stack, restore left from its stack save, then
+                    // load right back into a DIFFERENT FP register (s17/d17).
+                    let fpRightReg = rightType == .float ? "s\(rightResultReg.regNum)" : "d\(rightResultReg.regNum)"
+                    emitLine("str \(fpRightReg), [sp, #-16]!")  // save right FP value
                     let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
-                    emitLine("ldr \(fpLeftReg), [sp], #16")
+                    emitLine("ldr \(fpLeftReg), [sp, #16]")     // restore left FP value
+                    // Load right into s17/d17 (FP register 17, which is not used by scratch regs)
+                    let fpTempReg = rightType == .float ? "s17" : "d17"
+                    emitLine("ldr \(fpTempReg), [sp], #32")  // restore right FP value into s17/d17
+                    rightReg = .x17
                 } else {
+                    emitLine("mov x17, \(rightResultReg.x)")
                     emitLine("ldr \(leftReg.x), [sp], #16")
+                    rightReg = .x17
                 }
-                rightReg = .x17
             } else {
                 if isFloatOp {
                     let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
@@ -4061,12 +4234,25 @@ public final class Codegen {
             // This matches GCC behavior: the RHS is evaluated before reading the LHS,
             // which matters when the RHS has side effects that modify the target.
             let rhsResult = emitExpr(a.value)
+            let rhsType = exprType(a.value).unqualified
+            let rhsIsFloat = rhsType.isFloating
             // Save RHS to stack before loading target (emitExpr may clobber rhsResult)
-            emitLine("str \(rhsResult.x), [sp, #-16]!")
+            // For float RHS, save the FP register (s/d), not the integer register (x).
+            if rhsIsFloat {
+                let fpReg = rhsType == .float ? "s\(rhsResult.regNum)" : "d\(rhsResult.regNum)"
+                emitLine("str \(fpReg), [sp, #-16]!")
+            } else {
+                emitLine("str \(rhsResult.x), [sp, #-16]!")
+            }
             let currentReg = emitExpr(a.target)
             // Restore RHS from stack
             let rhsReg = regAlloc.alloc() ?? .x9
-            emitLine("ldr \(rhsReg.x), [sp], #16")
+            if rhsIsFloat {
+                let fpReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
+                emitLine("ldr \(fpReg), [sp], #16")
+            } else {
+                emitLine("ldr \(rhsReg.x), [sp], #16")
+            }
             _ = rhsResult
 
             // Apply the operation
@@ -4275,9 +4461,9 @@ public final class Codegen {
         let targetType = exprType(a.target).unqualified
         if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct/union assignment: get source address and copy bytes to target
-            let dstReg = emitAddr(a.target)
             // If the RHS is a function call returning a struct, handle it specially.
             if case .call = a.value {
+                let dstReg = emitAddr(a.target)
                 if size <= 16 {
                     // Small struct (≤16 bytes): returned in x0/x1
                     _ = emitExpr(a.value)
@@ -4298,7 +4484,19 @@ public final class Codegen {
                 regAlloc.free(dstReg)
                 return dstReg
             }
+            // Evaluate the source address first (this may allocate stack space
+            // for compound literals, lowering sp). Then evaluate the destination
+            // address. This order ensures dstReg is not clobbered by the RHS
+            // evaluation. We save srcReg to the stack between the two evaluations
+            // since emitAddr(a.target) may clobber it.
             let srcReg = emitAddr(a.value)
+            // Save srcReg to the stack before evaluating the destination, since
+            // emitAddr(a.target) may clobber the register. Push below the
+            // (possibly lowered) sp so the compound literal data above is safe.
+            emitLine("str \(srcReg.x), [sp, #-16]!")
+            let dstReg = emitAddr(a.target)
+            // Restore srcReg from the stack.
+            emitLine("ldr \(srcReg.x), [sp], #16")
             var remaining = size
             var offset = 0
             while remaining >= 8 {
@@ -5088,114 +5286,19 @@ public final class Codegen {
 
         // Old __builtin_popcount handler removed — handled by combined handler above.
 
-        // __builtin_add_overflow(a, b, &res) → 1 if overflow, stores a+b in *res
+        // __builtin_add_overflow(a, b, &res) → 1 if a+b overflows *res's type
         if case .identifier(let id) = c.function, id.name == "__builtin_add_overflow", c.arguments.count >= 3 {
-            let aReg = emitExpr(c.arguments[0])
-            emitLine("str \(aReg.x), [sp, #-16]!")
-            let bReg = emitExpr(c.arguments[1])
-            emitLine("str \(bReg.x), [sp, #-16]!")
-            let ptrReg = emitExpr(c.arguments[2])
-            emitLine("str \(ptrReg.x), [sp, #-16]!")
-            // Load a and b, add with flags
-            emitLine("ldr x9, [sp, #16]")
-            emitLine("ldr x10, [sp, #0]")
-            emitLine("adds x9, x9, x10")
-            // Store result through pointer
-            emitLine("ldr x11, [sp, #0]")
-            // Check if pointer is 32-bit or 64-bit based on the pointed-to type
-            let ptrType = exprType(c.arguments[2]).unqualified
-            if case .pointer(let to) = ptrType {
-                let pointeeType = to.unqualified
-                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
-                    emitLine("str w9, [x11]")
-                } else {
-                    emitLine("str x9, [x11]")
-                }
-            } else {
-                emitLine("str x9, [x11]")
-            }
-            // Return 1 if overflow (C bit set for unsigned, V bit for signed)
-            // For simplicity, check both: cset with cs (carry set = unsigned overflow)
-            // or vs (signed overflow). We'll use cs since most tests use unsigned.
-            let resultReg = regAlloc.alloc() ?? .x9
-            emitLine("cset \(resultReg.w), cs")
-            emitLine("add sp, sp, #48")
-            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
-            return resultReg
+            return emitOverflowBuiltin(c, op: .add)
         }
 
-        // __builtin_sub_overflow(a, b, &res) → 1 if overflow, stores a-b in *res
+        // __builtin_sub_overflow(a, b, &res) → 1 if a-b overflows *res's type
         if case .identifier(let id) = c.function, id.name == "__builtin_sub_overflow", c.arguments.count >= 3 {
-            let aReg = emitExpr(c.arguments[0])
-            emitLine("str \(aReg.x), [sp, #-16]!")
-            let bReg = emitExpr(c.arguments[1])
-            emitLine("str \(bReg.x), [sp, #-16]!")
-            let ptrReg = emitExpr(c.arguments[2])
-            emitLine("str \(ptrReg.x), [sp, #-16]!")
-            emitLine("ldr x9, [sp, #16]")
-            emitLine("ldr x10, [sp, #0]")
-            emitLine("subs x9, x9, x10")
-            emitLine("ldr x11, [sp, #0]")
-            let ptrType = exprType(c.arguments[2]).unqualified
-            if case .pointer(let to) = ptrType {
-                let pointeeType = to.unqualified
-                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
-                    emitLine("str w9, [x11]")
-                } else {
-                    emitLine("str x9, [x11]")
-                }
-            } else {
-                emitLine("str x9, [x11]")
-            }
-            let resultReg = regAlloc.alloc() ?? .x9
-            emitLine("cset \(resultReg.w), cc")
-            emitLine("add sp, sp, #48")
-            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
-            return resultReg
+            return emitOverflowBuiltin(c, op: .sub)
         }
 
-        // __builtin_mul_overflow(a, b, &res) → 1 if overflow, stores a*b in *res
+        // __builtin_mul_overflow(a, b, &res) → 1 if a*b overflows *res's type
         if case .identifier(let id) = c.function, id.name == "__builtin_mul_overflow", c.arguments.count >= 3 {
-            let aReg = emitExpr(c.arguments[0])
-            emitLine("str \(aReg.x), [sp, #-16]!")
-            let bReg = emitExpr(c.arguments[1])
-            emitLine("str \(bReg.x), [sp, #-16]!")
-            let ptrReg = emitExpr(c.arguments[2])
-            emitLine("str \(ptrReg.x), [sp, #-16]!")
-            emitLine("ldr x9, [sp, #16]")
-            emitLine("ldr x10, [sp, #0]")
-            emitLine("mul x9, x9, x10")
-            emitLine("ldr x11, [sp, #0]")
-            let ptrType = exprType(c.arguments[2]).unqualified
-            if case .pointer(let to) = ptrType {
-                let pointeeType = to.unqualified
-                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
-                    emitLine("str w9, [x11]")
-                } else {
-                    emitLine("str x9, [x11]")
-                }
-            } else {
-                emitLine("str x9, [x11]")
-            }
-            // For unsigned 32-bit multiply, overflow if upper 32 bits are non-zero
-            // For 64-bit, we can't easily detect overflow — just return 0
-            let resultReg = regAlloc.alloc() ?? .x9
-            // Check if pointer points to 32-bit type
-            if case .pointer(let to) = ptrType {
-                let pointeeType = to.unqualified
-                if pointeeType.isInteger && (pointeeType.sizeInBytes ?? 8) <= 4 {
-                    emitLine("lsr x12, x9, #32")
-                    emitLine("cmp x12, #0")
-                    emitLine("cset \(resultReg.w), ne")
-                } else {
-                    emitLine("mov \(resultReg.w), #0")
-                }
-            } else {
-                emitLine("mov \(resultReg.w), #0")
-            }
-            emitLine("add sp, sp, #48")
-            regAlloc.free(aReg); regAlloc.free(bReg); regAlloc.free(ptrReg)
-            return resultReg
+            return emitOverflowBuiltin(c, op: .mul)
         }
 
         // __builtin_mul_overflow_p(a, b) → 1 if a*b would overflow, 0 otherwise
@@ -5376,6 +5479,84 @@ public final class Codegen {
             funcName = mapped
         }
 
+        // Get VLA dimension expressions for this function's parameters.
+        // In C99, VLA parameter dimensions (e.g. int b[a++]) are evaluated at
+        // the call site, in parameter order. The dimension expressions reference
+        // earlier parameters by name, so we must evaluate arguments first,
+        // then evaluate the VLA dims with parameter names bound to argument values.
+        let vlaExprsPerParam = functionParamVLAExprs[funcName] ?? []
+        let hasVLADims = !vlaExprsPerParam.isEmpty && vlaExprsPerParam.contains { !$0.isEmpty }
+
+        // Arguments to pass to the function. If VLA dims are present, these
+        // will be replaced with loads from stack slots (see below).
+        var effectiveArgs = c.arguments
+
+        // If the function has VLA parameter dimensions, evaluate arguments to
+        // local stack slots, bind parameter names to those slots, evaluate the
+        // VLA dimension expressions (which may modify argument values via side
+        // effects like a++), then pass the modified values from the slots.
+        if hasVLADims, !funcName.isEmpty, let funcDecl = globalFuncDecls[funcName] {
+            let numArgs = min(c.arguments.count, funcDecl.params.count)
+            // Allocate local stack space for each argument and evaluate into it
+            var argSlotNames: [String] = []
+            var argSlotOffsets: [Int] = []
+            for i in 0..<numArgs {
+                let slotName = "__vla_arg_\(i)"
+                allocLocal(name: slotName, type: .long)  // 8 bytes
+                argSlotOffsets.append(localVarOffsets[slotName]!)
+                argSlotNames.append(slotName)
+                // Evaluate argument and store to slot
+                let argReg = emitExpr(c.arguments[i])
+                let off = argSlotOffsets[i]
+                if off >= -256 && off <= 255 {
+                    emitLine("str \(argReg.x), [x29, #\(off)]")
+                } else {
+                    emitLoadImm("x16", Int64(off))
+                    emitLine("str \(argReg.x), [x29, x16]")
+                }
+                regAlloc.free(argReg)
+            }
+            // Temporarily bind parameter names to the stack slots
+            var savedOffsets: [String: Int?] = [:]
+            var savedTypes: [String: CType?] = [:]
+            for i in 0..<numArgs {
+                let paramName = funcDecl.params[i].name ?? ""
+                if !paramName.isEmpty {
+                    savedOffsets[paramName] = localVarOffsets[paramName]
+                    savedTypes[paramName] = localVarTypes[paramName]
+                    localVarOffsets[paramName] = argSlotOffsets[i]
+                    localVarTypes[paramName] = funcDecl.params[i].type
+                }
+            }
+            // Evaluate VLA dimension expressions in parameter order
+            for i in 0..<vlaExprsPerParam.count {
+                for dimExpr in vlaExprsPerParam[i] {
+                    let reg = emitExpr(dimExpr)
+                    regAlloc.free(reg)
+                }
+            }
+            // Restore local variable bindings
+            for (name, oldOff) in savedOffsets {
+                if let off = oldOff {
+                    localVarOffsets[name] = off
+                } else {
+                    localVarOffsets.removeValue(forKey: name)
+                }
+            }
+            for (name, oldType) in savedTypes {
+                if let t = oldType {
+                    localVarTypes[name] = t
+                } else {
+                    localVarTypes.removeValue(forKey: name)
+                }
+            }
+            // Replace argument expressions with loads from the stack slots
+            // by creating identifier expressions that reference the slot names
+            for i in 0..<numArgs {
+                effectiveArgs[i] = .identifier(Identifier(name: argSlotNames[i], loc: c.loc))
+            }
+        }
+
         // Check if this is a variadic function (e.g., printf)
         // On Apple ARM64, named args go in registers x0..x(N-1), variadic args go on the stack.
         let variadicNamedParams: [String: Int] = [
@@ -5394,7 +5575,7 @@ public final class Codegen {
         let namedParamCount = variadicNamedParams[funcName]
 
         // For variadic functions: named args in registers, variadic args on stack
-        if let namedCount = namedParamCount, c.arguments.count > namedCount {
+        if let namedCount = namedParamCount, effectiveArgs.count > namedCount {
             // Evaluate named args and save on stack (they may be clobbered by
             // variadic arg evaluation, e.g. printf(fmt, func_call(...)))
             // Track sp before and after arg evaluation to account for stack-allocating
@@ -5402,8 +5583,8 @@ public final class Codegen {
             emitLine("str x19, [sp, #-16]!")
             emitLine("mov x19, sp")
             var namedArgRegs: [ARM64Reg] = []
-            for i in 0..<min(namedCount, c.arguments.count) {
-                let argReg = emitExpr(c.arguments[i])
+            for i in 0..<min(namedCount, effectiveArgs.count) {
+                let argReg = emitExpr(effectiveArgs[i])
                 emitLine("str \(argReg.x), [sp, #-16]!")
                 namedArgRegs.append(argReg)
                 regAlloc.free(argReg)
@@ -5412,11 +5593,11 @@ public final class Codegen {
             // Evaluate variadic args, saving each to temp stack immediately
             var variadicArgRegs: [ARM64Reg] = []
             var variadicArgIsFloat: [Bool] = []  // track float args for correct store/load
-            for i in namedCount..<c.arguments.count {
-                let argType = exprType(c.arguments[i]).unqualified
+            for i in namedCount..<effectiveArgs.count {
+                let argType = exprType(effectiveArgs[i]).unqualified
                 let isFloatArg = argType.isFloating
                 variadicArgIsFloat.append(isFloatArg)
-                let argReg = emitExpr(c.arguments[i])
+                let argReg = emitExpr(effectiveArgs[i])
                 if isFloatArg {
                     // Variadic functions promote float to double (default argument promotion).
                     // Always save as double (8 bytes) so the load-back is correct.
@@ -5435,8 +5616,8 @@ public final class Codegen {
             // x19 = sp before args. Current sp = sp after all pushes + extra allocations.
             // The pushes themselves account for (namedCount + numVariadicArgs) * 16 bytes.
             // x20 = extra = (x19 - sp) - pushes
-            let numVariadicArgs = c.arguments.count - namedCount
-            let totalPushSize = (min(namedCount, c.arguments.count) + numVariadicArgs) * 16
+            let numVariadicArgs = effectiveArgs.count - namedCount
+            let totalPushSize = (min(namedCount, effectiveArgs.count) + numVariadicArgs) * 16
             emitLine("mov x9, sp")
             emitLine("sub x20, x19, x9")
             if totalPushSize > 0 {
@@ -5484,7 +5665,7 @@ public final class Codegen {
             }
 
             // Restore named args from temp stack into their target registers.
-            for i in 0..<min(namedCount, c.arguments.count) {
+            for i in 0..<min(namedCount, effectiveArgs.count) {
                 let tempOffset = totalSize + variadicTempSize + (namedCount - 1 - i) * 16
                 emitLine("add x21, sp, #\(tempOffset)")
                 emitLine("ldr \(argRegs[i].x), [x21, x20]")
@@ -5507,7 +5688,7 @@ public final class Codegen {
                 emitAddSP(totalSize)
             }
             // Free the temp stack for named args and variadic args
-            for _ in 0..<(min(namedCount, c.arguments.count) + numVariadicArgs) {
+            for _ in 0..<(min(namedCount, effectiveArgs.count) + numVariadicArgs) {
                 emitLine("add sp, sp, #16")
             }
             // Free extra stack allocated during arg evaluation (e.g., compound literals)
@@ -5569,7 +5750,7 @@ public final class Codegen {
             var floatArgs: Set<Int> = []  // indices of float/double args (go in d0-d7)
             var hfaArgs: [Int: (count: Int, isFloat: Bool)] = [:]  // HFA struct args
             let paramTypes = functionParamTypes[funcName] ?? indirectParamTypes
-            for (i, arg) in c.arguments.enumerated() {
+            for (i, arg) in effectiveArgs.enumerated() {
                 let argType = exprType(arg).unqualified
                 // Use the declared parameter type to determine if the arg should be float.
                 // This handles implicit int→float conversion for function calls (e.g., sin(2)).
@@ -6725,6 +6906,7 @@ public final class Codegen {
             // For pointers: use emitExpr (load pointer value)
             let baseTypeFull = exprType(s.base).unqualified
             let baseReg: ARM64Reg
+            var baseSpilled = false
             if baseTypeFull.isArray {
                 // Array subscript: get address of the array, don't load its value
                 baseReg = emitAddr(s.base)
@@ -6737,7 +6919,19 @@ public final class Codegen {
                 // Pointer subscript: load the pointer value
                 baseReg = emitExpr(s.base)
             }
+            // Spill the base address to the stack before evaluating the index,
+            // to avoid register exhaustion in deeply nested subscripts (e.g., a[a[a[...]]]).
+            // The index expression may need many registers; without spilling, the
+            // register pool (x9-x15) can be exhausted, causing the fallback `?? .x9`
+            // to clobber the base register.
+            emitLine("str \(baseReg.x), [sp, #-16]!")
+            baseSpilled = true
+            regAlloc.free(baseReg)
             let indexReg = emitExpr(s.index)
+            // Reload the base address from the stack
+            let baseReg2 = regAlloc.alloc() ?? .x9
+            emitLine("ldr \(baseReg2.x), [sp], #16")
+            baseSpilled = false
             // Sign-extend the index if it's a 32-bit signed type (e.g., negative array indices)
             let indexType = exprType(s.index).unqualified
             if indexType.isSigned32Bit {
@@ -6774,38 +6968,38 @@ public final class Codegen {
                 // Multiply by inner element size
                 let innerElemSize = innerElemType.unqualified.sizeInBytes ?? 4
                 if innerElemSize == 4 {
-                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #2")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #2")
                 } else if innerElemSize == 8 {
-                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #3")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #3")
                 } else if innerElemSize == 2 {
-                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #1")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #1")
                 } else if innerElemSize == 1 {
-                    emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x)")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x)")
                 } else {
                     emitLoadImm("x17", Int64(innerElemSize))
-                    emitLine("madd \(baseReg.x), \(indexReg.x), x17, \(baseReg.x)")
+                    emitLine("madd \(baseReg2.x), \(indexReg.x), x17, \(baseReg2.x)")
                 }
                 regAlloc.free(indexReg)
-                return baseReg
+                return baseReg2
             }
 
             let elemSize = elemType.unqualified.isPointer ? 8 : (elemType.sizeInBytes ?? 4)
             // addr = base + index * elemSize
             if elemSize == 1 {
-                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x)")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x)")
             } else if elemSize == 2 {
-                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #1")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #1")
             } else if elemSize == 4 {
-                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #2")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #2")
             } else if elemSize == 8 {
-                emitLine("add \(baseReg.x), \(baseReg.x), \(indexReg.x), lsl #3")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #3")
             } else {
                 // Use mul for non-power-of-2 or large element sizes
                 emitLine("mov x16, #\(elemSize)")
-                emitLine("madd \(baseReg.x), \(indexReg.x), x16, \(baseReg.x)")
+                emitLine("madd \(baseReg2.x), \(indexReg.x), x16, \(baseReg2.x)")
             }
             regAlloc.free(indexReg)
-            return baseReg
+            return baseReg2
 
         case .member(let m):
             let baseReg: ARM64Reg
@@ -6882,6 +7076,26 @@ public final class Codegen {
             // freeing the temp would clobber it. The temp will be freed by
             // the post-call cleanup (emitAddSP for tempStackSize).
             return addrReg
+
+        case .stmtExpr(let se):
+            // Statement expression: delegate to the last expression's address.
+            // This is needed when the stmtExpr returns a struct (e.g., ({ bar(); })
+            // used in a struct assignment context). emitAddr on the inner call
+            // will allocate temp stack and store the struct return value there.
+            let stmts = se.body.statements
+            if let lastStmt = stmts.last, case .expr(let es) = lastStmt, let e = es.expr {
+                for stmt in stmts.dropLast() {
+                    _ = emitStmt(stmt)
+                }
+                return emitAddr(e)
+            }
+            // No expression as last statement — evaluate all and return 0
+            for stmt in stmts {
+                _ = emitStmt(stmt)
+            }
+            let reg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(reg.x), #0")
+            return reg
 
         default:
             // Not an lvalue — just evaluate
@@ -7332,7 +7546,25 @@ public final class Codegen {
                 let fieldOffset = field.offset
                 let fieldSize = field.type.sizeInBytes ?? 0
                 if fieldSize == 0 {
-                    if valueIdx < il.values.count { valueIdx += 1 }
+                    if hasDesignators {
+                        // Check if any designator targets this zero-sized field
+                        let fieldName = field.name ?? ""
+                        if !fieldName.isEmpty, let indices = designatedFields[fieldName] {
+                            for idx in indices {
+                                let dv = il.values[idx]
+                                // Evaluate for side effects (e.g. function calls)
+                                let reg = emitExpr(dv)
+                                regAlloc.free(reg)
+                            }
+                        }
+                    } else {
+                        if valueIdx < il.values.count { valueIdx += 1 }
+                    }
+                    continue
+                }
+                // Unnamed bitfields are padding and do NOT consume init values.
+                let fieldName = field.name ?? ""
+                if fieldName.isEmpty && field.bitWidth != nil {
                     continue
                 }
                 // Check if this field has a designator
@@ -7425,6 +7657,70 @@ public final class Codegen {
                             let ptrReg = emitExpr(u.operand)
                             emitStructCopyToField("x16", ptrReg, field.type.sizeInBytes ?? 0)
                             regAlloc.free(ptrReg)
+                        } else if let bw = field.bitWidth {
+                            // Designated bitfield: read-modify-write within the
+                            // containing allocation unit (same logic as a normal
+                            // bitfield member store). x16 holds the unit address.
+                            let unitSize = field.type.sizeInBytes ?? 4
+                            emitLine("str x16, [sp, #8]")
+                            let valReg = emitExpr(v)
+                            emitLine("ldr x16, [sp, #8]")
+                            // Load the containing unit
+                            switch unitSize {
+                            case 1: emitLine("ldrb w17, [x16]")
+                            case 2: emitLine("ldrh w17, [x16]")
+                            case 4: emitLine("ldr w17, [x16]")
+                            case 8: emitLine("ldr x17, [x16]")
+                            default: emitLine("ldr w17, [x16]")
+                            }
+                            // Clear the bitfield bits in w17
+                            let bitfieldMask: UInt64 = ((UInt64(1) << UInt64(bw)) - 1) << UInt64(field.bitOffset)
+                            let clearMask: UInt64 = ~bitfieldMask
+                            if clearMask <= 255 {
+                                emitLine("and x17, x17, #\(clearMask)")
+                            } else {
+                                emitLine("mov x9, #\(clearMask & 0xffff)")
+                                if clearMask > 0xffff {
+                                    emitLine("movk x9, #\((clearMask >> 16) & 0xffff), lsl #16")
+                                }
+                                if clearMask > 0xffffff {
+                                    emitLine("movk x9, #\((clearMask >> 32) & 0xffff), lsl #32")
+                                }
+                                if clearMask > 0xffffffffffff {
+                                    emitLine("movk x9, #\((clearMask >> 48) & 0xffff), lsl #48")
+                                }
+                                emitLine("and x17, x17, x9")
+                            }
+                            // Shift and mask the new value
+                            if field.bitOffset > 0 {
+                                emitLine("lsl \(valReg.x), \(valReg.x), #\(field.bitOffset)")
+                            }
+                            let valueMask: UInt64 = ((UInt64(1) << UInt64(bw)) - 1) << UInt64(field.bitOffset)
+                            if valueMask <= 255 {
+                                emitLine("and \(valReg.x), \(valReg.x), #\(valueMask)")
+                            } else {
+                                emitLine("mov x9, #\(valueMask & 0xffff)")
+                                if valueMask > 0xffff {
+                                    emitLine("movk x9, #\((valueMask >> 16) & 0xffff), lsl #16")
+                                }
+                                if valueMask > 0xffffff {
+                                    emitLine("movk x9, #\((valueMask >> 32) & 0xffff), lsl #32")
+                                }
+                                if valueMask > 0xffffffffffff {
+                                    emitLine("movk x9, #\((valueMask >> 48) & 0xffff), lsl #48")
+                                }
+                                emitLine("and \(valReg.x), \(valReg.x), x9")
+                            }
+                            emitLine("orr x17, x17, \(valReg.x)")
+                            // Store the unit back
+                            switch unitSize {
+                            case 1: emitLine("strb w17, [x16]")
+                            case 2: emitLine("strh w17, [x16]")
+                            case 4: emitLine("str w17, [x16]")
+                            case 8: emitLine("str x17, [x16]")
+                            default: emitLine("str w17, [x16]")
+                            }
+                            regAlloc.free(valReg)
                         } else {
                             // Scalar value — store to field address
                             // Save x16 (field address) to sp+8 before emitExpr clobbers it
@@ -7720,6 +8016,20 @@ public final class Codegen {
                         emitLine("str x16, [sp, #8]")
                         let valReg = emitExpr(v)
                         emitLine("ldr x16, [sp, #8]")
+                        // Convert int to float/double if element type is floating
+                        let valType = exprType(v).unqualified
+                        if valType.isInteger && (elemType.unqualified == .float || elemType.unqualified == .double) {
+                            let cvt = elemType.unqualified == .float ? "scvtf" : "scvtf"
+                            let fpReg = elemType.unqualified == .float ? "s\(valReg.regNum)" : "d\(valReg.regNum)"
+                            if valType.isSigned32Bit {
+                                emitLine("sxtw \(valReg.x), \(valReg.w)")
+                            }
+                            emitLine("\(cvt) \(fpReg), \(valReg.x)")
+                        } else if valType == .float && elemType.unqualified == .double {
+                            emitLine("fcvt d\(valReg.regNum), s\(valReg.regNum)")
+                        } else if valType == .double && elemType.unqualified == .float {
+                            emitLine("fcvt s\(valReg.regNum), d\(valReg.regNum)")
+                        }
                         emitStoreToAddrRaw("x16", valReg, type: elemType)
                         regAlloc.free(valReg)
                     }
@@ -7738,6 +8048,9 @@ public final class Codegen {
         for field in rec.fields {
             let fieldSize = field.type.sizeInBytes ?? 0
             if fieldSize == 0 { continue }
+            // Unnamed bitfields are padding and do NOT consume init values.
+            let fn = field.name ?? ""
+            if fn.isEmpty && field.bitWidth != nil { continue }
             let fieldOffset = field.offset
             let fieldType = field.type.unqualified
             if idx < allValues.count {
@@ -7798,6 +8111,200 @@ public final class Codegen {
                     regAlloc.free(valReg)
                 }
             }
+        }
+    }
+
+    /// Emit __builtin_{add,sub,mul}_overflow(a, b, &res).
+    /// Computes the exact (infinite-precision) result of `a op b`, stores the
+    /// value truncated to the result type (the pointee of arg2) through the
+    /// pointer, and returns 1 iff the exact result does not fit in the result
+    /// type. This matches GCC semantics: the operands keep their true values
+    /// (signed operands as signed, unsigned as unsigned), and overflow is
+    /// determined solely by whether the exact result fits in the result type.
+    private func emitOverflowBuiltin(_ c: CallExpr, op: BinaryOp) -> ARM64Reg {
+        // Result type R = pointee of the third argument (must be a pointer).
+        var rType: CType = .int
+        if case .pointer(let to) = exprType(c.arguments[2]).unqualified {
+            rType = to.unqualified
+        }
+        let wR = rType.sizeInBytes ?? 4
+        let sRSigned = rType.isSigned
+
+        // Promoted width/signedness of each operand (C integer promotion:
+        // types smaller than int promote to signed int; enums → signed int).
+        func promoted(_ expr: Expr) -> (width: Int, signed: Bool) {
+            let t = exprType(expr).unqualified
+            let w = t.sizeInBytes ?? 4
+            if w < 4 { return (4, true) }
+            if case .enumType = t { return (4, true) }
+            return (w, t.isSigned)
+        }
+        let (wA, sA) = promoted(c.arguments[0])
+        let (wB, sB) = promoted(c.arguments[1])
+
+        // Evaluate all three arguments and spill to the stack so later
+        // emitExpr calls can't clobber them. Stack layout after pushes:
+        //   [sp+0] = arg2 (result pointer), [sp+16] = arg1, [sp+32] = arg0.
+        let aReg = emitExpr(c.arguments[0])
+        emitLine("str \(aReg.x), [sp, #-16]!")
+        regAlloc.free(aReg)
+        let bReg = emitExpr(c.arguments[1])
+        emitLine("str \(bReg.x), [sp, #-16]!")
+        regAlloc.free(bReg)
+        let pReg = emitExpr(c.arguments[2])
+        emitLine("str \(pReg.x), [sp, #-16]!")
+        regAlloc.free(pReg)
+
+        // Load operands into x9 (a) and x10 (b), then extend each to 64 bits
+        // according to its promoted type (signed → sign-extend, unsigned →
+        // zero-extend). Width 8 needs no extension.
+        emitLine("ldr x9, [sp, #32]")
+        emitLine("ldr x10, [sp, #16]")
+        emitExtendTo64("x9", width: wA, signed: sA)
+        emitExtendTo64("x10", width: wB, signed: sB)
+
+        // Compute the exact result T as a signed 128-bit value (hi:x12, lo:x11).
+        // The low 64 bits are always the plain op result; the high 64 bits are
+        // derived per operation and operand signedness.
+        let lblNegA = newLabel()
+        let lblNegB = newLabel()
+        switch op {
+        case .add:
+            emitLine("adds x11, x9, x10")          // lo; sets C (carry) and V (signed ovf)
+            if sA && sB {
+                // both signed: hi = -((bit63 of lo) XOR V) ∈ {0, -1}
+                emitLine("cset x16, vs")
+                emitLine("lsr x17, x11, #63")
+                emitLine("eor x16, x16, x17")
+                emitLine("neg x12, x16")
+            } else if !sA && !sB {
+                // both unsigned: hi = C ∈ {0, 1}
+                emitLine("cset x12, cs")
+            } else if sA && !sB {
+                // a signed, b unsigned: hi = C - (a<0 ? 1 : 0)
+                emitLine("cset x12, cs")
+                emitLine("tbz x9, #63, \(lblNegA)")
+                emitLine("sub x12, x12, #1")
+                emitLine("\(lblNegA):")
+            } else {
+                // a unsigned, b signed: hi = C - (b<0 ? 1 : 0)
+                emitLine("cset x12, cs")
+                emitLine("tbz x10, #63, \(lblNegB)")
+                emitLine("sub x12, x12, #1")
+                emitLine("\(lblNegB):")
+            }
+        case .sub:
+            emitLine("subs x11, x9, x10")          // lo; C=carry (no borrow), V=signed ovf
+            if sA && sB {
+                // both signed: hi = -((bit63 of lo) XOR V) ∈ {0, -1}
+                emitLine("cset x16, vs")
+                emitLine("lsr x17, x11, #63")
+                emitLine("eor x16, x16, x17")
+                emitLine("neg x12, x16")
+            } else if !sA && !sB {
+                // both unsigned: hi = -1 if borrow (C clear), else 0
+                emitLine("cset x16, cc")
+                emitLine("neg x12, x16")
+            } else if sA && !sB {
+                // a signed, b unsigned: hi = (C?0:-1) - (a<0 ? 1 : 0)
+                emitLine("cset x16, cc")
+                emitLine("neg x12, x16")
+                emitLine("tbz x9, #63, \(lblNegA)")
+                emitLine("sub x12, x12, #1")
+                emitLine("\(lblNegA):")
+            } else {
+                // a unsigned, b signed: hi = (C?0:-1) + (b<0 ? 1 : 0)
+                emitLine("cset x16, cc")
+                emitLine("neg x12, x16")
+                emitLine("tbz x10, #63, \(lblNegB)")
+                emitLine("add x12, x12, #1")
+                emitLine("\(lblNegB):")
+            }
+        case .mul:
+            emitLine("mul x11, x9, x10")           // lo (low 64 bits of product)
+            if sA && sB {
+                // both signed: high 64 bits of signed product
+                emitLine("smulh x12, x9, x10")
+            } else if !sA && !sB {
+                // both unsigned: high 64 bits of unsigned product
+                emitLine("umulh x12, x9, x10")
+            } else if sA && !sB {
+                // a signed, b unsigned: hi = umulh - (a<0 ? b : 0)
+                emitLine("umulh x12, x9, x10")
+                emitLine("tbz x9, #63, \(lblNegA)")
+                emitLine("sub x12, x12, x10")
+                emitLine("\(lblNegA):")
+            } else {
+                // a unsigned, b signed: hi = umulh - (b<0 ? a : 0)
+                emitLine("umulh x12, x9, x10")
+                emitLine("tbz x10, #63, \(lblNegB)")
+                emitLine("sub x12, x12, x9")
+                emitLine("\(lblNegB):")
+            }
+        default:
+            emitLine("mov x11, #0")
+            emitLine("mov x12, #0")
+        }
+
+        // Store the low wR bits of lo (x11) through the result pointer.
+        emitLine("ldr x15, [sp, #0]")
+        emitStoreToAddr(.x15, .x11, type: rType)
+
+        // Compute S = extend(truncate(lo, wR), sR) into x13, then S_hi into x14
+        // (sign of S for signed R, 0 for unsigned R). overflow = (hi != S_hi)
+        // || (lo != S), i.e. the exact result T differs from its R-typed value.
+        emitComputeS("x13", from: "x11", width: wR, signed: sRSigned)
+        if sRSigned {
+            emitLine("asr x14, x13, #63")
+        } else {
+            emitLine("mov x14, #0")
+        }
+
+        emitLine("cmp x12, x14")
+        emitLine("cset x16, ne")
+        emitLine("cmp x11, x13")
+        emitLine("cset x17, ne")
+
+        emitLine("add sp, sp, #48")
+
+        let resultReg = regAlloc.alloc() ?? .x9
+        emitLine("orr \(resultReg.w), w16, w17")
+        return resultReg
+    }
+
+    /// Extend the value in 64-bit register `reg` (e.g. "x9") to a full 64-bit
+    /// value per a promoted integer type of the given width/signedness. Width 8
+    /// needs no extension; width 4 sign-extends (signed) or zero-extends (unsigned).
+    private func emitExtendTo64(_ reg: String, width: Int, signed: Bool) {
+        guard width == 4 else { return }  // width 8 already 64-bit
+        let w = "w" + reg.dropFirst()  // "x9" → "w9"
+        if signed {
+            emitLine("sxtw \(reg), \(w)")
+        } else {
+            emitLine("mov \(w), \(w)")  // zero-extend to 64 bits
+        }
+    }
+
+    /// Compute S = the result-type-typed value of `src` (a 64-bit register name)
+    /// into 64-bit register `dst`, by truncating to `width` bytes and extending
+    /// per `signed`.
+    private func emitComputeS(_ dst: String, from src: String, width: Int, signed: Bool) {
+        let wDst = "w" + dst.dropFirst()
+        let wSrc = "w" + src.dropFirst()
+        switch width {
+        case 8:
+            emitLine("mov \(dst), \(src)")
+        case 4:
+            if signed { emitLine("sxtw \(dst), \(wSrc)") }
+            else { emitLine("mov \(wDst), \(wSrc)") }
+        case 2:
+            if signed { emitLine("sxth \(dst), \(wSrc)") }
+            else { emitLine("uxth \(dst), \(wSrc)") }
+        case 1:
+            if signed { emitLine("sxtb \(dst), \(wSrc)") }
+            else { emitLine("uxtb \(dst), \(wSrc)") }
+        default:
+            emitLine("mov \(dst), \(src)")
         }
     }
 
