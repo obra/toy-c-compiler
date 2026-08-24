@@ -6061,7 +6061,19 @@ public final class Codegen {
             }
             if case .structType(let rec) = recordType.unqualified {
                 for field in rec.fields {
-                    if (field.name ?? "") == m.memberName { return resolveIncompleteTypes(field.type) }
+                    if (field.name ?? "") == m.memberName {
+                        let ft = resolveIncompleteTypes(field.type)
+                        // Integer promotion for bitfields: if the bitfield width
+                        // fits in int, promote to signed int. If it fits in unsigned
+                        // int, promote to unsigned int.
+                        if let bw = field.bitWidth, bw < 32 {
+                            return .int  // small bitfields promote to signed int
+                        } else if let bw = field.bitWidth, bw == 32 {
+                            // 32-bit bitfields keep their declared type
+                            return ft
+                        }
+                        return ft
+                    }
                     if (field.name ?? "").isEmpty {
                         if fieldHasMember(field.type, m.memberName) {
                             return findMemberType(field.type, m.memberName)
@@ -6071,7 +6083,13 @@ public final class Codegen {
             }
             if case .unionType(let rec) = recordType.unqualified {
                 for field in rec.fields {
-                    if (field.name ?? "") == m.memberName { return resolveIncompleteTypes(field.type) }
+                    if (field.name ?? "") == m.memberName {
+                        let ft = resolveIncompleteTypes(field.type)
+                        if let bw = field.bitWidth, bw < 32 {
+                            return .int
+                        }
+                        return ft
+                    }
                     if (field.name ?? "").isEmpty {
                         if fieldHasMember(field.type, m.memberName) {
                             return findMemberType(field.type, m.memberName)
