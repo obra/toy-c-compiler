@@ -3907,6 +3907,43 @@ public final class Codegen {
             let valReg = regAlloc.alloc() ?? .x9
             // Determine the increment size (1 for scalars, sizeof(pointed) for pointers)
             let operandType = exprType(u.operand).unqualified
+
+            // Floating-point pre/post inc/dec
+            if operandType.isFloating {
+                let fpPrefix = operandType == .float ? "s" : "d"
+                let valFp = operandType == .float ? "s\(valReg.regNum)" : "d\(valReg.regNum)"
+                emitLine("ldr \(valFp), [\(addrReg.x)]")
+                let oneReg = regAlloc.alloc() ?? .x10
+                let oneFp = operandType == .float ? "s\(oneReg.regNum)" : "d\(oneReg.regNum)"
+                emitLine("fmov \(oneFp), #1.0")
+                let resultReg: ARM64Reg
+                if u.op == .postInc || u.op == .postDec {
+                    let origReg = regAlloc.alloc() ?? .x11
+                    emitLine("fmov \(operandType == .float ? "s\(origReg.regNum)" : "d\(origReg.regNum)"), \(valFp)")
+                    if u.op == .postInc {
+                        emitLine("fadd \(valFp), \(valFp), \(oneFp)")
+                    } else {
+                        emitLine("fsub \(valFp), \(valFp), \(oneFp)")
+                    }
+                    emitLine("str \(valFp), [\(addrReg.x)]")
+                    regAlloc.free(valReg)
+                    regAlloc.free(oneReg)
+                    regAlloc.free(addrReg)
+                    resultReg = origReg
+                } else {
+                    if u.op == .preInc {
+                        emitLine("fadd \(valFp), \(valFp), \(oneFp)")
+                    } else {
+                        emitLine("fsub \(valFp), \(valFp), \(oneFp)")
+                    }
+                    emitLine("str \(valFp), [\(addrReg.x)]")
+                    regAlloc.free(oneReg)
+                    regAlloc.free(addrReg)
+                    resultReg = valReg
+                }
+                return resultReg
+            }
+
             let incSize: Int
             if operandType.isPointer {
                 if case .pointer(let to) = operandType {
