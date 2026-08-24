@@ -2670,6 +2670,27 @@ public final class Codegen {
                     }
                     return reg
                 }
+                // If the local is a struct/union, return the address (not the value)
+                if let t = localVarTypes[id.name],
+                   case .structType = t.unqualified {
+                    if offset >= -256 && offset <= 255 {
+                        emitLine("add \(reg.x), x29, #\(offset)")
+                    } else {
+                        emitLoadImm("x16", Int64(offset))
+                        emitLine("add \(reg.x), x29, x16")
+                    }
+                    return reg
+                }
+                if let t = localVarTypes[id.name],
+                   case .unionType = t.unqualified {
+                    if offset >= -256 && offset <= 255 {
+                        emitLine("add \(reg.x), x29, #\(offset)")
+                    } else {
+                        emitLoadImm("x16", Int64(offset))
+                        emitLine("add \(reg.x), x29, x16")
+                    }
+                    return reg
+                }
                 // Type-aware load for local variables
                 if let t = localVarTypes[id.name] {
                     // Get address first, then use emitLoad
