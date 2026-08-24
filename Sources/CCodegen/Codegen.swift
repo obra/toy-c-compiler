@@ -8389,17 +8389,29 @@ public final class Codegen {
                 // descend to the leaf element type to get the correct stride.
                 // e.g., int a[1][4] = {11, 12, 13, 14} fills individual ints,
                 // not int[4] elements.
+                // But if values contain nested initLists (e.g., {{1,2},{3}}),
+                // use the original element size as the stride.
+                let hasNestedInitList = il.values.contains { where_ in
+                    if case .initList = where_ { return true }
+                    if case .compoundLiteral = where_ { return true }
+                    return false
+                }
                 var leafType = elemType
                 while case .array(let inner, _) = leafType.unqualified {
                     leafType = inner
                 }
-                let leafSize = leafType.unqualified.sizeInBytes ?? 8
-                let elemSize = leafType.unqualified.sizeInBytes ?? 8
-                _ = elemSize
+                let stride: Int
+                if hasNestedInitList {
+                    // Nested braces: each value is a complete subarray
+                    stride = elemType.sizeInBytes ?? 8
+                } else {
+                    // Flat init: use leaf element size
+                    stride = leafType.unqualified.sizeInBytes ?? 8
+                }
                 for (i, v) in il.values.enumerated() {
                     emitLine("ldr x16, [sp, #0]")
                     if i > 0 {
-                        emitLine("add x16, x16, #\(i * leafSize)")
+                        emitLine("add x16, x16, #\(i * stride)")
                     }
                     if case .initList = v {
                         let elemAddr = regAlloc.alloc() ?? .x9
