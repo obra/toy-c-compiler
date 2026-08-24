@@ -28,4 +28,7 @@ void *memset(void *s, int c, unsigned long n);
 int memcmp(const void *s1, const void *s2, unsigned long n);
 void *memchr(const void *s, int c, unsigned long n);
 
+/* GNU extension: mempcpy returns dest + n (pointer to byte after last written) */
+void *mempcpy(void *dest, const void *src, unsigned long n);
+
 #endif /* _STRING_H */
