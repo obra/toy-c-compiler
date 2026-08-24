@@ -8,15 +8,18 @@ public struct Macro: Equatable {
     public let name: String
     public let isFunctionLike: Bool
     public let isVariadic: Bool
+    public let hasNamedVariadic: Bool  // true if variadic is named (args...), false for ...
     public let params: [String]      // parameter names (empty for object-like)
     public let body: [Token]         // replacement tokens
     public let loc: SourceLoc
 
     public init(name: String, isFunctionLike: Bool, isVariadic: Bool,
+                hasNamedVariadic: Bool = false,
                 params: [String], body: [Token], loc: SourceLoc) {
         self.name = name
         self.isFunctionLike = isFunctionLike
         self.isVariadic = isVariadic
+        self.hasNamedVariadic = hasNamedVariadic
         self.params = params
         self.body = body
         self.loc = loc
@@ -360,7 +363,7 @@ public final class MacroExpander {
         if macro.isVariadic {
             // For named variadic (e.g. #define f(args...)), the last param
             // collects all remaining args and also maps to __VA_ARGS__.
-            let nFixedParams = macro.isVariadic && macro.params.last != "__VA_ARGS__"
+            let nFixedParams = macro.hasNamedVariadic
                 ? macro.params.count - 1  // last param is the variadic name
                 : macro.params.count
             var vaArgs: [Token] = []
@@ -372,7 +375,7 @@ public final class MacroExpander {
             }
             argMap["__VA_ARGS__"] = vaArgs
             // Also map the named variadic param (e.g. args) to the same tokens
-            if macro.params.count > nFixedParams {
+            if macro.hasNamedVariadic && macro.params.count > nFixedParams {
                 argMap[macro.params[nFixedParams]] = vaArgs
             }
         }

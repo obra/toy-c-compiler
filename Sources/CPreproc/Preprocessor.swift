@@ -506,6 +506,7 @@ public final class Preprocessor {
         var rest = Array(tokens.dropFirst())
         var isFunctionLike = false
         var isVariadic = false
+        var hasNamedVariadic = false
         var params: [String] = []
 
         // Check for function-like macro: ( immediately after name (no space)
@@ -543,6 +544,7 @@ public final class Preprocessor {
                         // Check if next is ... (named variadic)
                         if !rest.isEmpty && rest[0].kind == .punct && rest[0].spelling == "..." {
                             isVariadic = true
+                            hasNamedVariadic = true
                             // Use the param name as __VA_ARGS__ alias
                             rest = Array(rest.dropFirst())
                             if !rest.isEmpty && rest[0].kind == .punct && rest[0].spelling == ")" {
@@ -558,7 +560,8 @@ public final class Preprocessor {
         }
 
         let macro = Macro(name: nameToken.spelling, isFunctionLike: isFunctionLike,
-                          isVariadic: isVariadic, params: params, body: rest, loc: nameToken.loc)
+                          isVariadic: isVariadic, hasNamedVariadic: hasNamedVariadic,
+                          params: params, body: rest, loc: nameToken.loc)
         macroTable.define(macro)
     }
 

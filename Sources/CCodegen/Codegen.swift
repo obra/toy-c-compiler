@@ -4294,6 +4294,14 @@ public final class Codegen {
             regAlloc.free(dstReg)
             return .x9  // return a dummy register
         }
+        // Zero-sized struct assignment: nothing to copy, but still evaluate RHS for side effects
+        if isAggregateType(targetType), targetType.sizeInBytes == nil || targetType.sizeInBytes == 0 {
+            // Evaluate RHS address (not value) to trigger side effects like f++
+            _ = emitAddr(a.value)
+            // Also evaluate the target for side effects (e.g., f++ in *((struct g*)(f++)))
+            _ = emitAddr(a.target)
+            return .x9
+        }
         let valueReg = emitExpr(a.value)
         // Convert float type if needed (e.g., double→float for assignment to float var)
         let valueType = exprType(a.value).unqualified
