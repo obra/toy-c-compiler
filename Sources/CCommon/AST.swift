@@ -76,11 +76,14 @@ public struct FuncDecl: Equatable {
     /// Names of parent local variables that the nested function accesses.
     /// These are accessed via the parent's frame pointer passed as a hidden argument.
     public var capturedLocals: [String]
+    /// Names of __label__ declarations (GNU nonlocal labels) in this function.
+    public var localLabels: [String]
 
     public init(name: String, returnType: CType, params: [Param], variadic: Bool,
                 body: CompoundStmt? = nil, storageClass: StorageClass = .none,
                 isInline: Bool = false, loc: SourceLoc,
-                parentFuncName: String? = nil, capturedLocals: [String] = []) {
+                parentFuncName: String? = nil, capturedLocals: [String] = [],
+                localLabels: [String] = []) {
         self.name = name
         self.returnType = returnType
         self.params = params
@@ -91,6 +94,7 @@ public struct FuncDecl: Equatable {
         self.loc = loc
         self.parentFuncName = parentFuncName
         self.capturedLocals = capturedLocals
+        self.localLabels = localLabels
     }
 }
 

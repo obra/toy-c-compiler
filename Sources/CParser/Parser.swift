@@ -147,6 +147,9 @@ public final class Parser {
     /// Nested function definitions discovered during function body parsing.
     /// These are hoisted to the top level (without access to parent locals).
     private var pendingNestedFunctions: [FuncDecl] = []
+    /// Collects __label__ names encountered while parsing a function body.
+    /// Uses a stack: each function scope pushes a new collection.
+    private var pendingLocalLabelsStack: [[String]] = [[]]
 
     public init(_ tokens: [Token], diags: DiagnosticEngine = DiagnosticEngine()) {
         // Filter out EOF for easier processing, we'll add it back at the end
@@ -514,6 +517,8 @@ public final class Parser {
                 let savedVariadic = lastFuncVariadic
                 let savedFuncName = currentFuncName
                 currentFuncName = name
+                // Push a new label scope for this function
+                pendingLocalLabelsStack.append([])
 
                 // K&R-style: parse parameter declaration list before the {
                 // e.g., foo(p) int *p; { ... }
@@ -544,6 +549,8 @@ public final class Parser {
 
                 let body = try parseCompoundStmt()
                 currentFuncName = savedFuncName
+                // Pop label scope for this function
+                let labels = pendingLocalLabelsStack.removeLast()
                 // Extract the return type from the function type
                 let returnType: CType
                 if case .function(_, let ret, _) = type {
@@ -554,7 +561,8 @@ public final class Parser {
                 let funcDecl = FuncDecl(name: name, returnType: returnType,
                                         params: savedParams,
                                         variadic: savedVariadic,
-                                        body: body, storageClass: storageClass, isInline: isInline, loc: loc)
+                                        body: body, storageClass: storageClass, isInline: isInline, loc: loc,
+                                        localLabels: labels)
                 return .funcDecl(funcDecl)
             }
 
@@ -1790,7 +1798,10 @@ public final class Parser {
             if isKeyword("__label__") {
                 advance() // consume __label__
                 while !isPunct(";") && !isAtEnd() {
-                    if current().kind == .identifier { advance() }
+                    if current().kind == .identifier {
+                        pendingLocalLabelsStack[pendingLocalLabelsStack.count - 1].append(current().spelling)
+                        advance()
+                    }
                     if !match(kind: .punct, spelling: ",") { break }
                 }
                 _ = try consume(kind: .punct, spelling: ";")
@@ -1867,7 +1878,9 @@ public final class Parser {
             // Check for nested function definition: type is function and next is '{'
             if case .function = type, isPunct("{") {
                 // Parse the nested function body and hoist it as a top-level function
+                pendingLocalLabelsStack.append([])
                 let body = try parseCompoundStmt()
+                let labels = pendingLocalLabelsStack.removeLast()
                 // Use the params from lastFuncParams (has names) instead of the type
                 let retType: CType = {
                     if case .function(_, let r, _) = type { return r }
@@ -1876,7 +1889,8 @@ public final class Parser {
                 let fd = FuncDecl(name: name, returnType: retType,
                                   params: lastFuncParams, variadic: lastFuncVariadic,
                                   body: body, storageClass: .static, isInline: false, loc: dloc,
-                                  parentFuncName: currentFuncName)
+                                  parentFuncName: currentFuncName,
+                                  localLabels: labels)
                 pendingNestedFunctions.append(fd)
                 // Register the function name as a global so calls work
                 globalVarTypes[name] = type

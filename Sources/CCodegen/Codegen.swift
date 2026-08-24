@@ -57,6 +57,15 @@ public final class Codegen {
     private var functionLocalTypes: [String: [String: CType]] = [:]
     /// Set of nested function names (functions with a parentFuncName).
     private var nestedFunctions: Set<String> = []
+    /// __label__ declarations for the current function (nonlocal labels).
+    private var currentLocalLabels: [String] = []
+    /// Nonlocal labels accessible from nested functions: "funcName" → [labelName → asmLabel]
+    private var functionNonlocalLabels: [String: [String: String]] = [:]
+    /// Set of label names that are nonlocal (parent's __label__) in the current function.
+    /// Used to emit nonlocal gotos (restore frame + branch to parent).
+    private var nonlocalLabelNames: Set<String> = []
+    /// Temporary storage for parent's nonlocal labels, applied after gotoLabels reset.
+    private var pendingNonlocalLabels: [String: String] = [:]
 
     public init(enumConstants: [String: Int64] = [:]) {
         self.enumConstants = enumConstants
@@ -1391,6 +1400,8 @@ public final class Codegen {
         // We save it to x20 (callee-saved) for use throughout the function.
         let isNested = fd.parentFuncName != nil
         isCurrentNested = isNested
+        nonlocalLabelNames = []
+        currentLocalLabels = fd.localLabels
         if isNested {
             nestedFunctions.insert(fd.name)
             // Load parent locals from the saved functionLocals map
@@ -1401,17 +1412,46 @@ public final class Codegen {
                 if let parentTypes = functionLocalTypes[parentName] {
                     localVarTypes.merge(parentTypes) { (_, new) in new }
                 }
+                // Seed gotoLabels with parent's nonlocal (__label__) labels
+                // (after the gotoLabels reset below, so we use a temporary)
+                if let parentLabels = functionNonlocalLabels[parentName] {
+                    pendingNonlocalLabels = parentLabels
+                }
             }
         }
         vlaBasePointers = []
         vlaInnerDims = [:]
         vlaAllDims = [:]
         gotoLabels = [:]
+        // Seed gotoLabels with parent's nonlocal labels (after reset)
+        for (cname, asmname) in pendingNonlocalLabels {
+            gotoLabels[cname] = asmname
+            nonlocalLabelNames.insert(cname)
+        }
+        pendingNonlocalLabels = [:]
         frameSize = 0
         labelCounter = 0
         // Pre-register all labels in the function body so that &&label
         // references in initializers before the label definition can resolve.
         preRegisterLabels(fd.body)
+        // Pre-register __label__ (nonlocal) labels so nested functions can reference them.
+        // These get assembly labels in the parent function's namespace.
+        if !fd.localLabels.isEmpty {
+            var nonlocalMap: [String: String] = [:]
+            for lname in fd.localLabels {
+                let asmLabel: String
+                if let existing = gotoLabels[lname] {
+                    asmLabel = existing
+                } else {
+                    labelCounter += 1
+                    asmLabel = "L_\(fd.name)_G\(labelCounter)"
+                    gotoLabels[lname] = asmLabel
+                }
+                nonlocalMap[lname] = asmLabel
+                allFunctionLabels["\(fd.name).\(lname)"] = asmLabel
+            }
+            functionNonlocalLabels[fd.name] = nonlocalMap
+        }
         // Save static local map so function-specific statics don't leak to other functions
         let savedStaticLocals = staticLocalGlobals
 
@@ -1630,16 +1670,21 @@ public final class Codegen {
     private var isCurrentNested = false
 
     private func emitEpilogue() {
-        // Restore sp to frame pointer before loading fp/lr
+        emitFrameRestore()
+        emitLine("ret")
+    }
+
+    /// Restore the frame pointer and saved registers without returning.
+    /// Used for nonlocal gotos that need to unwind the nested function frame
+    /// and then branch to a parent label.
+    private func emitFrameRestore() {
         emitLine("mov sp, x29")
         if isCurrentNested {
-            // Nested function: also restore x18 (static chain) and use 32-byte pop
             emitLine("ldr x18, [sp, #16]")
             emitLine("ldp x29, x30, [sp], #32")
         } else {
             emitLine("ldp x29, x30, [sp], #16")
         }
-        emitLine("ret")
     }
 
     // MARK: - Local variable management
@@ -2211,7 +2256,14 @@ public final class Codegen {
                 gotoLabels[g.label] = asmLabel
                 allFunctionLabels["\(currentFuncName).\(g.label)"] = asmLabel
             }
-            emitLine("b \(asmLabel)")
+            if nonlocalLabelNames.contains(g.label) {
+                // Nonlocal goto: restore nested function frame, then branch to parent label.
+                // This jumps from a nested function back to a label in the parent function.
+                emitFrameRestore()
+                emitLine("b \(asmLabel)")
+            } else {
+                emitLine("b \(asmLabel)")
+            }
 
         case .computedGoto(let g):
             // Computed goto: branch to the address in the expression
