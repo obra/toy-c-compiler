@@ -1504,10 +1504,30 @@ public final class Parser {
         // Handle designators: [index] = val, [start ... end] = val, .field = val,
         // and nested designators like .a.j = 5 or [0].b = 3
         outerLoop: while !isPunct("}") && !isAtEnd() {
+            var fieldDesignators: [String] = []  // e.g., ["a", "j"] for .a.j
+            // Check for old GNU designator syntax: field: value (instead of .field = value)
+            if current().kind == .identifier && next().kind == .punct && next().spelling == ":" {
+                let fieldName = advance().spelling
+                advance() // consume ':'
+                fieldDesignators.append(fieldName)
+                // Value can be a nested init list or an expression
+                let val: Expr
+                if isPunct("{") {
+                    val = try parseInitList()
+                } else {
+                    val = try parseAssignmentExpr()
+                }
+                values.append(val)
+                designators.append(fieldDesignators)
+                if !match(kind: .punct, spelling: ",") {
+                    break
+                }
+                continue
+            }
             // Parse designators (may be multiple: .a.j, [0].b, etc.)
             var hasRangeDesignator = false
             var singleArrayIndex: Int? = nil  // [index] = value (non-range)
-            var fieldDesignators: [String] = []  // e.g., ["a", "j"] for .a.j
+            // fieldDesignators already declared above
             while isPunct("[") || isPunct(".") {
                 if isPunct("[") {
                     // Array designator [index] or [start ... end]
@@ -1710,7 +1730,7 @@ public final class Parser {
             }
             if isKeyword("sizeof") || isKeyword("__alignof__") || isKeyword("__alignof") ||
                isKeyword("_Alignof") || isKeyword("__real__") || isKeyword("__imag__") ||
-               isKeyword("__extension__") || isKeyword("__typeof") || isKeyword("__typeof__") {
+               isKeyword("__typeof") || isKeyword("__typeof__") {
                 // These keywords start an expression statement — fall through to expression parsing
             } else {
                 // Declaration (starts with a type keyword)
