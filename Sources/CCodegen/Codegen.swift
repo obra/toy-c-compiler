@@ -910,10 +910,19 @@ public final class Codegen {
             }
             return nil
         case .member(let m):
-            // struct.member
+            // struct.member or struct_ptr->member
             if let (sym, baseOff) = resolveSymbolAndOffset(m.base) {
-                let baseType = exprType(m.base).unqualified
+                var baseType = exprType(m.base).unqualified
+                // For arrow (->), dereference the pointer to get the struct type
+                if m.isArrow {
+                    if case .pointer(let to) = baseType { baseType = to.unqualified }
+                    else if case .array(let elem, _) = baseType { baseType = elem.unqualified }
+                }
                 if case .structType(let rec) = baseType,
+                   let field = rec.fields.first(where: { $0.name == m.memberName }) {
+                    return (sym, baseOff + Int64(field.offset))
+                }
+                if case .unionType(let rec) = baseType,
                    let field = rec.fields.first(where: { $0.name == m.memberName }) {
                     return (sym, baseOff + Int64(field.offset))
                 }
@@ -926,8 +935,12 @@ public final class Codegen {
             // Try both orderings: symbol + const, const + symbol
             if let (sym, off) = resolveSymbolAndOffset(b.left), let constVal = evalConstExpr(b.right) {
                 let pointeeSize: Int = {
-                    if case .pointer(let to) = exprType(b.left).unqualified {
+                    let lt = exprType(b.left).unqualified
+                    if case .pointer(let to) = lt {
                         return to.unqualified.sizeInBytes ?? 1
+                    }
+                    if case .array(let elem, _) = lt {
+                        return elem.sizeInBytes ?? 1
                     }
                     return 1
                 }()
@@ -936,8 +949,12 @@ public final class Codegen {
             }
             if let (sym, off) = resolveSymbolAndOffset(b.right), let constVal = evalConstExpr(b.left) {
                 let pointeeSize: Int = {
-                    if case .pointer(let to) = exprType(b.right).unqualified {
+                    let rt = exprType(b.right).unqualified
+                    if case .pointer(let to) = rt {
                         return to.unqualified.sizeInBytes ?? 1
+                    }
+                    if case .array(let elem, _) = rt {
+                        return elem.sizeInBytes ?? 1
                     }
                     return 1
                 }()
