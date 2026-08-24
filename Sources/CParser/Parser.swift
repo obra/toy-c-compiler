@@ -2601,6 +2601,13 @@ public final class Parser {
         var isUnsigned = false
         var isLong = false
         var isLongLong = false
+        var isImaginary = false
+
+        // Strip imaginary suffix (i, I, j, J) — GNU extension
+        if s.hasSuffix("i") || s.hasSuffix("I") || s.hasSuffix("j") || s.hasSuffix("J") {
+            isImaginary = true
+            s = String(s.dropLast())
+        }
 
         // Strip suffixes
         while s.hasSuffix("u") || s.hasSuffix("U") || s.hasSuffix("l") || s.hasSuffix("L") {

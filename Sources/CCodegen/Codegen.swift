@@ -2825,7 +2825,7 @@ public final class Codegen {
             } else {
                 size = 0
             }
-            emitLine("mov \(reg.x), #\(size)")
+            emitLoadImm(reg.x, Int64(size))
             return reg
 
         case .compoundLiteral(let cl):

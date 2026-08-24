@@ -325,6 +325,7 @@ public final class Lexer {
     }
 
     /// Consume an integer suffix (U, L, UL, LL, ULL, etc., case-insensitive, any order).
+    /// Also handles imaginary suffix i/I/j/J (GNU extension).
     private func lexIntegerSuffix() {
         var sawU = false
         var sawL = 0
@@ -338,6 +339,13 @@ public final class Lexer {
                 pos += 1
             } else {
                 break
+            }
+        }
+        // Optional imaginary suffix: i I j J (GNU extension)
+        if pos < bytes.count {
+            let b = bytes[pos]
+            if b == 0x69 || b == 0x49 || b == 0x6A || b == 0x4A { // i I j J
+                pos += 1
             }
         }
     }
