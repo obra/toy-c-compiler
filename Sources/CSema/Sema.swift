@@ -61,6 +61,12 @@ public final class Sema {
     public private(set) var enumConstants: [String: Int64] = [:]
     private var functionReturnType: CType = .int
     private var inFunction: Bool = false
+    /// When analyzing a nested function, parent locals are not in scope.
+    /// We suppress "undeclared identifier" errors for these and let the
+    /// codegen resolve them via the static chain.
+    private var inNestedFunction: Bool = false
+    /// Parent function's local variable names (for suppressing errors)
+    private var parentLocalNames: Set<String> = []
     /// Labels seen in the current function (for &&label computed goto support)
     private var functionLabels: Set<String> = []
 
@@ -198,11 +204,26 @@ public final class Sema {
 
     // MARK: - Function body analysis
 
+    /// Saved local variable names from each function, for nested function analysis.
+    private var functionLocalNames: [String: Set<String>] = [:]
+    /// Current function name being analyzed
+    private var currentFuncName: String = ""
+
     private func analyzeFunctionBody(_ fd: FuncDecl, body: CompoundStmt) {
+        let savedFuncName = currentFuncName
+        currentFuncName = fd.name
         currentScope = Scope(parent: globalScope, isFunctionScope: true)
         inFunction = true
         functionReturnType = resolveType(fd.returnType)
         functionLabels.removeAll()
+
+        // Check if this is a nested function
+        let wasNested = inNestedFunction
+        let savedParentLocals = parentLocalNames
+        if fd.parentFuncName != nil {
+            inNestedFunction = true
+            parentLocalNames = functionLocalNames[fd.parentFuncName!] ?? []
+        }
 
         // Add parameters to scope
         for param in fd.params {
@@ -214,8 +235,50 @@ public final class Sema {
 
         analyzeCompoundStmt(body)
 
+        // Save this function's local names for nested functions
+        var localNames: Set<String> = []
+        collectLocalNames(from: body, into: &localNames)
+        // Also add parameter names
+        for param in fd.params {
+            if let pn = param.name { localNames.insert(pn) }
+        }
+        functionLocalNames[fd.name] = localNames
+
         currentScope = globalScope
         inFunction = false
+        inNestedFunction = wasNested
+        parentLocalNames = savedParentLocals
+        currentFuncName = savedFuncName
+    }
+
+    /// Collect local variable names from a compound statement
+    private func collectLocalNames(from cs: CompoundStmt, into names: inout Set<String>) {
+        for stmt in cs.statements {
+            collectLocalNames(from: stmt, into: &names)
+        }
+    }
+
+    private func collectLocalNames(from stmt: Stmt, into names: inout Set<String>) {
+        switch stmt {
+        case .decl(let ds):
+            for d in ds.decls {
+                if case .varDecl(let vd) = d, vd.storageClass != .extern {
+                    names.insert(vd.name)
+                }
+            }
+        case .compound(let cs):
+            collectLocalNames(from: cs, into: &names)
+        case .if(let i):
+            collectLocalNames(from: i.thenStmt, into: &names)
+            if let e = i.elseStmt { collectLocalNames(from: e, into: &names) }
+        case .while(let w): collectLocalNames(from: w.body, into: &names)
+        case .doWhile(let d): collectLocalNames(from: d.body, into: &names)
+        case .for(let f): collectLocalNames(from: f.body, into: &names)
+        case .switch(let s):
+            for c in s.cases { collectLocalNames(from: c, into: &names) }
+        case .label(let l): collectLocalNames(from: l.stmt, into: &names)
+        default: break
+        }
     }
 
     /// Recursively collect label names from statements (for computed goto support).
@@ -405,6 +468,11 @@ public final class Sema {
             // don't error — it's valid
             if functionLabels.contains(id.name) {
                 return .pointer(to: .void)
+            }
+            // In nested functions, parent locals are accessed via static chain.
+            // Suppress the error and return int (codegen will handle resolution).
+            if inNestedFunction && parentLocalNames.contains(id.name) {
+                return .int
             }
             diags.error("use of undeclared identifier '\(id.name)'", at: id.loc)
             return .int

@@ -71,10 +71,16 @@ public struct FuncDecl: Equatable {
     public var storageClass: StorageClass
     public var isInline: Bool
     public let loc: SourceLoc
+    /// Name of the parent function if this is a nested function (nil = top-level)
+    public var parentFuncName: String?
+    /// Names of parent local variables that the nested function accesses.
+    /// These are accessed via the parent's frame pointer passed as a hidden argument.
+    public var capturedLocals: [String]
 
     public init(name: String, returnType: CType, params: [Param], variadic: Bool,
                 body: CompoundStmt? = nil, storageClass: StorageClass = .none,
-                isInline: Bool = false, loc: SourceLoc) {
+                isInline: Bool = false, loc: SourceLoc,
+                parentFuncName: String? = nil, capturedLocals: [String] = []) {
         self.name = name
         self.returnType = returnType
         self.params = params
@@ -83,6 +89,8 @@ public struct FuncDecl: Equatable {
         self.storageClass = storageClass
         self.isInline = isInline
         self.loc = loc
+        self.parentFuncName = parentFuncName
+        self.capturedLocals = capturedLocals
     }
 }
 

@@ -1875,7 +1875,8 @@ public final class Parser {
                 }()
                 let fd = FuncDecl(name: name, returnType: retType,
                                   params: lastFuncParams, variadic: lastFuncVariadic,
-                                  body: body, storageClass: .static, isInline: false, loc: dloc)
+                                  body: body, storageClass: .static, isInline: false, loc: dloc,
+                                  parentFuncName: currentFuncName)
                 pendingNestedFunctions.append(fd)
                 // Register the function name as a global so calls work
                 globalVarTypes[name] = type

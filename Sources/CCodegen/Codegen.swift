@@ -47,6 +47,16 @@ public final class Codegen {
     /// we temporarily remove the local from localVarOffsets and restore it when
     /// the block scope ends.
     private var externShadowStack: [(name: String, savedOffset: Int)] = []
+    /// Parent function locals for nested functions: name → offset from parent's x29.
+    /// When emitting a nested function, these are accessed via the static chain (x18).
+    private var parentLocals: [String: Int] = [:]
+    /// Map from function name → its localVarOffsets, saved when the function is emitted.
+    /// Used to populate parentLocals for nested functions.
+    private var functionLocals: [String: [String: Int]] = [:]
+    /// Map from function name → its localVarTypes, saved when the function is emitted.
+    private var functionLocalTypes: [String: [String: CType]] = [:]
+    /// Set of nested function names (functions with a parentFuncName).
+    private var nestedFunctions: Set<String> = []
 
     public init(enumConstants: [String: Int64] = [:]) {
         self.enumConstants = enumConstants
@@ -125,6 +135,13 @@ public final class Codegen {
 
         // Emit text section (code)
         emitLine(".text")
+
+        // Pre-scan: identify all nested functions so callers know to pass x18
+        for decl in decls {
+            if case .funcDecl(let fd) = decl, fd.body != nil, fd.parentFuncName != nil {
+                nestedFunctions.insert(fd.name)
+            }
+        }
 
         for decl in decls {
             if case .funcDecl(let fd) = decl, fd.body != nil {
@@ -1368,6 +1385,24 @@ public final class Codegen {
         localOffset = 0
         localVarOffsets = [:]
         localVarTypes = [:]
+
+        // If this is a nested function, set up parent locals access.
+        // The parent's frame pointer is passed in x18 (AAPCS64 platform register).
+        // We save it to x20 (callee-saved) for use throughout the function.
+        let isNested = fd.parentFuncName != nil
+        isCurrentNested = isNested
+        if isNested {
+            nestedFunctions.insert(fd.name)
+            // Load parent locals from the saved functionLocals map
+            if let parentName = fd.parentFuncName {
+                if let parentOffsets = functionLocals[parentName] {
+                    parentLocals = parentOffsets
+                }
+                if let parentTypes = functionLocalTypes[parentName] {
+                    localVarTypes.merge(parentTypes) { (_, new) in new }
+                }
+            }
+        }
         vlaBasePointers = []
         vlaInnerDims = [:]
         vlaAllDims = [:]
@@ -1381,13 +1416,24 @@ public final class Codegen {
         let savedStaticLocals = staticLocalGlobals
 
         emitLine("")
-        emitLine(".globl _\(fd.name)")
-        emitLine(".p2align 2")
-        emitLine("_\(fd.name):")
-
-        // Prologue: save fp and lr, set up frame pointer
-        emitLine("stp x29, x30, [sp, #-16]!")
-        emitLine("mov x29, sp")
+        if isNested {
+            // Nested function: don't emit .globl (it's static)
+            emitLine(".p2align 2")
+            emitLine("_\(fd.name):")
+            // Prologue: save fp, lr, and x18 (static chain from parent)
+            emitLine("stp x29, x30, [sp, #-32]!")
+            emitLine("str x18, [sp, #16]")  // save static chain
+            emitLine("mov x29, sp")
+            // Move x18 (parent frame pointer) to x20 for use throughout the function
+            emitLine("mov x20, x18")
+        } else {
+            emitLine(".globl _\(fd.name)")
+            emitLine(".p2align 2")
+            emitLine("_\(fd.name):")
+            // Prologue: save fp and lr, set up frame pointer
+            emitLine("stp x29, x30, [sp, #-16]!")
+            emitLine("mov x29, sp")
+        }
 
         // For variadic functions: the caller pushes variadic args on the stack
         // (our internal variadic calling convention). The args are above the
@@ -1572,12 +1618,27 @@ public final class Codegen {
 
         // Restore static local map so function-specific statics don't leak
         staticLocalGlobals = savedStaticLocals
+
+        // Save this function's local offsets for nested functions
+        functionLocals[fd.name] = localVarOffsets
+        functionLocalTypes[fd.name] = localVarTypes
+
+        // Clear parent locals
+        parentLocals = [:]
     }
+
+    private var isCurrentNested = false
 
     private func emitEpilogue() {
         // Restore sp to frame pointer before loading fp/lr
         emitLine("mov sp, x29")
-        emitLine("ldp x29, x30, [sp], #16")
+        if isCurrentNested {
+            // Nested function: also restore x18 (static chain) and use 32-byte pop
+            emitLine("ldr x18, [sp, #16]")
+            emitLine("ldp x29, x30, [sp], #32")
+        } else {
+            emitLine("ldp x29, x30, [sp], #16")
+        }
         emitLine("ret")
     }
 
@@ -2536,6 +2597,21 @@ public final class Codegen {
                     emitLoad(reg, type: t)
                 } else {
                     emitLoadFP(reg.x, offset)
+                }
+                return reg
+            } else if let parentOffset = parentLocals[id.name] {
+                // Parent local (nested function): access via x20 (saved parent frame pointer)
+                let reg = regAlloc.alloc() ?? .x9
+                if let t = localVarTypes[id.name] {
+                    if parentOffset >= -256 && parentOffset <= 255 {
+                        emitLine("add \(reg.x), x20, #\(parentOffset)")
+                    } else {
+                        emitLoadImm("x16", Int64(parentOffset))
+                        emitLine("add \(reg.x), x20, x16")
+                    }
+                    emitLoad(reg, type: t)
+                } else {
+                    emitLoadFP(reg.x, parentOffset)
                 }
                 return reg
             } else if let globalName = staticLocalGlobals[id.name] {
@@ -5185,6 +5261,10 @@ public final class Codegen {
 
             // Make the call
             if !funcName.isEmpty {
+                // If calling a nested function, pass parent frame pointer in x18
+                if nestedFunctions.contains(funcName) {
+                    emitLine("mov x18, x29")
+                }
                 emitLine("bl _\(funcName)")
             }
 
@@ -5697,6 +5777,10 @@ public final class Codegen {
                 emitLoadSP(fpReg.x, fpOffset)
                 emitLine("blr \(fpReg.x)")
             } else if !funcName.isEmpty {
+                // If calling a nested function, pass parent frame pointer in x18
+                if nestedFunctions.contains(funcName) {
+                    emitLine("mov x18, x29")
+                }
                 emitLine("bl _\(funcName)")
             }
 
@@ -6329,6 +6413,14 @@ public final class Codegen {
                     // Use x17 as scratch for large offsets (x16 is used for blr)
                     emitLoadImm("x17", Int64(offset))
                     emitLine("add \(reg.x), x29, x17")
+                }
+            } else if let parentOffset = parentLocals[id.name] {
+                // Parent local (nested functions): access via x20
+                if parentOffset >= -4095 && parentOffset <= 4095 {
+                    emitLine("add \(reg.x), x20, #\(parentOffset)")
+                } else {
+                    emitLoadImm("x17", Int64(parentOffset))
+                    emitLine("add \(reg.x), x20, x17")
                 }
             } else if let globalName = staticLocalGlobals[id.name] {
                 // Static local variable — use its mangled global name
