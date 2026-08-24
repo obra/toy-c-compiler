@@ -8287,11 +8287,21 @@ public final class Codegen {
                     elemI += 1
                 }
             } else {
-                let elemSize = elemType.sizeInBytes ?? 8
+                // For multi-dimensional arrays with flat initialization (no nested braces),
+                // descend to the leaf element type to get the correct stride.
+                // e.g., int a[1][4] = {11, 12, 13, 14} fills individual ints,
+                // not int[4] elements.
+                var leafType = elemType
+                while case .array(let inner, _) = leafType.unqualified {
+                    leafType = inner
+                }
+                let leafSize = leafType.unqualified.sizeInBytes ?? 8
+                let elemSize = leafType.unqualified.sizeInBytes ?? 8
+                _ = elemSize
                 for (i, v) in il.values.enumerated() {
                     emitLine("ldr x16, [sp, #0]")
                     if i > 0 {
-                        emitLine("add x16, x16, #\(i * elemSize)")
+                        emitLine("add x16, x16, #\(i * leafSize)")
                     }
                     if case .initList = v {
                         let elemAddr = regAlloc.alloc() ?? .x9
@@ -8303,7 +8313,7 @@ public final class Codegen {
                         emitLine("mov \(elemAddr.x), x16")
                         emitLocalInit(elemAddr, cl.initList, type: elemType)
                         regAlloc.free(elemAddr)
-                    } else if case .stringLiteral(let sl) = v, case .array(let charElem, let charCount) = elemType.unqualified, charElem.isChar {
+                    } else if case .stringLiteral(let sl) = v, case .array(let charElem, let charCount) = leafType.unqualified, charElem.isChar {
                         // String literal for char array element — copy bytes inline
                         let label = addStringLiteral(sl.value)
                         emitLine("adrp x14, \(label)@PAGE")
@@ -8333,19 +8343,19 @@ public final class Codegen {
                         emitLine("ldr x16, [sp, #8]")
                         // Convert int to float/double if element type is floating
                         let valType = exprType(v).unqualified
-                        if valType.isInteger && (elemType.unqualified == .float || elemType.unqualified == .double) {
-                            let cvt = elemType.unqualified == .float ? "scvtf" : "scvtf"
-                            let fpReg = elemType.unqualified == .float ? "s\(valReg.regNum)" : "d\(valReg.regNum)"
+                        if valType.isInteger && (leafType.unqualified == .float || leafType.unqualified == .double) {
+                            let cvt = leafType.unqualified == .float ? "scvtf" : "scvtf"
+                            let fpReg = leafType.unqualified == .float ? "s\(valReg.regNum)" : "d\(valReg.regNum)"
                             if valType.isSigned32Bit {
                                 emitLine("sxtw \(valReg.x), \(valReg.w)")
                             }
                             emitLine("\(cvt) \(fpReg), \(valReg.x)")
-                        } else if valType == .float && elemType.unqualified == .double {
+                        } else if valType == .float && leafType.unqualified == .double {
                             emitLine("fcvt d\(valReg.regNum), s\(valReg.regNum)")
-                        } else if valType == .double && elemType.unqualified == .float {
+                        } else if valType == .double && leafType.unqualified == .float {
                             emitLine("fcvt s\(valReg.regNum), d\(valReg.regNum)")
                         }
-                        emitStoreToAddrRaw("x16", valReg, type: elemType)
+                        emitStoreToAddrRaw("x16", valReg, type: leafType)
                         regAlloc.free(valReg)
                     }
                 }
