@@ -1630,6 +1630,8 @@ public final class Parser {
             let loc = advance().loc
             // Skip __volatile__ if present
             if isKeyword("__volatile__") || isKeyword("volatile") { advance() }
+            // Skip 'goto' for asm goto (GNU extension: asm goto("" : : : : label))
+            if isKeyword("goto") { advance() }
             if isPunct("(") {
                 advance()
                 // Skip everything inside the asm parens, collecting the first string literal
