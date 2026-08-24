@@ -2243,6 +2243,31 @@ public final class Codegen {
                                     }
                                     emitStructCopyToField(dstAddr.x, srcAddr, structSize)
                                     regAlloc.free(dstAddr)
+                                } else if case .unionType = varType, let unionSize = varType.sizeInBytes, unionSize > 0 {
+                                    // For union copy, get the source address (not value)
+                                    let srcAddr: ARM64Reg
+                                    if case .identifier = init_ {
+                                        srcAddr = emitAddr(init_)
+                                    } else if case .subscript_ = init_ {
+                                        srcAddr = emitAddr(init_)
+                                    } else if case .member = init_ {
+                                        srcAddr = emitAddr(init_)
+                                    } else if case .unary(let u) = init_, u.op == .dereference {
+                                        srcAddr = emitAddr(init_)
+                                    } else {
+                                        srcAddr = emitExpr(init_)
+                                    }
+                                    let dstAddr = regAlloc.alloc() ?? .x9
+                                    if let offset = localVarOffsets[vd.name] {
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("add \(dstAddr.x), x29, #\(offset)")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("add \(dstAddr.x), x29, x16")
+                                        }
+                                    }
+                                    emitStructCopyToField(dstAddr.x, srcAddr, unionSize)
+                                    regAlloc.free(dstAddr)
                                 } else if varType.isComplex, let offset = localVarOffsets[vd.name] {
                                     // _Complex variable initialization
                                     let isFloat = (varType == .complexFloat)
@@ -2339,8 +2364,8 @@ public final class Codegen {
                     emitEpilogue()
                     return
                 }
-                if case .structType = retType {
-                    // Struct return: depends on size and HFA status
+                if isAggregateType(retType) {
+                    // Struct/union return: depends on size and HFA status
                     let structSize = retType.sizeInBytes ?? 0
                     if let hfaInfo = isHFA(retType) {
                         // HFA return: load members into FP registers (s0-s3 or d0-d3)
@@ -2352,9 +2377,13 @@ public final class Codegen {
                         }
                         regAlloc.free(srcAddr)
                     } else if structSize <= 8 {
-                        // Small struct (≤8 bytes): return in x0
+                        // Small struct/union (≤8 bytes): return in x0
                         let srcAddr = emitAddr(v)
-                        emitLine("ldr x0, [\(srcAddr.x)]")
+                        if structSize <= 4 {
+                            emitLine("ldr w0, [\(srcAddr.x)]")
+                        } else {
+                            emitLine("ldr x0, [\(srcAddr.x)]")
+                        }
                         regAlloc.free(srcAddr)
                     } else if structSize <= 16 {
                         // Medium struct (9-16 bytes): return in x0, x1
@@ -4733,8 +4762,12 @@ public final class Codegen {
                 } else if size <= 16 {
                     // Small struct (≤16 bytes): returned in x0/x1
                     _ = emitExpr(a.value)
-                    emitLine("str x0, [\(dstReg.x)]")
-                    if size > 8 {
+                    if size <= 4 {
+                        emitLine("str w0, [\(dstReg.x)]")
+                    } else if size <= 8 {
+                        emitLine("str x0, [\(dstReg.x)]")
+                    } else {
+                        emitLine("str x0, [\(dstReg.x)]")
                         emitLine("str x1, [\(dstReg.x), #8]")
                     }
                 } else {
