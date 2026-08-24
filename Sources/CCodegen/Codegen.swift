@@ -6070,12 +6070,25 @@ public final class Codegen {
                     hfaArgs[i] = hfaInfo
                     regAlloc.free(addrReg)
                 } else if case .structType = argType, argSize <= 8 {
-                    // Small struct (≤8 bytes): load the struct value from its address
+                    // Small struct/union (≤8 bytes): load the value from its address
                     let addrReg = emitAddr(arg)
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder
                     // Load the 8-byte (or smaller) struct value
                     emitLine("ldr x16, [\(addrReg.x)]")
                     emitLine("str x16, [sp, #0]")
+                    evaluatedArgs.append(addrReg)
+                    regAlloc.free(addrReg)
+                } else if case .unionType = argType, argSize <= 8 {
+                    // Small union (≤8 bytes): load the value from its address
+                    let addrReg = emitAddr(arg)
+                    emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder
+                    if argSize <= 4 {
+                        emitLine("ldr w16, [\(addrReg.x)]")
+                        emitLine("str w16, [sp, #0]")
+                    } else {
+                        emitLine("ldr x16, [\(addrReg.x)]")
+                        emitLine("str x16, [sp, #0]")
+                    }
                     evaluatedArgs.append(addrReg)
                     regAlloc.free(addrReg)
                 } else if case .structType = argType, argSize > 8, argSize <= 16 {
@@ -6086,6 +6099,18 @@ public final class Codegen {
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder for chunk 1
                     // Load chunk 0 (first 8 bytes) and chunk 1 (second 8 bytes).
                     // Use x16 as scratch to avoid clobbering addrReg.
+                    emitLine("ldr x16, [\(addrReg.x)]")
+                    emitLine("str x16, [sp, #16]")  // chunk 0
+                    emitLine("ldr x16, [\(addrReg.x), #8]")
+                    emitLine("str x16, [sp, #0]")   // chunk 1
+                    evaluatedArgs.append(addrReg)
+                    wideArgs.insert(i)
+                    regAlloc.free(addrReg)
+                } else if case .unionType = argType, argSize > 8, argSize <= 16 {
+                    // Union by value (9-16 bytes): load two 8-byte chunks
+                    let addrReg = emitAddr(arg)
+                    emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder for chunk 0
+                    emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder for chunk 1
                     emitLine("ldr x16, [\(addrReg.x)]")
                     emitLine("str x16, [sp, #16]")  // chunk 0
                     emitLine("ldr x16, [\(addrReg.x), #8]")
@@ -6109,6 +6134,27 @@ public final class Codegen {
                             emitLine("ldr x16, [\(addrReg.x), #\(srcOffset)]")
                         } else {
                             // Large struct: offset exceeds immediate range, use x17 as scratch
+                            emitLoadImm("x17", Int64(srcOffset))
+                            emitLine("ldr x16, [\(addrReg.x), x17]")
+                        }
+                        let slotOffset = (numChunks - 1 - j) * 16
+                        emitStoreSP("x16", slotOffset)
+                    }
+                    evaluatedArgs.append(addrReg)
+                    largeStructArgs[i] = numChunks
+                    regAlloc.free(addrReg)
+                } else if case .unionType = argType, argSize > 16 {
+                    // Large union (>16 bytes): copy all chunks to temp stack
+                    let addrReg = emitAddr(arg)
+                    let numChunks = (argSize + 7) / 8
+                    for _ in 0..<numChunks {
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                    }
+                    for j in 0..<numChunks {
+                        let srcOffset = j * 8
+                        if srcOffset <= 32760 {
+                            emitLine("ldr x16, [\(addrReg.x), #\(srcOffset)]")
+                        } else {
                             emitLoadImm("x17", Int64(srcOffset))
                             emitLine("ldr x16, [\(addrReg.x), x17]")
                         }
