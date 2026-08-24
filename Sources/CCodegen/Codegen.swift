@@ -6293,6 +6293,54 @@ public final class Codegen {
             }
             return emitExpr(u.operand)
 
+        case .call(let c):
+            // Call returning a struct: the result is in x0/x1 (or s0-d3 for HFA).
+            // We need to allocate a temp on the stack, store the return value
+            // there, and return the temp's address so the caller can load from it.
+            let retType = exprType(.call(c)).unqualified
+            var resolvedType = retType
+            if case .structType(let rec) = retType, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                resolvedType = .structType(completed)
+            }
+            if case .unionType(let rec) = retType, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                resolvedType = .unionType(completed)
+            }
+            let structSize = resolvedType.sizeInBytes ?? 0
+            let alignedSize = max((structSize + 15) & ~15, 16)
+            // Allocate temp on stack + 16 bytes to save x19
+            emitLine("sub sp, sp, #\(alignedSize + 16)")
+            emitLine("str x19, [sp, #\(alignedSize)]")  // save x19
+            emitLine("mov x19, sp")  // x19 = temp address
+            if let hfaInfo = isHFA(resolvedType) {
+                let callReg = emitExpr(.call(c))  // makes the call (x19 is callee-saved)
+                regAlloc.free(callReg)
+                let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                for j in 0..<hfaInfo.count {
+                    let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                    emitLine("str \(fpPrefix)\(j), [x19, #\(memberOff)]")
+                }
+            } else if structSize <= 16 {
+                let callReg = emitExpr(.call(c))  // makes the call
+                regAlloc.free(callReg)
+                emitLine("str x0, [x19]")
+                if structSize > 8 {
+                    emitLine("str x1, [x19, #8]")
+                }
+            } else {
+                // Large struct: caller passes address in x8 (indirect return)
+                emitLine("mov x8, x19")
+                let callReg = emitExpr(.call(c))
+                regAlloc.free(callReg)
+            }
+            let addrReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(addrReg.x), x19")
+            emitLine("ldr x19, [sp, #\(alignedSize)]")  // restore x19
+            // NOTE: do NOT free the temp stack here. The caller (struct arg
+            // evaluation) needs to read the struct value from addrReg, and
+            // freeing the temp would clobber it. The temp will be freed by
+            // the post-call cleanup (emitAddSP for tempStackSize).
+            return addrReg
+
         default:
             // Not an lvalue — just evaluate
             return emitExpr(expr)
