@@ -1906,7 +1906,6 @@ public final class Codegen {
                             } else if case .call = init_, case .structType = vd.type.unqualified {
                                 // Function call returning a struct: read return registers
                                 // and store to the local variable's address.
-                                // Resolve the struct type through knownRecords (in case vd.type has an incomplete record)
                                 var resolvedType = vd.type
                                 if case .structType(let rec) = vd.type.unqualified, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
                                     resolvedType = .structType(completed)
@@ -1954,6 +1953,25 @@ public final class Codegen {
                                             emitLine("add x8, x29, x16")
                                         }
                                         _ = emitExpr(init_)  // make the call
+                                    }
+                                }
+                            } else if case .call = init_, vd.type.unqualified.isComplex {
+                                // Function call returning a complex: read FP return registers
+                                let resolvedType = vd.type
+                                if let hfaInfo = isHFA(resolvedType) {
+                                    let callReg = emitExpr(init_)
+                                    regAlloc.free(callReg)
+                                    if let offset = localVarOffsets[vd.name] {
+                                        let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                                        for j in 0..<hfaInfo.count {
+                                            let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                                            if offset + memberOff >= -256 && offset + memberOff <= 255 {
+                                                emitLine("str \(fpPrefix)\(j), [x29, #\(offset + memberOff)]")
+                                            } else {
+                                                emitLoadImm("x16", Int64(offset + memberOff))
+                                                emitLine("str \(fpPrefix)\(j), [x29, x16]")
+                                            }
+                                        }
                                     }
                                 }
                             } else {
@@ -2111,13 +2129,28 @@ public final class Codegen {
                         regAlloc.free(srcAddr)
                     } else {
                         // Large struct (>16 bytes): copy to indirect return pointer (x8)
-                        // The caller passes a pointer in x8 to the return location.
                         let srcAddr = emitAddr(v)
-                        // Use emitStructCopyToField which uses x15 as scratch
                         emitStructCopyToField("x8", srcAddr, structSize)
                         regAlloc.free(srcAddr)
                     }
-                } else if retType.isFloating {
+                    emitEpilogue()
+                    return
+                }
+                // Complex type return: treat as HFA (2 FP members)
+                if retType.isComplex {
+                    if let hfaInfo = isHFA(retType) {
+                        let srcAddr = emitAddr(v)
+                        let fpPrefix = hfaInfo.isFloat ? "s" : "d"
+                        for j in 0..<hfaInfo.count {
+                            let memberOff = j * (hfaInfo.isFloat ? 4 : 8)
+                            emitLine("ldr \(fpPrefix)\(j), [\(srcAddr.x), #\(memberOff)]")
+                        }
+                        regAlloc.free(srcAddr)
+                    }
+                    emitEpilogue()
+                    return
+                }
+                if retType.isFloating {
                     // Float/double return value goes in s0 (float) or d0 (double)
                     let reg = emitExpr(v)
                     let fpReg = retType == .float ? "s\(reg.regNum)" : "d\(reg.regNum)"
@@ -6231,6 +6264,12 @@ public final class Codegen {
     /// An HFA is a struct with 1-4 members all of the same FP type (float or double).
     private func isHFA(_ type: CType) -> (count: Int, isFloat: Bool)? {
         let t = type.unqualified
+        // Complex types are HFAs with 2 members (real + imaginary)
+        switch t {
+        case .complexFloat: return (count: 2, isFloat: true)
+        case .complexDouble, .complexLongDouble: return (count: 2, isFloat: false)
+        default: break
+        }
         guard case .structType(let rec) = t else { return nil }
         let fields = rec.fields
         guard fields.count >= 1, fields.count <= 4 else { return nil }
