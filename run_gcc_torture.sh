@@ -4,7 +4,11 @@
 CDRIVER="/Users/jesse/git/c-compiler/.build/debug/CDriver"
 TESTDIR="/tmp/gcc-sparse/gcc/testsuite/gcc.c-torture/execute"
 TMPDIR="/tmp/gcc_torture_run"
-INCLUDE="-I/Users/jesse/git/c-compiler/include"
+INCLUDE="-I/Users/jesse/git/c-compiler/include -I/tmp/gcc-sparse/gcc/testsuite"
+STUBS="/Users/jesse/git/c-compiler/torture_stubs.c"
+STUBS_OBJ="$TMPDIR/torture_stubs.o"
+# Compile stubs once
+clang -c -o "$STUBS_OBJ" "$STUBS" 2>/dev/null
 mkdir -p "$TMPDIR"
 
 PASS=0
@@ -33,7 +37,7 @@ for testfile in "$TESTDIR"/*.c; do
         FAILED_TESTS+=("ASSEMBLE: $basename")
         continue
     fi
-    clang -o "$exefile" "$objfile" -lm 2>/dev/null
+    clang -o "$exefile" "$objfile" "$STUBS_OBJ" -lm 2>/dev/null
     if [ $? -ne 0 ]; then
         COMPILE_FAIL=$((COMPILE_FAIL + 1))
         FAILED_TESTS+=("LINK: $basename")
