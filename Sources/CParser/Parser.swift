@@ -465,6 +465,9 @@ public final class Parser {
             skipC23Attributes()
         }
 
+        // Skip __extension__ at the start of a declaration (GNU extension)
+        while isKeyword("__extension__") { advance() }
+
         // Special: _Static_assert
         if isKeyword("_Static_assert") {
             return try parseStaticAssert()
