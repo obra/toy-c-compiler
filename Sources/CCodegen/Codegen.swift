@@ -5173,8 +5173,12 @@ public final class Codegen {
             return reg
         }
 
-        // __builtin_prefetch(addr, ...) → no-op
+        // __builtin_prefetch(addr, ...) → evaluate addr for side effects, then no-op
         if case .identifier(let id) = c.function, id.name == "__builtin_prefetch" {
+            // Evaluate the first argument for side effects (assignment, inc/dec, etc.)
+            if let firstArg = c.arguments.first {
+                _ = emitExpr(firstArg)
+            }
             let reg = regAlloc.alloc() ?? .x9
             return reg
         }
