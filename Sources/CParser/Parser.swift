@@ -144,6 +144,9 @@ public final class Parser {
     private var currentPack: Int = 0
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
     private var pendingExternalDecls: [Decl] = []
+    /// Nested function definitions discovered during function body parsing.
+    /// These are hoisted to the top level (without access to parent locals).
+    private var pendingNestedFunctions: [FuncDecl] = []
 
     public init(_ tokens: [Token], diags: DiagnosticEngine = DiagnosticEngine()) {
         // Filter out EOF for easier processing, we'll add it back at the end
@@ -173,6 +176,11 @@ public final class Parser {
                 // Pick up any additional declarators from multi-declarator declarations
                 decls.append(contentsOf: pendingExternalDecls)
                 pendingExternalDecls.removeAll()
+                // Pick up nested function definitions discovered during function body parsing
+                for nfd in pendingNestedFunctions {
+                    decls.append(.funcDecl(nfd))
+                }
+                pendingNestedFunctions.removeAll()
             } catch let error as ParseError {
                 switch error {
                 case .unexpectedToken(let msg, let loc):
@@ -1746,6 +1754,26 @@ public final class Parser {
 
         repeat {
             let (name, type, dloc) = try parseDeclarator(baseType)
+            // Check for nested function definition: type is function and next is '{'
+            if case .function = type, isPunct("{") {
+                // Parse the nested function body and hoist it as a top-level function
+                let body = try parseCompoundStmt()
+                // Use the params from lastFuncParams (has names) instead of the type
+                let retType: CType = {
+                    if case .function(_, let r, _) = type { return r }
+                    return type
+                }()
+                let fd = FuncDecl(name: name, returnType: retType,
+                                  params: lastFuncParams, variadic: lastFuncVariadic,
+                                  body: body, storageClass: .static, isInline: false, loc: dloc)
+                pendingNestedFunctions.append(fd)
+                // Register the function name as a global so calls work
+                globalVarTypes[name] = type
+                // Don't create a local varDecl — the function is emitted as a top-level
+                // function and calls to it should resolve to the function name directly.
+                // Nested function definitions don't end with ';' — return immediately
+                return DeclStmt(decls: decls, loc: loc)
+            }
             // Collect VLA size expressions: outer dimension + inner dimensions
             // vlaExprs is in parse order (left to right): [outer_dim, inner_dim1, ...]
             // The outer dimension is first, inner dimensions follow.
