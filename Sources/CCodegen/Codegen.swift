@@ -4209,6 +4209,32 @@ public final class Codegen {
             return reg
         }
 
+        // __builtin_classify_type(expr) → compile-time type classification
+        // GCC type kinds: 0=void, 1=integer, 2=char, 4=float, 5=double,
+        // 8=long double, 9=complex, 12=array, 14=pointer, etc.
+        if case .identifier(let id) = c.function, id.name == "__builtin_classify_type", c.arguments.count >= 1 {
+            let t = exprType(c.arguments[0]).unqualified
+            let classify: Int
+            switch t {
+            case .void: classify = 0
+            case .char, .schar, .uchar: classify = 2  // char types
+            case .short, .ushort, .int, .uint, .long, .ulong, .longLong, .ulongLong, .bool, .enumType:
+                classify = 1  // integer
+            case .float: classify = 4
+            case .double: classify = 5
+            case .longDouble: classify = 8
+            case .complexFloat: classify = 9
+            case .complexDouble: classify = 9
+            case .complexLongDouble: classify = 9
+            case .array, .incompleteArray: classify = 12
+            case .pointer, .function: classify = 14
+            default: classify = 1  // struct/union/etc → integer-ish
+            }
+            let reg = regAlloc.alloc() ?? .x9
+            emitLoadImm(reg.x, Int64(classify))
+            return reg
+        }
+
         // __builtin_constant_p(expr) → 0 (we can't evaluate at compile time easily)
         if case .identifier(let id) = c.function, id.name == "__builtin_constant_p" {
             let reg = regAlloc.alloc() ?? .x9
@@ -4348,9 +4374,124 @@ public final class Codegen {
         }
 
         // __builtin_clz(x) → count leading zeros
-        if case .identifier(let id) = c.function, id.name == "__builtin_clz", c.arguments.count >= 1 {
+        // __builtin_clzl and __builtin_clzll are the same on LP64
+        if case .identifier(let id) = c.function,
+           ["__builtin_clz", "__builtin_clzl", "__builtin_clzll"].contains(id.name), c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
             emitLine("clz \(argReg.x), \(argReg.x)")
+            return argReg
+        }
+
+        // __builtin_ctz{l,ll}(x) → count trailing zeros
+        if case .identifier(let id) = c.function,
+           ["__builtin_ctz", "__builtin_ctzl", "__builtin_ctzll"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("rbit \(argReg.x), \(argReg.x)")
+            emitLine("clz \(argReg.x), \(argReg.x)")
+            return argReg
+        }
+
+        // __builtin_ffs{l,ll}(x) → find first set bit (1-indexed, 0 if x==0)
+        if case .identifier(let id) = c.function,
+           ["__builtin_ffs", "__builtin_ffsl", "__builtin_ffsll"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            emitLine("cmp \(argReg.x), #0")
+            let label = newLabel()
+            emitLine("b.eq \(label)")
+            emitLine("rbit \(argReg.x), \(argReg.x)")
+            emitLine("clz \(argReg.x), \(argReg.x)")
+            emitLine("add \(argReg.x), \(argReg.x), #1")
+            emitLine("\(label):")
+            return argReg
+        }
+
+        // __builtin_popcount{l,ll}(x) → population count
+        if case .identifier(let id) = c.function,
+           ["__builtin_popcount", "__builtin_popcountl", "__builtin_popcountll"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            // v = v - ((v >> 1) & 0x5555555555555555)
+            emitLine("mov x16, #0x5555")
+            emitLine("movk x16, #0x5555, lsl #16")
+            emitLine("movk x16, #0x5555, lsl #32")
+            emitLine("movk x16, #0x5555, lsl #48")
+            emitLine("and x17, \(argReg.x), x16")
+            emitLine("lsr x17, x17, #1")
+            emitLine("sub \(argReg.x), \(argReg.x), x17")
+            // v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333)
+            emitLine("mov x16, #0x3333")
+            emitLine("movk x16, #0x3333, lsl #16")
+            emitLine("movk x16, #0x3333, lsl #32")
+            emitLine("movk x16, #0x3333, lsl #48")
+            emitLine("and x17, \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #2")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            emitLine("add \(argReg.x), \(argReg.x), x17")
+            // v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0F
+            emitLine("mov x16, #0x0F0F")
+            emitLine("movk x16, #0x0F0F, lsl #16")
+            emitLine("movk x16, #0x0F0F, lsl #32")
+            emitLine("movk x16, #0x0F0F, lsl #48")
+            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x)")
+            emitLine("lsr \(argReg.x), \(argReg.x), #4")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            // Multiply by 0x0101010101010101 to sum bytes
+            emitLine("mov x16, #0x0101")
+            emitLine("movk x16, #0x0101, lsl #16")
+            emitLine("movk x16, #0x0101, lsl #32")
+            emitLine("movk x16, #0x0101, lsl #48")
+            emitLine("mul \(argReg.x), \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #56")
+            return argReg
+        }
+
+        // __builtin_clrsb{l,ll}(x) → count redundant sign bits (returns number of
+        // bits identical to the sign bit, not counting the sign bit itself)
+        if case .identifier(let id) = c.function,
+           ["__builtin_clrsb", "__builtin_clrsbl", "__builtin_clrsbll"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            // clrsb(x) = clz(x ^ (x >> 63)) - 1  (for 64-bit)
+            // If x >= 0: x >> 63 = 0, so clz(x) - 1
+            // If x < 0:  x >> 63 = -1, so x ^ -1 = ~x, clz(~x) - 1
+            emitLine("eor x16, \(argReg.x), \(argReg.x), asr #63")
+            emitLine("clz \(argReg.x), x16")
+            emitLine("sub \(argReg.x), \(argReg.x), #1")
+            return argReg
+        }
+
+        // __builtin_parity{l,ll}(x) → parity (XOR of all bits)
+        if case .identifier(let id) = c.function,
+           ["__builtin_parity", "__builtin_parityl", "__builtin_parityll"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            // Use popcount and take the low bit
+            emitLine("mov x16, #0x5555")
+            emitLine("movk x16, #0x5555, lsl #16")
+            emitLine("movk x16, #0x5555, lsl #32")
+            emitLine("movk x16, #0x5555, lsl #48")
+            emitLine("and x17, \(argReg.x), x16")
+            emitLine("lsr x17, x17, #1")
+            emitLine("sub \(argReg.x), \(argReg.x), x17")
+            emitLine("mov x16, #0x3333")
+            emitLine("movk x16, #0x3333, lsl #16")
+            emitLine("movk x16, #0x3333, lsl #32")
+            emitLine("movk x16, #0x3333, lsl #48")
+            emitLine("and x17, \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #2")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            emitLine("add \(argReg.x), \(argReg.x), x17")
+            emitLine("mov x16, #0x0F0F")
+            emitLine("movk x16, #0x0F0F, lsl #16")
+            emitLine("movk x16, #0x0F0F, lsl #32")
+            emitLine("movk x16, #0x0F0F, lsl #48")
+            emitLine("add \(argReg.x), \(argReg.x), \(argReg.x)")
+            emitLine("lsr \(argReg.x), \(argReg.x), #4")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            emitLine("mov x16, #0x0101")
+            emitLine("movk x16, #0x0101, lsl #16")
+            emitLine("movk x16, #0x0101, lsl #32")
+            emitLine("movk x16, #0x0101, lsl #48")
+            emitLine("mul \(argReg.x), \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #56")
+            emitLine("and \(argReg.x), \(argReg.x), #1")
             return argReg
         }
 
@@ -4373,6 +4514,116 @@ public final class Codegen {
             let argReg = emitExpr(c.arguments[0])
             emitLine("rev16 w\(argReg.regNum), w\(argReg.regNum)")
             return argReg
+        }
+
+        // __builtin_signbit / __builtin_signbitf / __builtin_signbitl(x) →
+        // returns nonzero if x is negative (check sign bit)
+        if case .identifier(let id) = c.function,
+           ["__builtin_signbit", "__builtin_signbitf", "__builtin_signbitl"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            let resultReg = regAlloc.alloc() ?? .x9
+            // Move FP value to integer register to extract sign bit
+            if id.name == "__builtin_signbitf" {
+                emitLine("fmov w16, s\(argReg.regNum)")
+                emitLine("lsr \(resultReg.x), x16, #31")
+            } else {
+                emitLine("fmov x16, d\(argReg.regNum)")
+                emitLine("lsr \(resultReg.x), x16, #63")
+            }
+            emitLine("and \(resultReg.x), \(resultReg.x), #1")
+            return resultReg
+        }
+
+        // __builtin_copysign / __builtin_copysignf(x, y) →
+        // returns x with the sign bit of y. Uses integer register manipulation.
+        if case .identifier(let id) = c.function,
+           ["__builtin_copysign", "__builtin_copysignf", "__builtin_copysignl"].contains(id.name), c.arguments.count >= 2 {
+            let isFloat = id.name == "__builtin_copysignf"
+            let fpPrefix = isFloat ? "s" : "d"
+            let xReg = emitExpr(c.arguments[0])
+            // Move x to integer register and save on stack
+            if isFloat {
+                emitLine("fmov w16, s\(xReg.regNum)")
+            } else {
+                emitLine("fmov x16, d\(xReg.regNum)")
+            }
+            emitLine("str x16, [sp, #-16]!")
+            let yReg = emitExpr(c.arguments[1])
+            // Move y to integer register
+            if isFloat {
+                emitLine("fmov w17, s\(yReg.regNum)")
+            } else {
+                emitLine("fmov x17, d\(yReg.regNum)")
+            }
+            // Load x from stack
+            emitLine("ldr x16, [sp], #16")
+            // Clear sign bit of x, keep sign bit of y, combine
+            if isFloat {
+                emitLine("and w16, w16, #0x7FFFFFFF")  // clear sign of x
+                emitLine("and w17, w17, #0x80000000")  // keep only sign of y
+                emitLine("orr w16, w16, w17")
+            } else {
+                emitLine("movz x9, #0")
+                emitLine("movk x9, #0x7FFF, lsl #48")
+                emitLine("and x16, x16, x9")  // clear sign of x
+                emitLine("movz x9, #0")
+                emitLine("movk x9, #0x8000, lsl #48")
+                emitLine("and x17, x17, x9")  // keep only sign of y
+                emitLine("orr x16, x16, x17")
+            }
+            // Move result back to FP register
+            let resultReg = regAlloc.alloc() ?? .x9
+            if isFloat {
+                emitLine("fmov s\(resultReg.regNum), w16")
+            } else {
+                emitLine("fmov d\(resultReg.regNum), x16")
+            }
+            return resultReg
+        }
+
+        // __builtin_isinf / __builtin_isinff / __builtin_isinfl(x) →
+        // returns nonzero if x is ±infinity
+        if case .identifier(let id) = c.function,
+           ["__builtin_isinf", "__builtin_isinff", "__builtin_isinfl"].contains(id.name), c.arguments.count >= 1 {
+            let argReg = emitExpr(c.arguments[0])
+            let resultReg = regAlloc.alloc() ?? .x9
+            // Infinity: exponent all 1s, mantissa 0
+            // For double: (x & 0x7FFFFFFFFFFFFFFF) == 0x7FF0000000000000
+            // For float:  (x & 0x7FFFFFFF) == 0x7F800000
+            if id.name == "__builtin_isinff" {
+                emitLine("fmov w16, s\(argReg.regNum)")
+                emitLine("and w16, w16, #0x7FFFFFFF")
+                emitLine("mov w17, #0x7F80")
+                emitLine("lsl w17, w17, #16")
+                emitLine("cmp w16, w17")
+                emitLine("cset \(resultReg.x), eq")
+            } else {
+                emitLine("fmov x16, d\(argReg.regNum)")
+                emitLine("movz x17, #0xFFFF, lsl #48")
+                emitLine("movk x17, #0x7FFF, lsl #48")
+                emitLine("and x16, x16, x17")
+                emitLine("movz \(resultReg.x), #0")
+                emitLine("movk \(resultReg.x), #0x7FF0, lsl #48")
+                emitLine("cmp x16, \(resultReg.x)")
+                emitLine("cset \(resultReg.x), eq")
+            }
+            return resultReg
+        }
+
+        // __builtin_frame_address(level) → returns frame pointer
+        // For level 0, returns current frame pointer (x29)
+        if case .identifier(let id) = c.function, id.name == "__builtin_frame_address", c.arguments.count >= 1 {
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(resultReg.x), x29")
+            return resultReg
+        }
+
+        // __builtin_return_address(level) → returns return address
+        // For level 0, returns current function's return address (x30/lr)
+        if case .identifier(let id) = c.function, id.name == "__builtin_return_address", c.arguments.count >= 1 {
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("mov \(resultReg.x), x30")
+            return resultReg
         }
 
         // __builtin_popcount(x) → population count (software implementation)
