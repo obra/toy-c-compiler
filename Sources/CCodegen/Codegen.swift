@@ -2393,6 +2393,12 @@ public final class Codegen {
 
         case .continue:
             if let label = continueLabels.last {
+                // In a while loop, continue jumps to the condition (startLabel), which
+                // is before the body where VLAs are allocated. Restore sp to deallocate
+                // any VLAs from the current iteration. For/do-while continue jumps to
+                // continueLabel, which falls through to the back-edge that already
+                // restores; the restore here is harmless (idempotent load+mov).
+                emitVlaSpRestore()
                 emitLine("b \(label)")
             }
 
@@ -2427,16 +2433,8 @@ public final class Codegen {
                 // preventing stack growth on loop back-edges. The save slot is always
                 // initialized (written in the prologue path) even if the target label is
                 // in a dead branch (e.g., `if (0) { lab:; }`).
-                if emittedLabels.contains(asmLabel),
-                   functionHasVLA,
-                   let off = vlaSpSaveOffset {
-                    if off >= -256 && off <= 255 {
-                        emitLine("ldr x16, [x29, #\(off)]")
-                    } else {
-                        emitLoadImm("x17", Int64(off))
-                        emitLine("ldr x16, [x29, x17]")
-                    }
-                    emitLine("mov sp, x16")
+                if emittedLabels.contains(asmLabel) {
+                    emitVlaSpRestore()
                 }
                 emitLine("b \(asmLabel)")
             }
@@ -2469,6 +2467,20 @@ public final class Codegen {
             // Emit inline assembly directly
             emitLine(asmStmt.instructions)
         }
+    }
+
+    /// Emit instructions to restore sp to the post-fixed-frame value, deallocating
+    /// any VLAs allocated since function entry. No-op if the function has no VLAs.
+    /// Used before backward branches (goto back-edges, loop back-edges, continue).
+    private func emitVlaSpRestore() {
+        guard functionHasVLA, let off = vlaSpSaveOffset else { return }
+        if off >= -256 && off <= 255 {
+            emitLine("ldr x16, [x29, #\(off)]")
+        } else {
+            emitLoadImm("x17", Int64(off))
+            emitLine("ldr x16, [x29, x17]")
+        }
+        emitLine("mov sp, x16")
     }
 
     private func emitIfStmt(_ is_: IfStmt) {
@@ -2517,6 +2529,7 @@ public final class Codegen {
         breakLabels.removeLast()
         continueLabels.removeLast()
         regAlloc.reset()
+        emitVlaSpRestore()
         emitLine("b \(startLabel)")
         emitLine("\(endLabel):")
     }
@@ -2534,6 +2547,7 @@ public final class Codegen {
         emitLine("\(continueLabel):")
         regAlloc.reset()
         let condReg = emitExpr(dws.condition)
+        emitVlaSpRestore()
         emitLine("cbnz \(condReg.x), \(startLabel)")
         emitLine("\(endLabel):")
     }
@@ -2559,6 +2573,7 @@ public final class Codegen {
         regAlloc.reset()
         if let incr = fs.increment { _ = emitExpr(incr) }
         regAlloc.reset()
+        emitVlaSpRestore()
         emitLine("b \(startLabel)")
         emitLine("\(endLabel):")
     }
@@ -4110,7 +4125,17 @@ public final class Codegen {
                 return origReg
             }
             let addrReg = emitAddr(u.operand)
-            let valReg = regAlloc.alloc() ?? .x9
+            // Allocate valReg, ensuring it doesn't alias addrReg.
+            // If the pool is exhausted, use x17 as a temporary (it's caller-saved
+            // and not managed by regAlloc, and safe for short sequences).
+            let valReg: ARM64Reg
+            if let r = regAlloc.alloc(), r != addrReg {
+                valReg = r
+            } else if addrReg != .x17 {
+                valReg = .x17
+            } else {
+                valReg = .x16
+            }
             // Determine the increment size (1 for scalars, sizeof(pointed) for pointers)
             let operandType = exprType(u.operand).unqualified
 
@@ -5913,7 +5938,7 @@ public final class Codegen {
                 else if let hfaInfo = hfaArgs[i] {
                     if fpSlotsUsed + hfaInfo.count <= 8 {
                         fpSlotsUsed += hfaInfo.count
-                        totalRegSlots += hfaInfo.count
+                        // HFA uses FP registers, NOT integer registers.
                     } else {
                         // Entire HFA goes on stack
                         totalRegSlots += hfaInfo.count
@@ -6011,7 +6036,7 @@ public final class Codegen {
                 let largeChunks = largeStructArgs[i] ?? 0
                 let isFloatArg = floatArgs.contains(i)
                 let isHFAArg = hfaArgs[i] != nil
-                let regsNeeded = isWide ? 2 : (largeChunks > 0 ? largeChunks : 1)
+                let regsNeeded = isWide ? 2 : (largeChunks > 0 ? 0 : 1)
 
                 // For internal variadic: named params go in registers, variadic args go on stack
                 let isVariadicArg = isInternalVariadic && i >= namedParamCount
@@ -6112,7 +6137,7 @@ public final class Codegen {
                         continue
                     }
                     regAlloc.free(evaluatedArgs[i])
-                    regIdx += hfaInfo.count  // HFA also consumes integer register slots
+                    // HFA does NOT consume integer register slots in AAPCS64.
                     continue
                 }
 
