@@ -6362,7 +6362,10 @@ public final class Codegen {
                             regAlloc.free(ptrReg)
                         } else {
                             // Scalar value — store to field address
+                            // Save x16 (field address) to sp+8 before emitExpr clobbers it
+                            emitLine("str x16, [sp, #8]")
                             let valReg = emitExpr(v)
+                            emitLine("ldr x16, [sp, #8]")
                             // Convert float/double if needed
                             let valType = exprType(v).unqualified
                             if valType == .double && field.type.unqualified == .float {
@@ -6488,7 +6491,10 @@ public final class Codegen {
                     } else {
                         // Scalar field (or bitfield)
                         valueIdx += 1
+                        // Save x16 (field address) to sp+8 before emitExpr clobbers it
+                        emitLine("str x16, [sp, #8]")
                         let valReg = emitExpr(v)
+                        emitLine("ldr x16, [sp, #8]")
                         // Convert float/double if needed
                         let valType = exprType(v).unqualified
                         if valType == .double && field.type.unqualified == .float {
@@ -6645,7 +6651,10 @@ public final class Codegen {
                         emitLocalInit(elemAddr, cl.initList, type: elemType)
                         regAlloc.free(elemAddr)
                     } else {
+                        // Save x16 (element address) before emitExpr clobbers it
+                        emitLine("str x16, [sp, #8]")
                         let valReg = emitExpr(v)
+                        emitLine("ldr x16, [sp, #8]")
                         emitStoreToAddrRaw("x16", valReg, type: elemType)
                         regAlloc.free(valReg)
                     }
