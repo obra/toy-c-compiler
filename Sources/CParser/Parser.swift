@@ -1377,6 +1377,31 @@ public final class Parser {
                     }
                     return (savedName, type, savedLoc)
                 }
+            } else if current().kind == .identifier {
+                // Parenthesized declarator: (name[dimensions]) or (name)
+                // Parse the inner declarator recursively
+                let (innerName, innerType, innerLoc) = try parseDeclarator(type)
+                _ = try consume(kind: .punct, spelling: ")")
+                // Apply any suffixes after the )
+                var resultType = innerType
+                var suffixName = innerName
+                let suffixLoc = innerLoc
+                while isPunct("[") || isPunct("(") {
+                    if isPunct("[") {
+                        var dims: [Int?] = []
+                        while isPunct("[") {
+                            dims.append(try parseArrayDimension().count)
+                        }
+                        for d in dims.reversed() {
+                            if let c = d { resultType = .array(of: resultType, count: c) }
+                            else { resultType = .incompleteArray(of: resultType) }
+                        }
+                    } else if isPunct("(") {
+                        let (params, variadic, retType) = try parseFunctionParams(resultType)
+                        resultType = .function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                    }
+                }
+                return (suffixName, resultType, suffixLoc)
             } else {
                 // Not a function pointer — restore and parse as normal declarator
                 pos = savePos
