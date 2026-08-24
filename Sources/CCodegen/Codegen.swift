@@ -1608,6 +1608,19 @@ public final class Codegen {
                             stackParamIdx += 1
                         }
                     }
+                } else if case .unionType = pt {
+                    // Union parameter: store register(s) to stack (same as struct)
+                    emitStoreFP(argRegs[regIndex].x, offset)
+                    if regWidth == 2 {
+                        if regIndex + 1 < 8 {
+                            emitStoreFP(argRegs[regIndex + 1].x, offset + 8)
+                        } else {
+                            let stackSrcOffset = 16 + stackParamIdx * 8
+                            emitLoadFP("x9", stackSrcOffset)
+                            emitStoreFP("x9", offset + 8)
+                            stackParamIdx += 1
+                        }
+                    }
                 }
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 regIndex += regWidth
