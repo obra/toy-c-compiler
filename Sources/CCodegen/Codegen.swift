@@ -1107,11 +1107,16 @@ public final class Codegen {
     private func emitCompoundLiterals() {
         guard !compoundLiterals.isEmpty else { return }
         emitLine(".section __DATA,__data")
-        for cl in compoundLiterals {
+        // Emit in a loop — emitting one compound literal may reference
+        // nested compound literals that need to be emitted too.
+        var emitted = 0
+        while emitted < compoundLiterals.count {
+            let cl = compoundLiterals[emitted]
             let size = cl.type.sizeInBytes ?? 0
             emitLine(".p2align 3")
             emitLine("\(cl.label):")
             emitInitializer(cl.init_, size: size, type: cl.type)
+            emitted += 1
         }
     }
 
@@ -5880,7 +5885,12 @@ public final class Codegen {
             }
             let offset = memberOffset(exprType(m.base), m.memberName)
             if offset != 0 {
-                emitLine("add \(baseReg.x), \(baseReg.x), #\(offset)")
+                if offset >= -4095 && offset <= 4095 {
+                    emitLine("add \(baseReg.x), \(baseReg.x), #\(offset)")
+                } else {
+                    emitLoadImm("x16", Int64(offset))
+                    emitLine("add \(baseReg.x), \(baseReg.x), x16")
+                }
             }
             return baseReg
 
@@ -6022,7 +6032,12 @@ public final class Codegen {
             // Add member offset
             let mOffset = memberOffset(resolvedType, m.memberName)
             if mOffset != 0 {
-                emitLine("add \(addrReg.x), \(addrReg.x), #\(mOffset)")
+                if mOffset >= -4095 && mOffset <= 4095 {
+                    emitLine("add \(addrReg.x), \(addrReg.x), #\(mOffset)")
+                } else {
+                    emitLoadImm("x16", Int64(mOffset))
+                    emitLine("add \(addrReg.x), \(addrReg.x), x16")
+                }
             }
             let mt = exprType(.member(m))
             if case .array = mt.unqualified {
