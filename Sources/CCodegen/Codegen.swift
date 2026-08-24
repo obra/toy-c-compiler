@@ -4737,7 +4737,7 @@ public final class Codegen {
                 emitLine("ldr \(reg.x), [sp, #\(variadicSize + idx * 8)]")
             }
             if totalSize > 0 {
-                emitLine("add sp, sp, #\(totalSize)")
+                emitAddSP(totalSize)
             }
             // Free the temp stack for named args and variadic args
             for _ in 0..<(min(namedCount, c.arguments.count) + numVariadicArgs) {
@@ -4868,9 +4868,16 @@ public final class Codegen {
                     // Load each 8-byte chunk and store to temp stack
                     // Last-pushed slot is at sp+0, first-pushed is at sp+(numChunks-1)*16
                     for j in 0..<numChunks {
-                        emitLine("ldr x16, [\(addrReg.x), #\(j * 8)]")
+                        let srcOffset = j * 8
+                        if srcOffset <= 32760 {
+                            emitLine("ldr x16, [\(addrReg.x), #\(srcOffset)]")
+                        } else {
+                            // Large struct: offset exceeds immediate range, use x17 as scratch
+                            emitLoadImm("x17", Int64(srcOffset))
+                            emitLine("ldr x16, [\(addrReg.x), x17]")
+                        }
                         let slotOffset = (numChunks - 1 - j) * 16
-                        emitLine("str x16, [sp, #\(slotOffset)]")
+                        emitStoreSP("x16", slotOffset)
                     }
                     evaluatedArgs.append(addrReg)
                     largeStructArgs[i] = numChunks
@@ -5074,24 +5081,24 @@ public final class Codegen {
                     if isWide {
                         // chunk 0 (first 8 bytes) is at tempOffset+16, chunk 1 at tempOffset
                         // Place chunk 0 at stackOffset (low), chunk 1 at stackOffset+8 (high)
-                        emitLine("ldr x9, [sp, #\(tempOffset + 16)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset + 8)]")
+                        emitLoadSP("x9", tempOffset + 16)
+                        emitStoreSP("x9", stackOffset)
+                        emitLoadSP("x9", tempOffset)
+                        emitStoreSP("x9", stackOffset + 8)
                     } else if largeChunks > 0 {
                         // Temp stack has chunk 0 at highest offset, chunk N-1 at lowest.
                         // Place chunk 0 at stackOffset (low), chunk N-1 at highest.
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
-                            emitLine("ldr x9, [sp, #\(slotOff)]")
-                            emitLine("str x9, [sp, #\(stackOffset + (largeChunks - 1 - j) * 8)]")
+                            emitLoadSP("x9", slotOff)
+                            emitStoreSP("x9", stackOffset + (largeChunks - 1 - j) * 8)
                         }
                     } else if isFloatArg {
-                        emitLine("ldr d9, [sp, #\(tempOffset)]")
-                        emitLine("str d9, [sp, #\(stackOffset)]")
+                        emitLoadSP("d9", tempOffset)
+                        emitStoreSP("d9", stackOffset)
                     } else {
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        emitLoadSP("x9", tempOffset)
+                        emitStoreSP("x9", stackOffset)
                     }
                     regAlloc.free(evaluatedArgs[i])
                     regIdx += regsNeeded
@@ -5104,7 +5111,7 @@ public final class Codegen {
                     let callParamTypes = functionParamTypes[funcName] ?? indirectParamTypes
                     let isFloatParam = i < callParamTypes.count && callParamTypes[i].unqualified == .float
                     if fpRegIdx < 8 {
-                        emitLine("ldr d\(fpRegIdx), [sp, #\(tempOffset)]")
+                        emitLoadSP("d\(fpRegIdx)", tempOffset)
                         if isFloatParam {
                             emitLine("fcvt s\(fpRegIdx), d\(fpRegIdx)")
                         }
@@ -5112,12 +5119,12 @@ public final class Codegen {
                         // Overflow: float arg goes on stack
                         let stackOffset = stackArgIdx * 8
                         if isFloatParam {
-                            emitLine("ldr d9, [sp, #\(tempOffset)]")
+                            emitLoadSP("d9", tempOffset)
                             emitLine("fcvt s9, d9")
-                            emitLine("str s9, [sp, #\(stackOffset)]")
+                            emitStoreSP("s9", stackOffset)
                         } else {
-                            emitLine("ldr d9, [sp, #\(tempOffset)]")
-                            emitLine("str d9, [sp, #\(stackOffset)]")
+                            emitLoadSP("d9", tempOffset)
+                            emitStoreSP("d9", stackOffset)
                         }
                         stackArgIdx += 1
                     }
@@ -5136,7 +5143,7 @@ public final class Codegen {
                         // Fits entirely in FP registers
                         for j in 0..<hfaInfo.count {
                             let slotOff = tempOffset + (hfaInfo.count - 1 - j) * 16
-                            emitLine("ldr \(fpPrefix)\(fpRegIdx), [sp, #\(slotOff)]")
+                            emitLoadSP("\(fpPrefix)\(fpRegIdx)", slotOff)
                             fpRegIdx += 1
                         }
                     } else {
@@ -5144,11 +5151,11 @@ public final class Codegen {
                         for j in 0..<hfaInfo.count {
                             let slotOff = tempOffset + (hfaInfo.count - 1 - j) * 16
                             let stackOff = stackArgIdx * 8
-                            emitLine("ldr d9, [sp, #\(slotOff)]")
+                            emitLoadSP("d9", slotOff)
                             if hfaInfo.isFloat {
-                                emitLine("str s9, [sp, #\(stackOff)]")
+                                emitStoreSP("s9", stackOff)
                             } else {
-                                emitLine("str d9, [sp, #\(stackOff)]")
+                                emitStoreSP("d9", stackOff)
                             }
                             stackArgIdx += 1
                         }
@@ -5165,25 +5172,25 @@ public final class Codegen {
                     if isWide {
                         // chunk 1 (second 8 bytes) at tempOffset, chunk 0 at tempOffset+16
                         if regIdx + 1 < 8 {
-                            emitLine("ldr \(argRegs[regIdx + 1].x), [sp, #\(tempOffset)]")
-                            emitLine("ldr \(argRegs[regIdx].x), [sp, #\(tempOffset + 16)]")
+                            emitLoadSP("\(argRegs[regIdx + 1].x)", tempOffset)
+                            emitLoadSP("\(argRegs[regIdx].x)", tempOffset + 16)
                         } else {
                             // Second chunk goes on stack
-                            emitLine("ldr x9, [sp, #\(tempOffset)]")
-                            emitLine("str x9, [sp, #\(stackArgIdx * 8)]")
-                            emitLine("ldr \(argRegs[regIdx].x), [sp, #\(tempOffset + 16)]")
+                            emitLoadSP("x9", tempOffset)
+                            emitStoreSP("x9", stackArgIdx * 8)
+                            emitLoadSP("\(argRegs[regIdx].x)", tempOffset + 16)
                             stackArgIdx += 1
                         }
                     } else if largeChunks > 0 {
                         // Large struct: goes entirely on stack (too big for registers)
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
-                            emitLine("ldr x9, [sp, #\(slotOff)]")
-                            emitLine("str x9, [sp, #\((stackArgIdx + (largeChunks - 1 - j)) * 8)]")
+                            emitLoadSP("x9", slotOff)
+                            emitStoreSP("x9", (stackArgIdx + (largeChunks - 1 - j)) * 8)
                         }
                         stackArgIdx += largeChunks
                     } else {
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
+                        emitLoadSP("x9", tempOffset)
                         emitLine("mov \(argRegs[regIdx].x), x9")
                     }
                     regAlloc.free(evaluatedArgs[i])
@@ -5193,21 +5200,21 @@ public final class Codegen {
                     if isWide {
                         // chunk 0 (first 8 bytes) at tempOffset+16, chunk 1 at tempOffset
                         // Place chunk 0 at stackOffset (low), chunk 1 at stackOffset+8 (high)
-                        emitLine("ldr x9, [sp, #\(tempOffset + 16)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset + 8)]")
+                        emitLoadSP("x9", tempOffset + 16)
+                        emitStoreSP("x9", stackOffset)
+                        emitLoadSP("x9", tempOffset)
+                        emitStoreSP("x9", stackOffset + 8)
                         stackArgIdx += 2
                     } else if largeChunks > 0 {
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
-                            emitLine("ldr x9, [sp, #\(slotOff)]")
-                            emitLine("str x9, [sp, #\(stackOffset + (largeChunks - 1 - j) * 8)]")
+                            emitLoadSP("x9", slotOff)
+                            emitStoreSP("x9", stackOffset + (largeChunks - 1 - j) * 8)
                         }
                         stackArgIdx += largeChunks
                     } else {
-                        emitLine("ldr x9, [sp, #\(tempOffset)]")
-                        emitLine("str x9, [sp, #\(stackOffset)]")
+                        emitLoadSP("x9", tempOffset)
+                        emitStoreSP("x9", stackOffset)
                         stackArgIdx += 1
                     }
                     regAlloc.free(evaluatedArgs[i])
@@ -5231,7 +5238,7 @@ public final class Codegen {
             let tempStackSize = cumulative  // total bytes pushed to temp stack
             if let fpReg = funcPtrReg {
                 let fpOffset = variadicStackArgSize + stackArgSize + scratchSaveSize + tempStackSize
-                emitLine("ldr \(fpReg.x), [sp, #\(fpOffset)]")
+                emitLoadSP(fpReg.x, fpOffset)
                 emitLine("blr \(fpReg.x)")
             } else if !funcName.isEmpty {
                 emitLine("bl _\(funcName)")
@@ -5239,22 +5246,22 @@ public final class Codegen {
 
             // Clean up variadic stack args (for internal variadic calls)
             if variadicStackArgSize > 0 {
-                emitLine("add sp, sp, #\(variadicStackArgSize)")
+                emitAddSP(variadicStackArgSize)
             }
             // Clean up stack-passed arguments
             if stackArgSize > 0 {
-                emitLine("add sp, sp, #\(stackArgSize)")
+                emitAddSP(stackArgSize)
             }
             // Restore spilled scratch registers
             if scratchSaveSize > 0 {
                 for (idx, reg) in inUse.enumerated() {
                     emitLine("ldr \(reg.x), [sp, #\(idx * 8)]")
                 }
-                emitLine("add sp, sp, #\(scratchSaveSize)")
+                emitAddSP(scratchSaveSize)
             }
             // Deallocate temp stack (all args were read from it before the call)
             if tempStackSize > 0 {
-                emitLine("add sp, sp, #\(tempStackSize)")
+                emitAddSP(tempStackSize)
             }
             // Pop the saved function pointer
             if funcPtrReg != nil {
@@ -6337,6 +6344,37 @@ public final class Codegen {
         } else {
             emitLoadImm("x16", Int64(offset))
             emitLine("ldr \(reg), [x29, x16]")
+        }
+    }
+
+    /// Emit a store to [sp, #offset] handling large offsets.
+    /// 64-bit str can encode 0-32760 as unsigned immediate; use x16 scratch beyond that.
+    private func emitStoreSP(_ reg: String, _ offset: Int) {
+        if offset >= 0 && offset <= 32760 {
+            emitLine("str \(reg), [sp, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("str \(reg), [sp, x16]")
+        }
+    }
+
+    /// Emit a load from [sp, #offset] handling large offsets.
+    private func emitLoadSP(_ reg: String, _ offset: Int) {
+        if offset >= 0 && offset <= 32760 {
+            emitLine("ldr \(reg), [sp, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("ldr \(reg), [sp, x16]")
+        }
+    }
+
+    /// Emit "add sp, sp, #value" handling large values (>4095) using x16 scratch.
+    private func emitAddSP(_ value: Int) {
+        if value >= 0 && value <= 4095 {
+            emitLine("add sp, sp, #\(value)")
+        } else {
+            emitLoadImm("x16", Int64(value))
+            emitLine("add sp, sp, x16")
         }
     }
 
