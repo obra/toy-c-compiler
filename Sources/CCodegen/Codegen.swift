@@ -4275,10 +4275,43 @@ public final class Codegen {
             return argReg
         }
 
-        // __builtin_popcount(x) → population count
+        // __builtin_popcount(x) → population count (software implementation)
+        // ARM64 'cnt' is a NEON instruction (not general-purpose), so use a
+        // shift-and-add approach: x = (x & 0x55) + ((x>>1) & 0x55); etc.
         if case .identifier(let id) = c.function, id.name == "__builtin_popcount", c.arguments.count >= 1 {
             let argReg = emitExpr(c.arguments[0])
-            emitLine("cnt w\(argReg.regNum), w\(argReg.regNum)")
+            // v = v - ((v >> 1) & 0x5555555555555555)
+            emitLine("mov x16, #0x5555")
+            emitLine("movk x16, #0x5555, lsl #16")
+            emitLine("movk x16, #0x5555, lsl #32")
+            emitLine("movk x16, #0x5555, lsl #48")
+            emitLine("lsr x17, \(argReg.x), #1")
+            emitLine("and x17, x17, x16")
+            emitLine("sub \(argReg.x), \(argReg.x), x17")
+            // v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333)
+            emitLine("mov x16, #0x3333")
+            emitLine("movk x16, #0x3333, lsl #16")
+            emitLine("movk x16, #0x3333, lsl #32")
+            emitLine("movk x16, #0x3333, lsl #48")
+            emitLine("and x17, \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #2")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            emitLine("add \(argReg.x), \(argReg.x), x17")
+            // v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0F
+            emitLine("mov x16, #0x0F0F")
+            emitLine("movk x16, #0x0F0F, lsl #16")
+            emitLine("movk x16, #0x0F0F, lsl #32")
+            emitLine("movk x16, #0x0F0F, lsl #48")
+            emitLine("lsr x17, \(argReg.x), #4")
+            emitLine("add \(argReg.x), \(argReg.x), x17")
+            emitLine("and \(argReg.x), \(argReg.x), x16")
+            // v * 0x0101010101010101 >> 56 gives the count in the top byte
+            emitLine("mov x16, #0x0101")
+            emitLine("movk x16, #0x0101, lsl #16")
+            emitLine("movk x16, #0x0101, lsl #32")
+            emitLine("movk x16, #0x0101, lsl #48")
+            emitLine("mul \(argReg.x), \(argReg.x), x16")
+            emitLine("lsr \(argReg.x), \(argReg.x), #56")
             return argReg
         }
 
