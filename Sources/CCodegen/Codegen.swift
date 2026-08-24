@@ -3753,17 +3753,31 @@ public final class Codegen {
                 }
             case .shr:
                 // Use lsr for unsigned, asr for signed
+                // For shifts, result type is the promoted LEFT operand type (C99 6.5.7).
+                // The right operand's signedness does NOT affect the shift type.
+                let shiftIsSigned: Bool = {
+                    func intPromote(_ t: CType) -> CType {
+                        let u = t.unqualified
+                        switch u {
+                        case .bool, .char, .schar, .uchar, .short, .ushort:
+                            return .int
+                        default:
+                            return t
+                        }
+                    }
+                    return intPromote(leftType).isSigned
+                }()
                 if resultType.sizeInBytes == 4 {
-                    if is32BitSigned {
+                    if shiftIsSigned {
                         emitLine("asr \(leftReg.w), \(leftReg.w), \(rightReg.w)")
                     } else {
                         emitLine("lsr \(leftReg.w), \(leftReg.w), \(rightReg.w)")
                     }
                 } else {
-                    if leftType.isUnsigned {
-                        emitLine("lsr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
-                    } else {
+                    if shiftIsSigned {
                         emitLine("asr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
+                    } else {
+                        emitLine("lsr \(leftReg.x), \(leftReg.x), \(rightReg.x)")
                     }
                 }
             case .bitAnd:
