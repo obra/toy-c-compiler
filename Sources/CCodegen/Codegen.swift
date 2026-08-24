@@ -6261,12 +6261,26 @@ public final class Codegen {
         // C99 requires that fields/elements not explicitly initialized be set to zero.
         if let totalSize = t.sizeInBytes, totalSize > 0 {
             emitLine("mov w15, #0")
-            for i in stride(from: 0, to: totalSize, by: 1) {
-                if i > 0 {
-                    emitLine("strb w15, [\(addrReg.x), #\(i)]")
+            // Use 8-byte stores for bulk, then 1-byte for remainder.
+            // For offsets > 4095, use add to compute address first.
+            var offset = 0
+            while offset + 8 <= totalSize {
+                if offset <= 32760 {
+                    emitLine("str x15, [\(addrReg.x), #\(offset)]")
                 } else {
-                    emitLine("strb w15, [\(addrReg.x)]")
+                    emitLoadImm("x16", Int64(offset))
+                    emitLine("str x15, [\(addrReg.x), x16]")
                 }
+                offset += 8
+            }
+            while offset < totalSize {
+                if offset <= 4095 {
+                    emitLine("strb w15, [\(addrReg.x), #\(offset)]")
+                } else {
+                    emitLoadImm("x16", Int64(offset))
+                    emitLine("strb w15, [\(addrReg.x), x16]")
+                }
+                offset += 1
             }
         }
         // Save base address to stack to avoid clobbering by emitExpr
