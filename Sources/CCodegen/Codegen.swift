@@ -698,11 +698,43 @@ public final class Codegen {
                         if desig != nil { hasFieldDesignators = true; break }
                     }
                     if hasFieldDesignators, let firstField = rec.fields.first {
-                        // Designated init for a union: designators refer to the first
-                        // (anonymous) struct member's fields. Create a synthetic initList
-                        // with the designators and recurse into the struct type.
-                        let syntheticIl = Expr.initList(InitListExpr(values: il.values, designators: il.designators, loc: il.loc))
-                        emitInitializer(syntheticIl, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                        // Designated init for a union. The designator may reference
+                        // the union member by name (e.g., .f.d = 5 means union member f,
+                        // field d). If the first designator name matches a union field,
+                        // strip it and recurse into that field's type.
+                        var strippedDesignators: [[String]?] = []
+                        var matchedField = false
+                        for desig in il.designators {
+                            if let names = desig, let firstName = names.first {
+                                // Check if firstName matches a union field
+                                if rec.fields.contains(where: { ($0.name ?? "") == firstName }) {
+                                    matchedField = true
+                                    strippedDesignators.append(names.count > 1 ? Array(names.dropFirst()) : nil)
+                                } else {
+                                    strippedDesignators.append(desig)
+                                }
+                            } else {
+                                strippedDesignators.append(desig)
+                            }
+                        }
+                        if matchedField {
+                            // Find the designated field (use the first match)
+                            var targetType = firstField.type
+                            for field in rec.fields {
+                                if let names = il.designators.compactMap({ $0 }).first,
+                                   let firstName = names.first,
+                                   (field.name ?? "") == firstName {
+                                    targetType = field.type
+                                    break
+                                }
+                            }
+                            let syntheticIl = Expr.initList(InitListExpr(values: il.values, designators: strippedDesignators, loc: il.loc))
+                            emitInitializer(syntheticIl, size: targetType.sizeInBytes ?? rec.size ?? 8, type: targetType)
+                        } else {
+                            // Designators refer to fields within the first (anonymous) struct member
+                            let syntheticIl = Expr.initList(InitListExpr(values: il.values, designators: il.designators, loc: il.loc))
+                            emitInitializer(syntheticIl, size: firstField.type.sizeInBytes ?? rec.size ?? 8, type: firstField.type)
+                        }
                     } else if let firstField = rec.fields.first {
                         if il.values.count > 0 {
                             let v = il.values[0]
@@ -1360,7 +1392,7 @@ public final class Codegen {
             }
         }
         if !regStrings.isEmpty {
-            emitLine(".section __TEXT,__cstring")
+            emitLine(".section __TEXT,__const")
             for sl in regStrings {
                 emitLine("\(sl.label):")
                 emitLine(".asciz \"\(escapeString(sl.value))\"")
@@ -4352,7 +4384,16 @@ public final class Codegen {
             }
 
             // Restore RHS from stack
-            let rhsReg = regAlloc.alloc() ?? .x11
+            let rhsReg: ARM64Reg
+            if let r = regAlloc.alloc(), r != targetAddr2 && r != currentReg {
+                rhsReg = r
+            } else if targetAddr2 != .x11 && currentReg != .x11 {
+                rhsReg = .x11
+            } else if targetAddr2 != .x16 && currentReg != .x16 {
+                rhsReg = .x16
+            } else {
+                rhsReg = .x17
+            }
             if rhsIsFloat {
                 let fpReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
                 emitLine("ldr \(fpReg), [sp], #16")
@@ -4581,13 +4622,31 @@ public final class Codegen {
                     }
                 } else {
                     // Large struct (>16 bytes): caller passes destination address in x8.
-                    // The callee writes directly to [x8]. We must set x8 = dstReg before the call.
+                    // Use a temporary buffer on the stack to avoid overlapping source
+                    // and destination (e.g., union aliasing where p and q overlap).
+                    // Allocate temp space, pass as x8, then copy to destination.
+                    let tempSize = (size + 15) & ~15  // align to 16
+                    ensureLocalSpace(size: tempSize)
+                    let tempOffset = -localOffset
+                    if tempOffset >= -256 && tempOffset <= 255 {
+                        emitLine("add x8, x29, #\(tempOffset)")
+                    } else {
+                        emitLoadImm("x16", Int64(tempOffset))
+                        emitLine("add x8, x29, x16")
+                    }
                     // Save dstReg to stack since emitExpr may clobber it.
                     emitLine("str \(dstReg.x), [sp, #-16]!")
-                    emitLine("mov x8, \(dstReg.x)")
                     _ = emitExpr(a.value)
-                    // Restore dstReg (not strictly needed but keeps reg state clean)
+                    // Restore dstReg and copy from temp to destination
                     emitLine("ldr \(dstReg.x), [sp], #16")
+                    // Use x16 for temp address to avoid clobbering dstReg
+                    if tempOffset >= -256 && tempOffset <= 255 {
+                        emitLine("add x16, x29, #\(tempOffset)")
+                    } else {
+                        emitLoadImm("x17", Int64(tempOffset))
+                        emitLine("add x16, x29, x17")
+                    }
+                    emitStructCopyToField("\(dstReg.x)", .x16, size)
                 }
                 regAlloc.free(dstReg)
                 return dstReg
@@ -6508,6 +6567,21 @@ public final class Codegen {
                     "__builtin_calloc": .pointer(to: .void),
                     "__builtin_realloc": .pointer(to: .void),
                     "__builtin_alloca": .pointer(to: .void),
+                    "__builtin_memcpy": .pointer(to: .void),
+                    "__builtin_memset": .pointer(to: .void),
+                    "__builtin_memmove": .pointer(to: .void),
+                    "__builtin_strcpy": .pointer(to: .char),
+                    "__builtin_strncpy": .pointer(to: .char),
+                    "__builtin_strcat": .pointer(to: .char),
+                    "__builtin_strncat": .pointer(to: .char),
+                    "__builtin_strdup": .pointer(to: .char),
+                    "__builtin_strndup": .pointer(to: .char),
+                    "__builtin_strchr": .pointer(to: .char),
+                    "__builtin_strrchr": .pointer(to: .char),
+                    "__builtin_strstr": .pointer(to: .char),
+                    "__builtin_strpbrk": .pointer(to: .char),
+                    "__builtin_memchr": .pointer(to: .void),
+                    "__builtin_mempcpy": .pointer(to: .void),
                     "malloc": .pointer(to: .void),
                     "calloc": .pointer(to: .void),
                     "realloc": .pointer(to: .void),
@@ -8119,6 +8193,29 @@ public final class Codegen {
                         emitLine("mov \(elemAddr.x), x16")
                         emitLocalInit(elemAddr, cl.initList, type: elemType)
                         regAlloc.free(elemAddr)
+                    } else if case .stringLiteral(let sl) = v, case .array(let charElem, let charCount) = elemType.unqualified, charElem.isChar {
+                        // String literal for char array element — copy bytes inline
+                        let label = addStringLiteral(sl.value)
+                        emitLine("adrp x14, \(label)@PAGE")
+                        emitLine("add x14, x14, \(label)@PAGEOFF")
+                        let bytes = Array(sl.value.utf8)
+                        let copyLen = min(charCount, bytes.count + 1)
+                        for k in 0..<copyLen {
+                            if k > 0 {
+                                emitLine("ldrb w15, [x14, #\(k)]")
+                                emitLine("strb w15, [x16, #\(k)]")
+                            } else {
+                                emitLine("ldrb w15, [x14]")
+                                emitLine("strb w15, [x16]")
+                            }
+                        }
+                        // Zero-fill remaining bytes
+                        if copyLen < charCount {
+                            emitLine("mov w15, #0")
+                            for k in copyLen..<charCount {
+                                emitLine("strb w15, [x16, #\(k)]")
+                            }
+                        }
                     } else {
                         // Save x16 (element address) before emitExpr clobbers it
                         emitLine("str x16, [sp, #8]")

@@ -2928,6 +2928,12 @@ public final class Parser {
             return isConstantExpr(c.expr)
         case .sizeof:
             return true
+        case .call(let c):
+            // __builtin_offsetof is a compile-time constant
+            if case .identifier(let id) = c.function, id.name == "__builtin_offsetof" {
+                return true
+            }
+            return false
         default:
             return false
         }
@@ -2987,6 +2993,45 @@ public final class Parser {
                 return Int64(typeName.sizeInBytes ?? 0)
             }
             return Int64(evalExprType(s.expr ?? .integerLiteral(IntegerLiteral(value: 0, loc: SourceLoc.unknown))).sizeInBytes ?? 0)
+        case .call(let c):
+            // __builtin_offsetof(type, member) — compute at compile time
+            if case .identifier(let id) = c.function, id.name == "__builtin_offsetof",
+               let arg = c.arguments.first, case .member(let m) = arg,
+               case .sizeof(let sz) = m.base, let typeName = sz.typeName {
+                var offset: Int64 = 0
+                var currentType: CType = typeName
+                var currentExpr: Expr = arg
+                var memberNames: [String] = []
+                while true {
+                    if case .member(let mm) = currentExpr {
+                        memberNames.insert(mm.memberName, at: 0)
+                        currentExpr = mm.base
+                    } else {
+                        break
+                    }
+                }
+                for memberName in memberNames {
+                    if case .structType(let rec) = currentType.unqualified {
+                        for field in rec.fields {
+                            if (field.name ?? "") == memberName {
+                                offset += Int64(field.offset ?? 0)
+                                currentType = field.type
+                                break
+                            }
+                        }
+                    } else if case .unionType(let rec) = currentType.unqualified {
+                        for field in rec.fields {
+                            if (field.name ?? "") == memberName {
+                                offset += Int64(field.offset ?? 0)
+                                currentType = field.type
+                                break
+                            }
+                        }
+                    }
+                }
+                return offset
+            }
+            return 0
         default:
             return 0
         }
