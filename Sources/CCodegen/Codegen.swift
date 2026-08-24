@@ -3060,14 +3060,20 @@ public final class Codegen {
             return reg
 
         case .stmtExpr(let se):
-            // Emit all statements in the body
-            for stmt in se.body.statements {
-                _ = emitStmt(stmt)
-            }
-            // Return the value of the last expression statement
-            if let lastStmt = se.body.statements.last,
-               case .expr(let es) = lastStmt, let e = es.expr {
+            // Emit all statements except the last one (if it's an expression statement),
+            // then evaluate the last expression to get the return value.
+            let stmts = se.body.statements
+            if let lastStmt = stmts.last, case .expr(let es) = lastStmt, let e = es.expr {
+                // Emit all but the last statement
+                for stmt in stmts.dropLast() {
+                    _ = emitStmt(stmt)
+                }
+                // Evaluate the last expression for its value
                 return emitExpr(e)
+            }
+            // No expression statement as last — emit all and return 0
+            for stmt in stmts {
+                _ = emitStmt(stmt)
             }
             let reg = regAlloc.alloc() ?? .x9
             emitLine("mov \(reg.x), #0")
