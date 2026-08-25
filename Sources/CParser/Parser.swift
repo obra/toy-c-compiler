@@ -953,7 +953,6 @@ public final class Parser {
 
         if hasVoid { return .void }
         if hasBool { return .bool }
-        if hasChar { return isUnsigned ? .uchar : .char }
         if hasComplex {
             if hasFloat { return .complexFloat }
             if hasDouble { return longCount > 0 ? .complexLongDouble : .complexDouble }

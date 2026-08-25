@@ -9283,7 +9283,7 @@ public final class Codegen {
             let operandType = exprType(u.operand).unqualified
             let baseAddr = emitAddr(u.operand)
             if operandType.isComplex && u.op == .imagPart {
-                let partSize = operandType == .complexFloat ? 4 : 8
+                let (_, partSize) = complexTypeInfo(operandType)
                 emitLine("add \(baseAddr.x), \(baseAddr.x), #\(partSize)")
             }
             return baseAddr
