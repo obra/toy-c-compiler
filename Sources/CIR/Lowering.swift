@@ -331,6 +331,78 @@ fileprivate struct Lowerer {
         case .mrs(let dst, let regName):
             emit("mrs \(reg(dst)), \(regName)", into: &out)
 
+        // --- Type conversions ---
+        case .neg(let dst, let src):
+            emit("neg \(reg(dst)), \(operand(src))", into: &out)
+        case .scvtf(let dst, let src, let toFloat):
+            let form = toFloat ? "s" : "d"
+            emit("scvtf \(form)\(dst.id), \(operand(src))", into: &out)
+        case .ucvtf(let dst, let src, let toFloat):
+            let form = toFloat ? "s" : "d"
+            emit("ucvtf \(form)\(dst.id), \(operand(src))", into: &out)
+        case .fcvtzs(let dst, let src, let fromDouble, let width):
+            let srcForm = fromDouble ? "d" : "s"
+            let dstForm: String
+            switch width {
+            case .byte: dstForm = "w"; case .halfword: dstForm = "w"
+            case .word: dstForm = "w"; case .dword: dstForm = "x"
+            }
+            emit("fcvtzs \(dstForm)\(dst.id), \(srcForm)\(src.asVReg?.id ?? 0)", into: &out)
+        case .fcvtzu(let dst, let src, let fromDouble, let width):
+            let srcForm = fromDouble ? "d" : "s"
+            let dstForm: String
+            switch width {
+            case .byte: dstForm = "w"; case .halfword: dstForm = "w"
+            case .word: dstForm = "w"; case .dword: dstForm = "x"
+            }
+            emit("fcvtzu \(dstForm)\(dst.id), \(srcForm)\(src.asVReg?.id ?? 0)", into: &out)
+        case .fmovFromInt(let dst, let src, let isFloat):
+            let form = isFloat ? "s" : "d"
+            emit("fmov \(form)\(dst.id), \(operand(src))", into: &out)
+        case .fmovToInt(let dst, let src, let isFloat):
+            let srcForm = isFloat ? "s" : "d"
+            emit("fmov \(reg(dst)), \(srcForm)\(src.asVReg?.id ?? 0)", into: &out)
+
+        // --- Multi-word arithmetic (for __int128) ---
+        case .adds(let dst, let s1, let s2):
+            emit("adds \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .subs(let dst, let s1, let s2):
+            emit("subs \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .adc(let dst, let s1, let s2):
+            emit("adc \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .sbc(let dst, let s1, let s2):
+            emit("sbc \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .umulh(let dst, let s1, let s2):
+            emit("umulh \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .smulh(let dst, let s1, let s2):
+            emit("smulh \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+
+        // --- Stack pointer operations ---
+        case .addSP(let dst, let value):
+            if value >= -4095 && value <= 4095 {
+                emit("add \(reg(dst)), sp, #\(value)", into: &out)
+            } else {
+                emitLoadImm("x16", Int64(value), into: &out)
+                emit("add \(reg(dst)), sp, x16", into: &out)
+            }
+        case .subSP(let dst, let value):
+            if value >= -4095 && value <= 4095 {
+                emit("sub \(reg(dst)), sp, #\(value)", into: &out)
+            } else {
+                emitLoadImm("x16", Int64(value), into: &out)
+                emit("sub \(reg(dst)), sp, x16", into: &out)
+            }
+
+        // --- Pre/post-indexed load/store ---
+        case .loadPre(let dst, let addr, let offset, let width):
+            emit("\(width.loadMnemonic) \(reg(dst)), [\(operand(addr)), #\(offset)]!", into: &out)
+        case .storePre(let src, let addr, let offset, let width):
+            emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), #\(offset)]!", into: &out)
+        case .loadPost(let dst, let addr, let offset, let width):
+            emit("\(width.loadMnemonic) \(reg(dst)), [\(operand(addr))], #\(offset)", into: &out)
+        case .storePost(let src, let addr, let offset, let width):
+            emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr))], #\(offset)", into: &out)
+
         // --- Label ---
         case .label(let name):
             emit("\(name):", into: &out)

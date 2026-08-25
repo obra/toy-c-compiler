@@ -206,6 +206,33 @@ public enum IRInst: Equatable {
     case dmb                                                   // data memory barrier
     case mrs(dst: VReg, reg: String)                           // move from system register
 
+    // --- Type conversions ---
+    case neg(dst: VReg, src: Operand)                          // negate: sub from 0
+    case scvtf(dst: VReg, src: Operand, toFloat: Bool)         // signed int → float/double
+    case ucvtf(dst: VReg, src: Operand, toFloat: Bool)         // unsigned int → float/double
+    case fcvtzs(dst: VReg, src: Operand, fromDouble: Bool, width: Width) // float → signed int
+    case fcvtzu(dst: VReg, src: Operand, fromDouble: Bool, width: Width) // float → unsigned int
+    case fmovFromInt(dst: VReg, src: Operand, isFloat: Bool)   // fmov sN, wN or fmov dN, xN (int→FP bit pattern)
+    case fmovToInt(dst: VReg, src: Operand, isFloat: Bool)     // fmov wN, sN or fmov xN, dN (FP→int bit pattern)
+
+    // --- Multi-word arithmetic (for __int128) ---
+    case adds(dst: VReg, src1: Operand, src2: Operand)        // add with carry flag output
+    case subs(dst: VReg, src1: Operand, src2: Operand)         // subtract with carry flag output
+    case adc(dst: VReg, src1: Operand, src2: Operand)         // add with carry
+    case sbc(dst: VReg, src1: Operand, src2: Operand)          // subtract with carry
+    case umulh(dst: VReg, src1: Operand, src2: Operand)        // unsigned multiply high
+    case smulh(dst: VReg, src1: Operand, src2: Operand)        // signed multiply high
+
+    // --- Stack pointer operations ---
+    case addSP(dst: VReg, value: Int)                          // add sp, sp, #value (handles large values via temp)
+    case subSP(dst: VReg, value: Int)                          // sub sp, sp, #value
+
+    // --- Pre/post-indexed load/store (push/pop) ---
+    case loadPre(src: VReg, addr: Operand, offset: Int, width: Width)    // ldr src, [addr, #offset]!
+    case storePre(src: Operand, addr: Operand, offset: Int, width: Width) // str src, [addr, #offset]!
+    case loadPost(src: VReg, addr: Operand, offset: Int, width: Width)   // ldr src, [addr], #offset
+    case storePost(src: Operand, addr: Operand, offset: Int, width: Width) // str src, [addr], #offset
+
     // --- Label (not a real instruction, marks a basic block boundary) ---
     case label(String)
 
