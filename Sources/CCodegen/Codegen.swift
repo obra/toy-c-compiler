@@ -1942,9 +1942,49 @@ public final class Codegen {
                 if case .varDecl(let vd) = decl, vd.vlaSizeExpr != nil {
                     functionHasVLA = true
                 }
+                // Also detect compound literals in initializers — they allocate
+                // stack dynamically, so backward gotos need sp restoration too.
+                if case .varDecl(let vd) = decl, let init_ = vd.initializer {
+                    if exprHasCompoundLiteral(init_) { functionHasVLA = true }
+                }
+            }
+        case .expr(let es):
+            // Compound literals in expression statements also need sp save/restore.
+            if let e = es.expr, exprHasCompoundLiteral(e) {
+                functionHasVLA = true
             }
         default:
             break
+        }
+    }
+
+    /// Check if an expression contains a compound literal (allocates stack dynamically).
+    private func exprHasCompoundLiteral(_ expr: Expr) -> Bool {
+        switch expr {
+        case .compoundLiteral:
+            return true
+        case .unary(let u):
+            return exprHasCompoundLiteral(u.operand)
+        case .binary(let b):
+            return exprHasCompoundLiteral(b.left) || exprHasCompoundLiteral(b.right)
+        case .assign(let a):
+            return exprHasCompoundLiteral(a.target) || exprHasCompoundLiteral(a.value)
+        case .call(let c):
+            for a in c.arguments { if exprHasCompoundLiteral(a) { return true } }
+            return false
+        case .subscript_(let s):
+            return exprHasCompoundLiteral(s.base) || exprHasCompoundLiteral(s.index)
+        case .member(let m):
+            return exprHasCompoundLiteral(m.base)
+        case .conditional(let c):
+            return exprHasCompoundLiteral(c.condition) || exprHasCompoundLiteral(c.trueExpr) || exprHasCompoundLiteral(c.falseExpr)
+        case .cast(let c):
+            return exprHasCompoundLiteral(c.expr)
+        case .initList(let il):
+            for v in il.values { if exprHasCompoundLiteral(v) { return true } }
+            return false
+        default:
+            return false
         }
     }
 
@@ -4333,6 +4373,9 @@ public final class Codegen {
             if operandType.isFloating {
                 let fpReg = operandType == .float ? "s\(operandReg.regNum)" : "d\(operandReg.regNum)"
                 emitLine("fneg \(fpReg), \(fpReg)")
+            } else if operandType.sizeInBytes == 4 {
+                // 32-bit: use w form so the result is truncated/zero-extended
+                emitLine("neg \(operandReg.w), \(operandReg.w)")
             } else {
                 emitLine("neg \(operandReg.x), \(operandReg.x)")
             }
@@ -5622,19 +5665,78 @@ public final class Codegen {
             return emitOverflowBuiltin(c, op: .mul)
         }
 
-        // __builtin_mul_overflow_p(a, b) → 1 if a*b would overflow, 0 otherwise
-        // Like __builtin_mul_overflow but doesn't store the result.
-        if case .identifier(let id) = c.function, id.name == "__builtin_mul_overflow_p", c.arguments.count >= 2 {
+        // __builtin_mul_overflow_p(a, b, c) → 1 if a*b would overflow typeof(c), 0 otherwise.
+        // Unlike __builtin_mul_overflow, the third arg is a value (not a pointer) whose
+        // type determines the result width/signedness. No store is performed.
+        if case .identifier(let id) = c.function, id.name == "__builtin_mul_overflow_p", c.arguments.count >= 3 {
+            // Result type R = type of the third argument
+            var rType: CType = .int
+            rType = exprType(c.arguments[2]).unqualified
+            let wR = rType.sizeInBytes ?? 4
+            let sRSigned = rType.isSigned
+
+            // Promoted width/signedness of each operand
+            func promoted(_ expr: Expr) -> (width: Int, signed: Bool) {
+                let t = exprType(expr).unqualified
+                let w = t.sizeInBytes ?? 4
+                if w < 4 { return (4, true) }
+                if case .enumType = t { return (4, true) }
+                return (w, t.isSigned)
+            }
+            let (wA, sA) = promoted(c.arguments[0])
+            let (wB, sB) = promoted(c.arguments[1])
+
+            // Evaluate both operands and spill
             let aReg = emitExpr(c.arguments[0])
             emitLine("str \(aReg.x), [sp, #-16]!")
+            regAlloc.free(aReg)
             let bReg = emitExpr(c.arguments[1])
             emitLine("str \(bReg.x), [sp, #-16]!")
-            let resultReg = regAlloc.alloc() ?? .x9
-            // For now, just return 0 (no overflow) for most cases
-            // A proper implementation would check if the multiplication overflows
-            emitLine("mov \(resultReg.w), #0")
+            regAlloc.free(bReg)
+
+            // Evaluate third arg for its type only (discard the value)
+            let cReg = emitExpr(c.arguments[2])
+            regAlloc.free(cReg)
+
+            emitLine("ldr x9, [sp, #16]")
+            emitLine("ldr x10, [sp, #0]")
+            emitExtendTo64("x9", width: wA, signed: sA)
+            emitExtendTo64("x10", width: wB, signed: sB)
+
+            // Compute 128-bit product: hi in x12, lo in x11
+            emitLine("mul x11, x9, x10")
+            if sA && sB {
+                emitLine("smulh x12, x9, x10")
+            } else if !sA && !sB {
+                emitLine("umulh x12, x9, x10")
+            } else if sA && !sB {
+                let lbl = newLabel()
+                emitLine("umulh x12, x9, x10")
+                emitLine("tbz x9, #63, \(lbl)")
+                emitLine("sub x12, x12, x10")
+                emitLine("\(lbl):")
+            } else {
+                let lbl = newLabel()
+                emitLine("umulh x12, x9, x10")
+                emitLine("tbz x10, #63, \(lbl)")
+                emitLine("sub x12, x12, x9")
+                emitLine("\(lbl):")
+            }
+
+            // overflow = (hi != S_hi) || (lo != S) where S = extend(truncate(lo, wR), sR)
+            emitComputeS("x13", from: "x11", width: wR, signed: sRSigned)
+            if sRSigned {
+                emitLine("asr x14, x13, #63")
+            } else {
+                emitLine("mov x14, #0")
+            }
+            emitLine("cmp x12, x14")
+            emitLine("cset x16, ne")
+            emitLine("cmp x11, x13")
+            emitLine("cset x17, ne")
             emitLine("add sp, sp, #32")
-            regAlloc.free(aReg); regAlloc.free(bReg)
+            let resultReg = regAlloc.alloc() ?? .x9
+            emitLine("orr \(resultReg.w), w16, w17")
             return resultReg
         }
 
@@ -8325,24 +8427,96 @@ public final class Codegen {
             // Move it to [sp, #8] so nested emitLocalInit calls don't overwrite it.
             emitLine("ldr x9, [sp, #0]")
             emitLine("str x9, [sp, #8]")
-            if let firstField = rec.fields.first {
+            // Determine which field to initialize. With designated initializers,
+            // use the designated field; otherwise use the first field.
+            var targetField = rec.fields.first
+            var targetIdx = 0
+            if let desig = il.designators.first, let names = desig, let firstName = names.first {
+                for (fi, f) in rec.fields.enumerated() {
+                    if (f.name ?? "") == firstName {
+                        targetField = f
+                        targetIdx = fi
+                        break
+                    }
+                    // Anonymous member: check if firstName is a sub-field
+                    if (f.name ?? "").isEmpty, fieldHasMember(f.type, firstName) {
+                        targetField = f
+                        targetIdx = fi
+                        break
+                    }
+                }
+            }
+            if let field = targetField {
                 if il.values.count > 0 {
-                    let v = il.values[0]
+                    let v = il.values[targetIdx < il.values.count ? targetIdx : 0]
                     let fieldAddr = regAlloc.alloc() ?? .x9
                     emitLine("ldr \(fieldAddr.x), [sp, #8]")
-                    if case .initList = v {
-                        emitLocalInit(fieldAddr, v, type: firstField.type)
+                    // Handle nested designators (e.g., .f.f9 = val)
+                    let nestedNames: [String] = {
+                        if let names = il.designators.first, let ns = names { return Array(ns.dropFirst()) }
+                        return []
+                    }()
+                    if !nestedNames.isEmpty {
+                        // Compute nested offset within the field
+                        var nestedType = field.type
+                        var nestedOffset = 0
+                        for name in nestedNames {
+                            if case .structType(let r) = nestedType.unqualified {
+                                for nf in r.fields {
+                                    if (nf.name ?? "") == name {
+                                        nestedOffset += nf.offset
+                                        nestedType = nf.type
+                                        break
+                                    }
+                                    if (nf.name ?? "").isEmpty, fieldHasMember(nf.type, name) {
+                                        nestedOffset += nf.offset
+                                        nestedType = nf.type
+                                        break
+                                    }
+                                }
+                            } else if case .unionType(let r) = nestedType.unqualified {
+                                for nf in r.fields {
+                                    if (nf.name ?? "") == name {
+                                        nestedOffset += nf.offset
+                                        nestedType = nf.type
+                                        break
+                                    }
+                                    if (nf.name ?? "").isEmpty, fieldHasMember(nf.type, name) {
+                                        nestedOffset += nf.offset
+                                        nestedType = nf.type
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        // Save field addr, evaluate value, restore, store at nested offset
+                        emitLine("str \(fieldAddr.x), [sp, #0]")
+                        let addrReg2 = regAlloc.alloc() ?? .x10
+                        if nestedOffset > 0 {
+                            emitLine("add \(addrReg2.x), \(fieldAddr.x), #\(nestedOffset)")
+                        } else {
+                            emitLine("mov \(addrReg2.x), \(fieldAddr.x)")
+                        }
+                        emitLine("str \(addrReg2.x), [sp, #0]")
+                        regAlloc.free(fieldAddr)
+                        let valReg = emitExpr(v)
+                        emitLine("ldr x16, [sp, #0]")
+                        emitStoreToAddrRaw("x16", valReg, type: nestedType)
+                        regAlloc.free(valReg)
+                        regAlloc.free(addrReg2)
+                    } else if case .initList = v {
+                        emitLocalInit(fieldAddr, v, type: field.type)
                     } else if case .compoundLiteral(let cl) = v {
-                        emitLocalInit(fieldAddr, cl.initList, type: firstField.type)
-                    } else if case .identifier = v, case .structType = firstField.type.unqualified {
+                        emitLocalInit(fieldAddr, cl.initList, type: field.type)
+                    } else if case .identifier = v, case .structType = field.type.unqualified {
                         let srcAddr = emitAddr(v)
-                        emitStructCopyToField("\(fieldAddr.x)", srcAddr, firstField.type.sizeInBytes ?? 0)
+                        emitStructCopyToField("\(fieldAddr.x)", srcAddr, field.type.sizeInBytes ?? 0)
                         regAlloc.free(srcAddr)
-                    } else if case .array = firstField.type.unqualified {
-                        emitLocalInit(fieldAddr, .initList(InitListExpr(values: il.values, loc: SourceLoc.unknown)), type: firstField.type)
+                    } else if case .array = field.type.unqualified {
+                        emitLocalInit(fieldAddr, .initList(InitListExpr(values: il.values, loc: SourceLoc.unknown)), type: field.type)
                     } else {
                         let valReg = emitExpr(v)
-                        emitStoreToAddrRaw("\(fieldAddr.x)", valReg, type: firstField.type)
+                        emitStoreToAddrRaw("\(fieldAddr.x)", valReg, type: field.type)
                         regAlloc.free(valReg)
                     }
                     regAlloc.free(fieldAddr)
