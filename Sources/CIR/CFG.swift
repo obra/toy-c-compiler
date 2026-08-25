@@ -243,21 +243,28 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
     while changed && iterations < 10 {
         changed = false
 
-        // Cross-block DCE (more powerful than simple DCE)
+        // Pass 1: Load forwarding (eliminate redundant loads)
+        let (loadResult, loadChanged) = loadForwarding(result)
+        if loadChanged {
+            result = loadResult
+            changed = true
+        }
+
+        // Pass 2: Cross-block DCE (remove dead instructions)
         let crossBlockResult = crossBlockDCE(result)
         if crossBlockResult.count != result.count {
             result = crossBlockResult
             changed = true
         }
 
-        // Copy propagation
+        // Pass 3: Copy propagation
         let (copyResult, copyChanged) = copyPropagation(result)
         if copyChanged {
             result = copyResult
             changed = true
         }
 
-        // Constant folding
+        // Pass 4: Constant folding
         let (foldResult, foldChanged) = constantFolding(result)
         if foldChanged {
             result = foldResult
