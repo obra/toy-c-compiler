@@ -2619,11 +2619,18 @@ public final class Parser {
             let (baseType, _, _, _) = try parseDeclSpecifiers()
             let (_, typeName, _) = try parseDeclarator(baseType)
             _ = match(kind: .punct, spelling: ",")
-            // Parse the member access chain (e.g., b, or a.b, or a.b.c)
+            // Parse the member access chain (e.g., b, or a.b, or a.b.c, or b[i][j])
             // Use a dummy sizeof expression to carry the type, followed by .member
             var memberBase: Expr = .sizeof(SizeofExpr(expr: nil, typeName: typeName, loc: loc))
             var memberName = try consume(kind: .identifier).spelling
             memberBase = .member(MemberExpr(base: memberBase, memberName: memberName, isArrow: false, loc: loc))
+            // Handle array subscripts on the member (e.g., b[i][j] in offsetof(struct S, b[i][j]))
+            while isPunct("[") {
+                advance()
+                let idx = try parseAssignmentExpr()
+                _ = try consume(kind: .punct, spelling: "]")
+                memberBase = .subscript_(SubscriptExpr(base: memberBase, index: idx, loc: loc))
+            }
             while isPunct(".") {
                 advance()
                 let m = try consume(kind: .identifier).spelling

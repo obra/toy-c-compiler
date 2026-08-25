@@ -7513,38 +7513,112 @@ public final class Codegen {
             return reg
         }
 
-        // __builtin_offsetof(type, member) → compile-time constant
+        // __builtin_offsetof(type, member) → compile-time constant or runtime value
+        // Supports member chains (a.b.c) and array subscripts (b[i][j]).
+        // For fixed-size arrays, the subscript offset is computed at compile time.
+        // For VLAs, the subscript offset is computed at runtime.
         if case .identifier(let id) = c.function, id.name == "__builtin_offsetof" {
-            // The argument is a member expression: .member(sizeof(type), memberName)
-            // We compute the offset at compile time from the type and member chain.
             let reg = regAlloc.alloc() ?? .x9
-            if let arg = c.arguments.first, case .member(let m) = arg,
-               case .sizeof(let sz) = m.base, let typeName = sz.typeName {
-                var offset: Int = 0
-                var currentType: CType = typeName
-                // Walk the member chain (for nested structs: a.b.c)
+            if let arg = c.arguments.first {
+                // Walk the expression chain bottom-up to collect operations
+                // (member access and array subscript) in order.
+                // The base is a sizeof(type) expression carrying the struct type.
+                var ops: [(member: String?, index: Expr?)] = []
                 var currentExpr: Expr = arg
-                var memberNames: [String] = []
+                var baseType: CType? = nil
                 while true {
                     if case .member(let mm) = currentExpr {
-                        memberNames.insert(mm.memberName, at: 0)
+                        ops.insert((member: mm.memberName, index: nil), at: 0)
                         currentExpr = mm.base
+                    } else if case .subscript_(let sub) = currentExpr {
+                        ops.insert((member: nil, index: sub.index), at: 0)
+                        currentExpr = sub.base
+                    } else if case .sizeof(let sz) = currentExpr, let tn = sz.typeName {
+                        baseType = tn
+                        break
                     } else {
                         break
                     }
                 }
-                for memberName in memberNames {
-                    if case .structType(let rec) = currentType.unqualified {
-                        for field in rec.fields {
-                            if field.name == memberName {
-                                offset += field.offset ?? 0
-                                currentType = field.type
-                                break
+                guard let typeName = baseType else {
+                    emitLine("mov \(reg.x), #0")
+                    return reg
+                }
+                // Check if all subscripts have compile-time constant indices
+                // and all arrays are fixed-size. If so, compute at compile time.
+                var allConst = true
+                for op in ops {
+                    if op.index != nil && evalConstExpr(op.index!) == nil {
+                        allConst = false
+                        break
+                    }
+                }
+                if allConst {
+                    // Compute offset at compile time
+                    var offset: Int = 0
+                    var currentType: CType = typeName
+                    for op in ops {
+                        if let memberName = op.member {
+                            if case .structType(let rec) = currentType.unqualified {
+                                for field in rec.fields {
+                                    if field.name == memberName {
+                                        offset += field.offset
+                                        currentType = field.type
+                                        break
+                                    }
+                                }
                             }
+                        } else if let idxExpr = op.index, let idx = evalConstExpr(idxExpr) {
+                            // Array subscript: offset += idx * elemSize
+                            let elemType: CType
+                            if case .array(let et, _) = currentType.unqualified { elemType = et }
+                            else if case .incompleteArray(let et) = currentType.unqualified { elemType = et }
+                            else { elemType = .int }
+                            let elemSize = elemType.unqualified.sizeInBytes ?? 1
+                            offset += Int(idx) * elemSize
+                            currentType = elemType
+                        }
+                    }
+                    emitLoadImm(reg.x, Int64(offset))
+                } else {
+                    // Compute offset at runtime (for VLA subscripts with variable indices)
+                    // Start with offset = 0
+                    emitLine("mov \(reg.x), #0")
+                    var currentType: CType = typeName
+                    for op in ops {
+                        if let memberName = op.member {
+                            if case .structType(let rec) = currentType.unqualified {
+                                for field in rec.fields {
+                                    if field.name == memberName {
+                                        if field.offset > 0 {
+                                            emitLine("add \(reg.x), \(reg.x), #\(field.offset)")
+                                        }
+                                        currentType = field.type
+                                        break
+                                    }
+                                }
+                            }
+                        } else if let idxExpr = op.index {
+                            // Array subscript: offset += idx * elemSize
+                            let elemType: CType
+                            if case .array(let et, _) = currentType.unqualified { elemType = et }
+                            else if case .incompleteArray(let et) = currentType.unqualified { elemType = et }
+                            else { elemType = .int }
+                            let elemSize = elemType.unqualified.sizeInBytes ?? 1
+                            let idxReg = emitExpr(idxExpr)
+                            if exprType(idxExpr).unqualified.isSigned32Bit {
+                                emitLine("sxtw \(idxReg.x), \(idxReg.w)")
+                            }
+                            if elemSize > 1 {
+                                emitLoadImm("x16", Int64(elemSize))
+                                emitLine("mul \(idxReg.x), \(idxReg.x), x16")
+                            }
+                            emitLine("add \(reg.x), \(reg.x), \(idxReg.x)")
+                            regAlloc.free(idxReg)
+                            currentType = elemType
                         }
                     }
                 }
-                emitLoadImm(reg.x, Int64(offset))
             } else {
                 emitLine("mov \(reg.x), #0")
             }
