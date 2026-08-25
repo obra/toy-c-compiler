@@ -2323,11 +2323,8 @@ public final class Parser {
             let isReal = isKeyword("__real__") || isKeyword("__real")
             advance() // consume keyword
             let operand = try parseCastExpr()
-            if isReal {
-                return operand
-            } else {
-                return .integerLiteral(IntegerLiteral(value: 0, type: .int, loc: SourceLoc.unknown))
-            }
+            let op: UnaryOp = isReal ? .realPart : .imagPart
+            return .unary(UnaryExpr(op: op, operand: operand, resolvedType: nil, loc: SourceLoc.unknown))
         }
 
         // sizeof

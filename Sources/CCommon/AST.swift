@@ -554,6 +554,8 @@ public enum UnaryOp: String, Equatable, Sendable {
     case postDec = "p--"
     case addressOf = "&" // &x
     case dereference = "*" // *x
+    case realPart = "__real__"   // __real__ expr
+    case imagPart = "__imag__"   // __imag__ expr
 }
 
 public struct UnaryExpr: Equatable {

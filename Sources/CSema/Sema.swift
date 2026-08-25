@@ -509,6 +509,14 @@ public final class Sema {
                 return .pointer(to: operandType)
             case .preInc, .preDec, .postInc, .postDec:
                 return operandType
+            case .realPart:
+                // __real__ on complex returns the real element type; on non-complex, identity
+                if operandType.isComplex { return operandType.complexRealType }
+                return operandType
+            case .imagPart:
+                // __imag__ on complex returns the real element type; on non-complex, returns 0 of that type
+                if operandType.isComplex { return operandType.complexRealType }
+                return operandType
             }
 
         case .assign(let a):
