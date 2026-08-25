@@ -261,6 +261,12 @@ func parseInstruction(
     switch m {
     // --- Arithmetic (integer) ---
     case "add":
+        // Check for stack pointer adjustment: "add sp, sp, #N"
+        if args.count >= 3 && args[0] == "sp" {
+            if case .imm(let val) = parseOperand(args[2], counter: &counter) {
+                return .addSP(dst: VReg(id: 31, kind: .gp), value: Int(val))
+            }
+        }
         // Check for shifted register: "add x0, x1, x2, lsl #3"
         if args.count >= 5 && (args[3] == "lsl" || args[3] == "lsr" || args[3] == "asr") {
             let dst = parseReg(args[0], counter: &counter)!
@@ -278,6 +284,12 @@ func parseInstruction(
             return .add(dst: dst, src1: src1, src2: src2)
         }
     case "sub":
+        // Check for stack pointer adjustment: "sub sp, sp, #N"
+        if args.count >= 3 && args[0] == "sp" {
+            if case .imm(let val) = parseOperand(args[2], counter: &counter) {
+                return .subSP(dst: VReg(id: 31, kind: .gp), value: Int(val))
+            }
+        }
         if args.count >= 3 {
             let dst = parseReg(args[0], counter: &counter)!
             let src1 = parseOperand(args[1], counter: &counter)
@@ -748,20 +760,6 @@ func parseInstruction(
         let base = parseOperand(args[1], counter: &counter)
         let symbol = args[2].replacingOccurrences(of: "@PAGEOFF", with: "")
         return .addSymbol(dst: dst, base: base, symbol: symbol)
-    }
-
-    // Handle "sub sp, sp, #N" as subSP
-    if m == "sub" && args.count >= 3 && args[0] == "sp" {
-        if case .imm(let val) = parseOperand(args[2], counter: &counter) {
-            return .subSP(dst: VReg(id: 31, kind: .gp), value: Int(val))
-        }
-    }
-
-    // Handle "add sp, sp, #N" as addSP
-    if m == "add" && args.count >= 3 && args[0] == "sp" {
-        if case .imm(let val) = parseOperand(args[2], counter: &counter) {
-            return .addSP(dst: VReg(id: 31, kind: .gp), value: Int(val))
-        }
     }
 
     return nil

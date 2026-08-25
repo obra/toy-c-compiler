@@ -499,3 +499,87 @@ func getConst(_ op: Operand, _ map: [VReg: Int64]) -> Int64? {
     default: return nil
     }
 }
+
+// MARK: - Stack Adjustment Merging
+
+/// Merge consecutive `add sp, sp, #N` and `sub sp, sp, #N` instructions
+/// into a single instruction with the combined offset.
+///
+/// Example: `add sp, sp, #16` + `add sp, sp, #16` → `add sp, sp, #32`
+/// Example: `add sp, sp, #16` + `sub sp, sp, #16` → (nothing)
+///
+/// Also merges addSP/subSP IR instructions. Only merges consecutive
+/// instructions with nothing but comments/labels between them (labels
+/// and branches reset the merge window).
+public func stackAdjustmentMerge(_ insts: [IRInst]) -> ([IRInst], Bool) {
+    var result: [IRInst] = []
+    var changed = false
+    var pendingAdjust: Int = 0  // accumulated sp adjustment
+
+    func flushPending() {
+        if pendingAdjust != 0 {
+            if pendingAdjust > 0 {
+                result.append(.addSP(dst: VReg(id: 31, kind: .gp), value: pendingAdjust))
+            } else {
+                result.append(.subSP(dst: VReg(id: 31, kind: .gp), value: -pendingAdjust))
+            }
+            pendingAdjust = 0
+        }
+    }
+
+    for inst in insts {
+        switch inst {
+        case .addSP(_, let value):
+            pendingAdjust += value
+            changed = true
+
+        case .subSP(_, let value):
+            pendingAdjust -= value
+            changed = true
+
+        case .label, .b, .bcond, .cbz, .cbnz, .tbz, .tbnz, .ret:
+            flushPending()
+            result.append(inst)
+
+        case .call, .callIndirect:
+            flushPending()
+            result.append(inst)
+
+        default:
+            // Flush on any instruction that references sp (VReg 31) or modifies it
+            if refsSP(inst) {
+                flushPending()
+            }
+            result.append(inst)
+        }
+    }
+
+    // Flush any remaining pending adjustment
+    flushPending()
+
+    return (result, changed)
+}
+
+/// Check if an operand references the stack pointer (VReg id 31).
+func isSPRef(_ op: Operand) -> Bool {
+    if case .vreg(let v) = op, v.id == 31 {
+        return true
+    }
+    return false
+}
+
+/// Check if an instruction references the stack pointer (VReg id 31)
+/// as any source or destination operand.
+func refsSP(_ inst: IRInst) -> Bool {
+    // Check destination
+    if let dst = destVReg(inst), dst.id == 31 {
+        return true
+    }
+    // Check sources
+    for src in sourceVRegs(inst) {
+        if src.id == 31 {
+            return true
+        }
+    }
+    return false
+}

@@ -250,28 +250,35 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
-        // Pass 2: Redundant branch elimination
+        // Pass 2: Stack adjustment merging
+        let (stackResult, stackChanged) = stackAdjustmentMerge(result)
+        if stackChanged {
+            result = stackResult
+            changed = true
+        }
+
+        // Pass 3: Redundant branch elimination
         let (branchResult, branchChanged) = redundantBranchElimination(result)
         if branchChanged {
             result = branchResult
             changed = true
         }
 
-        // Pass 3: Cross-block DCE (remove dead instructions)
+        // Pass 4: Cross-block DCE (remove dead instructions)
         let crossBlockResult = crossBlockDCE(result)
         if crossBlockResult.count != result.count {
             result = crossBlockResult
             changed = true
         }
 
-        // Pass 4: Copy propagation
+        // Pass 5: Copy propagation
         let (copyResult, copyChanged) = copyPropagation(result)
         if copyChanged {
             result = copyResult
             changed = true
         }
 
-        // Pass 5: Constant folding
+        // Pass 6: Constant folding
         let (foldResult, foldChanged) = constantFolding(result)
         if foldChanged {
             result = foldResult
