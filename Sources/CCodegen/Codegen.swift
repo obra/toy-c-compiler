@@ -231,6 +231,11 @@ public final class Codegen {
         // Emit string literals at the end
         emitStringLiterals()
 
+        // Peephole optimization: eliminate redundant load-after-store pairs.
+        // When a store to [x29, #N] is immediately followed by a load from
+        // [x29, #N] with the same register, the load is redundant.
+        optimizePeephole()
+
         return output.joined(separator: "\n") + "\n"
     }
 
@@ -3612,16 +3617,9 @@ public final class Codegen {
                     }
                     return reg
                 }
-                // Type-aware load for local variables
+                // Type-aware load for local variables — load directly from frame
                 if let t = localVarTypes[id.name] {
-                    // Get address first, then use emitLoad
-                    if offset >= -256 && offset <= 255 {
-                        emitLine("add \(reg.x), x29, #\(offset)")
-                    } else {
-                        emitLoadImm("x17", Int64(offset))
-                        emitLine("add \(reg.x), x29, x17")
-                    }
-                    emitLoad(reg, type: t)
+                    emitLoadFromFrame(reg, offset: offset, type: t)
                 } else {
                     emitLoadFP(reg.x, offset)
                 }
@@ -10621,6 +10619,65 @@ public final class Codegen {
     }
 
     /// Load a value from the address in reg, using the correct load instruction for the type.
+    /// Load a value directly from [x29, #offset] with the correct type width.
+    /// This replaces the two-instruction pattern: add reg, x29, #N + ldr reg, [reg]
+    /// with a single: ldr reg, [x29, #N]
+    private func emitLoadFromFrame(_ reg: ARM64Reg, offset: Int, type: CType) {
+        let t = type.unqualified
+        // For small offsets, use direct [x29, #offset] addressing
+        if offset >= -256 && offset <= 255 {
+            switch t {
+            case .bool, .char, .schar, .uchar:
+                emitLine("ldrb \(reg.w), [x29, #\(offset)]")
+                if t == .schar || t == .char {
+                    emitLine("sxtb \(reg.x), \(reg.w)")
+                }
+            case .short, .ushort:
+                emitLine("ldrh \(reg.w), [x29, #\(offset)]")
+                if t == .short {
+                    emitLine("sxth \(reg.x), \(reg.w)")
+                }
+            case .int, .uint:
+                emitLine("ldr \(reg.w), [x29, #\(offset)]")
+                if t == .int {
+                    emitLine("sxtw \(reg.x), \(reg.w)")
+                }
+            case .float:
+                emitLine("ldr s\(reg.regNum), [x29, #\(offset)]")
+            case .double, .longDouble:
+                emitLine("ldr d\(reg.regNum), [x29, #\(offset)]")
+            default:
+                emitLine("ldr \(reg.x), [x29, #\(offset)]")
+            }
+        } else {
+            // Large offset: use scratch register
+            emitLoadImm("x16", Int64(offset))
+            switch t {
+            case .bool, .char, .schar, .uchar:
+                emitLine("ldrb \(reg.w), [x29, x16]")
+                if t == .schar || t == .char {
+                    emitLine("sxtb \(reg.x), \(reg.w)")
+                }
+            case .short, .ushort:
+                emitLine("ldrh \(reg.w), [x29, x16]")
+                if t == .short {
+                    emitLine("sxth \(reg.x), \(reg.w)")
+                }
+            case .int, .uint:
+                emitLine("ldr \(reg.w), [x29, x16]")
+                if t == .int {
+                    emitLine("sxtw \(reg.x), \(reg.w)")
+                }
+            case .float:
+                emitLine("ldr s\(reg.regNum), [x29, x16]")
+            case .double, .longDouble:
+                emitLine("ldr d\(reg.regNum), [x29, x16]")
+            default:
+                emitLine("ldr \(reg.x), [x29, x16]")
+            }
+        }
+    }
+
     private func emitLoad(_ reg: ARM64Reg, type: CType) {
         let t = type.unqualified
         switch t {
@@ -10732,6 +10789,56 @@ public final class Codegen {
 
     // MARK: - Utility
 
+    /// Peephole optimization pass on the emitted assembly.
+    /// Eliminates redundant instruction pairs.
+    private func optimizePeephole() {
+        guard output.count > 1 else { return }
+        var eliminated = 0
+        var writeIdx = 0
+        var skipNext = false
+        for readIdx in 0..<output.count {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            let line = output[readIdx]
+            // Pattern: str Xn, [x29, #N] followed by ldr Xn, [x29, #N]
+            // Only for x29-relative addresses (local variables on the frame).
+            // The register width must match (both x or both w).
+            // The address string must match exactly.
+            if line.hasPrefix("str ") && line.contains("[x29") && !line.contains("!") {
+                // Parse: "str x9, [x29, #-16]" or "str w9, [x29]"
+                // Split on first ", " to separate the instruction from the address
+                guard let commaIdx = line.firstIndex(of: ",") else {
+                    output[writeIdx] = line; writeIdx += 1; continue
+                }
+                let storeReg = String(line[line.index(line.startIndex, offsetBy: 4)..<commaIdx])
+                let storeAddr = String(line[line.index(after: commaIdx)...]).trimmingCharacters(in: .whitespaces)
+                if readIdx + 1 < output.count {
+                    let nextLine = output[readIdx + 1]
+                    if nextLine.hasPrefix("ldr ") && nextLine.contains("[x29") && !nextLine.contains("!") {
+                        guard let nextCommaIdx = nextLine.firstIndex(of: ",") else {
+                            output[writeIdx] = line; writeIdx += 1; continue
+                        }
+                        let loadReg = String(nextLine[nextLine.index(nextLine.startIndex, offsetBy: 4)..<nextCommaIdx])
+                        let loadAddr = String(nextLine[nextLine.index(after: nextCommaIdx)...]).trimmingCharacters(in: .whitespaces)
+                        if storeReg == loadReg && storeAddr == loadAddr {
+                            output[writeIdx] = line
+                            writeIdx += 1
+                            skipNext = true
+                            eliminated += 1
+                            continue
+                        }
+                    }
+                }
+            }
+            output[writeIdx] = line
+            writeIdx += 1
+        }
+        if writeIdx < output.count {
+            output.removeSubrange(writeIdx..<output.count)
+        }
+    }
     private func emitLine(_ s: String) {
         output.append(s)
     }

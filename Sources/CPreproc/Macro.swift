@@ -128,6 +128,7 @@ public final class MacroExpander {
     /// Uses hide sets for blue-painting. Optimized with pending buffer.
     public func expand(_ tokens: [Token]) -> [Token] {
         var output: [Token] = []
+        output.reserveCapacity(tokens.count)
         // pending: tokens to be processed (LIFO for rescanning). We reverse-insert.
         var pending: [Token] = []
         var input = tokens[...]
@@ -135,13 +136,15 @@ public final class MacroExpander {
 
         func nextToken() -> Token? {
             if !pendingReversed.isEmpty {
-                return pendingReversed.removeLast()
+                return pendingReversed.popLast()
             }
             if !pending.isEmpty {
                 // Move from pending to reversed for efficient pop
-                pendingReversed = pending.reversed()
+                // Reverse in-place to avoid allocation
+                pending.reverse()
+                pendingReversed = pending
                 pending.removeAll(keepingCapacity: true)
-                return pendingReversed.removeLast()
+                return pendingReversed.popLast()
             }
             if !input.isEmpty {
                 let t = input[input.startIndex]
@@ -153,17 +156,19 @@ public final class MacroExpander {
 
         /// Peek at the next non-eof token without consuming it.
         func peekToken() -> Token? {
-            // Check pendingReversed (from end)
-            if let idx = pendingReversed.lastIndex(where: { $0.kind != .eof }) {
-                return pendingReversed[idx]
+            // Check pendingReversed (from end — skip eof tokens)
+            var i = pendingReversed.count - 1
+            while i >= 0 {
+                if pendingReversed[i].kind != .eof { return pendingReversed[i] }
+                i -= 1
             }
             // Check pending (from start, since we haven't reversed yet)
-            if let idx = pending.firstIndex(where: { $0.kind != .eof }) {
-                return pending[idx]
+            for t in pending {
+                if t.kind != .eof { return t }
             }
             // Check input
-            if let idx = input.firstIndex(where: { $0.kind != .eof }) {
-                return input[idx]
+            for t in input {
+                if t.kind != .eof { return t }
             }
             return nil
         }

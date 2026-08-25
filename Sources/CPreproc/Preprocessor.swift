@@ -183,7 +183,7 @@ public final class Preprocessor {
     /// Preprocess the given file and return the expanded token stream.
     public func preprocess(_ fileId: Int) throws -> [Token] {
         let bytes = sm.contents(of: fileId)
-        let rawTokens = lexTokens(Array(bytes), fileId: fileId, startOffset: 0)
+        let rawTokens = lexTokens(bytes, fileId: fileId, startOffset: 0)
         let result = try processTokens(rawTokens, currentFileId: fileId)
         return result
     }
@@ -206,6 +206,7 @@ public final class Preprocessor {
     /// Process a raw token stream: handle preprocessor directives and expand macros.
     private func processTokens(_ tokens: [Token], currentFileId: Int) throws -> [Token] {
         var output: [Token] = []
+        output.reserveCapacity(tokens.count)
         var i = 0
         var condStack: [CondState] = []
 
@@ -296,6 +297,7 @@ public final class Preprocessor {
             // Non-directive token — collect a batch until the next directive, then expand.
             if isActive() {
                 var batch: [Token] = []
+                batch.reserveCapacity(256)
                 while i < tokens.count {
                     let t = tokens[i]
                     // Check if this is a directive (# at line start)
@@ -696,7 +698,7 @@ public final class Preprocessor {
 
         let fileId = try sm.load(filePath)
         let bytes = sm.contents(of: fileId)
-        let rawTokens = lexTokens(Array(bytes), fileId: fileId, startOffset: 0)
+        let rawTokens = lexTokens(bytes, fileId: fileId, startOffset: 0)
         let processed = try processTokens(rawTokens, currentFileId: fileId)
         // Strip EOF tokens from included file — only the main file should have one
         output.append(contentsOf: processed.filter { $0.kind != .eof })
