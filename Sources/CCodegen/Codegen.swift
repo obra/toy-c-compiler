@@ -11615,8 +11615,14 @@ public final class Codegen {
     private func emitInt128Binary(_ b: BinaryExpr, storeAtOffset offset: Int) {
         let lOff = ensureTempSpace(size: 16)
         emitInt128Expr(b.left, storeAtOffset: lOff)
-        let rOff = ensureTempSpace(size: 16)
-        emitInt128Expr(b.right, storeAtOffset: rOff)
+        // For shifts, the right operand is a scalar (int) — don't evaluate as __int128
+        let rOff: Int
+        if b.op == .shl || b.op == .shr {
+            rOff = 0  // not used for shifts (shift amount handled separately)
+        } else {
+            rOff = ensureTempSpace(size: 16)
+            emitInt128Expr(b.right, storeAtOffset: rOff)
+        }
         let resType = exprType(.binary(b)).unqualified
         let isUnsigned = resType == .uint128
         let l = regAlloc.alloc() ?? .x9
@@ -11693,8 +11699,18 @@ public final class Codegen {
             }
             regAlloc.free(l); regAlloc.free(h)
         } else {
-            // Runtime shift
-            let sh = emitExpr(right)
+            // Runtime shift — evaluate shift amount (may be __int128 expr, extract lo)
+            let shType = exprType(right).unqualified
+            let shAddr = emitExpr(right)
+            let sh: ARM64Reg
+            if isInt128(shType) {
+                // Shift amount is __int128: extract lo 64 bits
+                sh = regAlloc.alloc() ?? .x9
+                emitLine("ldr \(sh.x), [\(shAddr.x)]")
+                regAlloc.free(shAddr)
+            } else {
+                sh = shAddr
+            }
             emitInt128ShiftLeftRuntime(leftOff: leftOff, shiftReg: sh, storeAtOffset: offset)
             regAlloc.free(sh)
         }
@@ -11758,7 +11774,17 @@ public final class Codegen {
             }
             regAlloc.free(l); regAlloc.free(h)
         } else {
-            let sh = emitExpr(right)
+            // Runtime shift — evaluate shift amount (may be __int128 expr, extract lo)
+            let shType = exprType(right).unqualified
+            let shAddr = emitExpr(right)
+            let sh: ARM64Reg
+            if isInt128(shType) {
+                sh = regAlloc.alloc() ?? .x9
+                emitLine("ldr \(sh.x), [\(shAddr.x)]")
+                regAlloc.free(shAddr)
+            } else {
+                sh = shAddr
+            }
             emitInt128ShiftRightRuntime(leftOff: leftOff, shiftReg: sh, storeAtOffset: offset, isUnsigned: isUnsigned)
             regAlloc.free(sh)
         }
