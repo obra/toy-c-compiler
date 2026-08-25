@@ -3571,6 +3571,16 @@ public final class Codegen {
                     }
                     return reg
                 }
+                // If the local is __int128, return the address (two-part value like complex)
+                if let t = localVarTypes[id.name], isInt128(t) {
+                    if offset >= -256 && offset <= 255 {
+                        emitLine("add \(reg.x), x29, #\(offset)")
+                    } else {
+                        emitLoadImm("x16", Int64(offset))
+                        emitLine("add \(reg.x), x29, x16")
+                    }
+                    return reg
+                }
                 // Type-aware load for local variables
                 if let t = localVarTypes[id.name] {
                     // Get address first, then use emitLoad
