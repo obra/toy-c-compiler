@@ -51,6 +51,9 @@ public final class Codegen {
     /// saved once in the prologue. Backward gotos in VLA functions restore sp from
     /// here to deallocate VLAs allocated since function entry. Nil until allocated.
     private var vlaSpSaveOffset: Int? = nil
+    /// Stack offset (from x29) where x8 (indirect return pointer) is saved for
+    /// functions returning >16-byte non-HFA structs. nil if not needed.
+    private var x8SaveOffset: Int? = nil
     private var vaSaveAreaOffset: Int = 0  // offset from x29 to va register save area (0 = no va)
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
     private var compoundLiterals: [(label: String, type: CType, init_: Expr)] = []
@@ -154,6 +157,10 @@ public final class Codegen {
             // (e.g., struct Point { int x; int y; } p; — these are VarDecls with struct types)
             if case .varDecl(let vd) = d {
                 collectRecords(vd.type)
+            }
+            // Also collect from typedef declarations (e.g., typedef struct Foo { ... } bar;)
+            if case .typedefDecl(let td) = d {
+                collectRecords(td.type)
             }
         }
 
@@ -1594,6 +1601,7 @@ public final class Codegen {
         gotoLabels = [:]
         emittedLabels = []
         functionHasVLA = false
+        x8SaveOffset = nil
         vlaSpSaveOffset = nil
         // Seed gotoLabels with parent's nonlocal labels (after reset)
         for (cname, asmname) in pendingNonlocalLabels {
@@ -1654,6 +1662,22 @@ public final class Codegen {
             // Prologue: save fp and lr, set up frame pointer
             emitLine("stp x29, x30, [sp, #-16]!")
             emitLine("mov x29, sp")
+            // For functions returning >16-byte non-HFA structs: x8 holds the
+            // indirect return location pointer. It's caller-saved, so internal
+            // calls (e.g., sprintf) will clobber it. Save it to a stack slot
+            // (relative to x29) and restore before writing the return value.
+            if case .structType = fd.returnType.unqualified,
+               let sz = fd.returnType.sizeInBytes, sz > 16, isHFA(fd.returnType) == nil {
+                // Allocate a slot for x8 below x29
+                ensureLocalSpace(size: 16)
+                x8SaveOffset = -(localOffset)
+                if let off = x8SaveOffset, off >= -256 && off <= 255 {
+                    emitLine("str x8, [x29, #\(off)]")
+                } else if let off = x8SaveOffset {
+                    emitLoadImm("x16", Int64(off))
+                    emitLine("str x8, [x29, x16]")
+                }
+            }
         }
 
         // For variadic functions: the caller pushes variadic args on the stack
@@ -2487,7 +2511,17 @@ public final class Codegen {
                         regAlloc.free(srcAddr)
                     } else {
                         // Large struct (>16 bytes): copy to indirect return pointer (x8)
+                        // Restore x8 from stack slot (saved in prologue, may have been
+                        // clobbered by internal function calls)
                         let srcAddr = emitAddr(v)
+                        if let off = x8SaveOffset {
+                            if off >= -256 && off <= 255 {
+                                emitLine("ldr x8, [x29, #\(off)]")
+                            } else {
+                                emitLoadImm("x16", Int64(off))
+                                emitLine("ldr x8, [x29, x16]")
+                            }
+                        }
                         emitStructCopyToField("x8", srcAddr, structSize)
                         regAlloc.free(srcAddr)
                     }
