@@ -3725,8 +3725,12 @@ public final class Codegen {
                 return r
             }
             if isInt128(fromType) && !isInt128(toType) {
-                // Cast FROM __int128 to smaller: emitExpr returns lo value
-                let v = emitExpr(c.expr)
+                // Cast FROM __int128 to smaller: emitExpr may return an address (for
+                // int128 expressions like casts). Load lo 64 bits from it.
+                let addr = emitExpr(c.expr)
+                let v = regAlloc.alloc() ?? .x9
+                emitLine("ldr \(v.x), [\(addr.x)]")
+                regAlloc.free(addr)
                 truncateReg(v, type: toType)
                 return v
             }
