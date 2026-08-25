@@ -299,6 +299,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 9: Zero store elimination (mov reg,#0 + str reg → str wzr)
+        let (zeroResult, zeroChanged) = zeroStoreElimination(result)
+        if zeroChanged {
+            result = zeroResult
+            changed = true
+        }
+
         iterations += 1
     }
 
