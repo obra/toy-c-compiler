@@ -9930,6 +9930,10 @@ public final class Codegen {
     private func emitStoreSP(_ reg: String, _ offset: Int) {
         if offset >= 0 && offset <= 32760 {
             emitLine("str \(reg), [sp, #\(offset)]")
+        } else if reg == "x16" {
+            // Don't clobber x16 with the offset; use x17 as scratch
+            emitLoadImm("x17", Int64(offset))
+            emitLine("str \(reg), [sp, x17]")
         } else {
             emitLoadImm("x16", Int64(offset))
             emitLine("str \(reg), [sp, x16]")
