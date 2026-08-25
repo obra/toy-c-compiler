@@ -11853,7 +11853,9 @@ public final class Codegen {
             if fromType.isSigned32Bit { emitLine("sxtw \(v.x), \(v.w)") }
             emitStrFP(v, offset)
             let h = offset + 8
-            if toType == .int128 && !fromType.isUnsigned {
+            // Sign-extend if source is signed (negative values become all-1s in hi,
+            // which is correct for both signed and unsigned __int128 per C conversion rules)
+            if !fromType.isUnsigned {
                 emitLine("asr \(v.x), \(v.x), #63")
             } else { emitLine("mov \(v.x), xzr") }
             emitStrFP(v, h)
