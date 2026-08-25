@@ -2241,6 +2241,44 @@ public final class Codegen {
         }
     }
 
+    /// Check whether an expression can reset the register allocator or clobber
+    /// scratch registers during evaluation. This determines whether we need to
+    /// save the left operand of a binary expression to the stack before
+    /// evaluating the right operand.
+    ///
+    /// Save is needed when the right operand:
+    /// - Contains a function call (bl clobbers x0-x18 per AAPCS64)
+    /// - Contains a statement expression ({ ... }) which calls regAlloc.reset()
+    private func exprNeedsSaveBeforeEval(_ expr: Expr) -> Bool {
+        switch expr {
+        case .call:
+            return true
+        case .stmtExpr:
+            return true
+        case .unary(let u):
+            return exprNeedsSaveBeforeEval(u.operand)
+        case .binary(let b):
+            return exprNeedsSaveBeforeEval(b.left) || exprNeedsSaveBeforeEval(b.right)
+        case .assign(let a):
+            return exprNeedsSaveBeforeEval(a.target) || exprNeedsSaveBeforeEval(a.value)
+        case .subscript_(let s):
+            return exprNeedsSaveBeforeEval(s.base) || exprNeedsSaveBeforeEval(s.index)
+        case .member(let m):
+            return exprNeedsSaveBeforeEval(m.base)
+        case .conditional(let c):
+            return exprNeedsSaveBeforeEval(c.condition) || exprNeedsSaveBeforeEval(c.trueExpr) || exprNeedsSaveBeforeEval(c.falseExpr)
+        case .cast(let c):
+            return exprNeedsSaveBeforeEval(c.expr)
+        case .initList(let il):
+            for v in il.values { if exprNeedsSaveBeforeEval(v) { return true } }
+            return false
+        case .compoundLiteral(let cl):
+            return exprNeedsSaveBeforeEval(cl.initList)
+        default:
+            return false
+        }
+    }
+
     private func emitStmt(_ stmt: Stmt) {
         switch stmt {
         case .expr(let es):
@@ -5060,16 +5098,20 @@ public final class Codegen {
             let isFloatResult = resultType.isFloating
 
             let leftReg = emitExpr(b.left)
-            // Save left result to stack before evaluating right — the right operand
-            // (e.g., a statement expression) may reset the register allocator and
-            // clobber leftReg. After evaluating right, restore left into the same
-            // register, moving right to a temp if needed.
-            // For FP: save/restore the d register, not the x register.
-            if isFloatOp {
-                let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
-                emitLine("str \(fpLeftReg), [sp, #-16]!")
-            } else {
-                emitLine("str \(leftReg.x), [sp, #-16]!")
+            // Save left result to stack before evaluating right — but only when the
+            // right operand can clobber scratch registers (function calls clobber
+            // x0-x18 per AAPCS64; statement expressions call regAlloc.reset()).
+            // For simple expressions (variables, arithmetic, etc.), the register
+            // allocator gives a different register for the right operand, so no
+            // save/restore is needed.
+            let needsSave = exprNeedsSaveBeforeEval(b.right)
+            if needsSave {
+                if isFloatOp {
+                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                    emitLine("str \(fpLeftReg), [sp, #-16]!")
+                } else {
+                    emitLine("str \(leftReg.x), [sp, #-16]!")
+                }
             }
             let rightResultReg = emitExpr(b.right)
             // If rightReg is the same as leftReg, keep right in a temp and use it as the right operand
@@ -5089,15 +5131,19 @@ public final class Codegen {
                     rightReg = .x17
                 } else {
                     emitLine("mov x17, \(rightResultReg.x)")
-                    emitLine("ldr \(leftReg.x), [sp], #16")
+                    if needsSave {
+                        emitLine("ldr \(leftReg.x), [sp], #16")
+                    }
                     rightReg = .x17
                 }
             } else {
-                if isFloatOp {
-                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
-                    emitLine("ldr \(fpLeftReg), [sp], #16")
-                } else {
-                    emitLine("ldr \(leftReg.x), [sp], #16")
+                if needsSave {
+                    if isFloatOp {
+                        let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                        emitLine("ldr \(fpLeftReg), [sp], #16")
+                    } else {
+                        emitLine("ldr \(leftReg.x), [sp], #16")
+                    }
                 }
                 rightReg = rightResultReg
             }
