@@ -8285,18 +8285,24 @@ public final class Codegen {
                             fpRegIdx += 1
                         }
                     } else {
-                        // Entire HFA goes on the stack
+                        // Entire HFA goes on the stack.
+                        // Load all members from temp stack first (into d9, d10, ...),
+                        // then store to the stack arg area. This avoids collisions
+                        // when a temp slot overlaps with the stack arg area.
+                        let spillRegs = ["d9", "d10", "d11", "d12"]
                         for j in 0..<hfaInfo.count {
                             let slotOff = tempOffset + (hfaInfo.count - 1 - j) * 16
-                            let stackOff = stackArgIdx * 8
-                            emitLoadSP("d9", slotOff)
-                            if hfaInfo.isFloat {
-                                emitStoreSP("s9", stackOff)
-                            } else {
-                                emitStoreSP("d9", stackOff)
-                            }
-                            stackArgIdx += 1
+                            emitLoadSP(spillRegs[j], slotOff)
                         }
+                        for j in 0..<hfaInfo.count {
+                            let stackOff = (stackArgIdx + j) * 8
+                            if hfaInfo.isFloat {
+                                emitStoreSP("s\(9 + j)", stackOff)
+                            } else {
+                                emitStoreSP("d\(9 + j)", stackOff)
+                            }
+                        }
+                        stackArgIdx += hfaInfo.count
                         regAlloc.free(evaluatedArgs[i])
                         regIdx += hfaInfo.count
                         continue
