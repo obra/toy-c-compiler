@@ -5114,8 +5114,12 @@ public final class Codegen {
                 let fpReg = operandType == .float ? "s\(operandReg.regNum)" : "d\(operandReg.regNum)"
                 emitLine("fneg \(fpReg), \(fpReg)")
             } else if operandType.sizeInBytes == 4 {
-                // 32-bit: use w form so the result is truncated/zero-extended
+                // 32-bit: use w form so the result is truncated
                 emitLine("neg \(operandReg.w), \(operandReg.w)")
+                // Sign-extend for signed 32-bit types (int, enum)
+                if operandType.isSigned {
+                    emitLine("sxtw \(operandReg.x), \(operandReg.w)")
+                }
             } else {
                 emitLine("neg \(operandReg.x), \(operandReg.x)")
             }
@@ -5128,6 +5132,10 @@ public final class Codegen {
             let operandType = exprType(u.operand).unqualified
             if operandType.sizeInBytes == 4 {
                 emitLine("mvn \(operandReg.w), \(operandReg.w)")
+                // Sign-extend for signed 32-bit types
+                if operandType.isSigned {
+                    emitLine("sxtw \(operandReg.x), \(operandReg.w)")
+                }
             } else {
                 emitLine("mvn \(operandReg.x), \(operandReg.x)")
             }
