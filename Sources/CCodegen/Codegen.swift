@@ -3508,7 +3508,7 @@ public final class Codegen {
             }
             // Vector-to-scalar cast: reinterpret vector bits as integer
             if case .vector = fromType, toType.isInteger {
-                let addrReg = emitAddr(c.expr)
+                let addrReg = emitExpr(c.expr)
                 let toSize = toType.sizeInBytes ?? 8
                 if toSize <= 4 {
                     emitLine("ldr \(addrReg.w), [\(addrReg.x)]")
@@ -3516,6 +3516,43 @@ public final class Codegen {
                     emitLine("ldr \(addrReg.x), [\(addrReg.x)]")
                 }
                 return addrReg
+            }
+            // Scalar-to-vector cast: store the scalar to a temp stack slot and
+            // return the address (vectors are always addressed in emitExpr).
+            if case .vector = toType, fromType.isInteger {
+                let vecSize = toType.sizeInBytes ?? 8
+                let reg = emitExpr(c.expr)
+                let tmpOff = ensureTempSpace(size: vecSize)
+                // Store the scalar value to the temp (zero-extended to vector size)
+                let tmpReg = regAlloc.alloc() ?? .x9
+                if tmpOff >= -256 && tmpOff <= 255 {
+                    emitLine("str \(reg.x), [x29, #\(tmpOff)]")
+                } else {
+                    emitLoadImm("x16", Int64(tmpOff))
+                    emitLine("str \(reg.x), [x29, x16]")
+                }
+                regAlloc.free(reg)
+                // Zero the remaining bytes if vector is larger than 8
+                if vecSize > 8 {
+                    let zeroReg = regAlloc.alloc() ?? .x9
+                    emitLine("mov \(zeroReg.x), #0")
+                    let off2 = tmpOff + 8
+                    if off2 >= -256 && off2 <= 255 {
+                        emitLine("str \(zeroReg.x), [x29, #\(off2)]")
+                    } else {
+                        emitLoadImm("x16", Int64(off2))
+                        emitLine("str \(zeroReg.x), [x29, x16]")
+                    }
+                    regAlloc.free(zeroReg)
+                }
+                // Return address of temp
+                if tmpOff >= -4095 && tmpOff <= 4095 {
+                    emitLine("add \(tmpReg.x), x29, #\(tmpOff)")
+                } else {
+                    emitLoadImm("x16", Int64(tmpOff))
+                    emitLine("add \(tmpReg.x), x29, x16")
+                }
+                return tmpReg
             }
             // Integer-to-integer cast: may need sign/zero extension
             if fromType.isInteger && toType.isInteger {
