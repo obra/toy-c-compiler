@@ -6152,6 +6152,19 @@ public final class Codegen {
             emitLine("cset \(operandReg.x), eq")
         case .bitNot:
             let operandType = exprType(u.operand).unqualified
+            if isInt128(operandType) {
+                // __int128 bitNot: invert both lo and hi
+                let tmpOff = ensureTempSpace(size: 16)
+                emitInt128Expr(u.operand, storeAtOffset: tmpOff)
+                let r = regAlloc.alloc() ?? .x9
+                emitLdrFP(r, tmpOff); emitLine("mvn \(r.x), \(r.x)"); emitStrFP(r, tmpOff)
+                emitLdrFP(r, tmpOff + 8); emitLine("mvn \(r.x), \(r.x)"); emitStrFP(r, tmpOff + 8)
+                regAlloc.free(r)
+                let resultReg = regAlloc.alloc() ?? .x9
+                if tmpOff >= -4095 && tmpOff <= 4095 { emitLine("add \(resultReg.x), x29, #\(tmpOff)") }
+                else { emitLoadImm("x16", Int64(tmpOff)); emitLine("add \(resultReg.x), x29, x16") }
+                return resultReg
+            }
             if operandType.sizeInBytes == 4 {
                 emitLine("mvn \(operandReg.w), \(operandReg.w)")
                 // Sign-extend for signed 32-bit types
@@ -10145,6 +10158,10 @@ public final class Codegen {
         }
         // If element type is complex, return the address (can't load into a single register)
         if elemType.unqualified.isComplex {
+            return addrReg
+        }
+        // If element type is __int128, return the address (two-part value)
+        if isInt128(elemType) {
             return addrReg
         }
         emitLoad(addrReg, type: elemType)
