@@ -300,13 +300,27 @@ public final class Codegen {
 
     private func emitInitializer(_ expr: Expr, size: Int, type: CType? = nil) {
         // Complex type initializers: evaluate real and imag parts at compile time
-        // and emit them as two consecutive FP values.
+        // and emit them as two consecutive values of the correct size.
         if let type = type, type.unqualified.isComplex {
-            let isFloat = type.unqualified == .complexFloat
             let (realVal, imagVal) = evalComplexConst(expr)
-            if isFloat {
-                emitLine(".long \(Float(realVal).bitPattern)")
-                emitLine(".long \(Float(imagVal).bitPattern)")
+            let ct = type.unqualified
+            let partSize: Int
+            if ct == .complexFloat { partSize = 4 }
+            else if ct == .complexDouble || ct == .complexLongDouble { partSize = 8 }
+            else {
+                // Integer complex: part size from the real type
+                let realType = ct.complexRealType
+                partSize = realType.sizeInBytes ?? 4
+            }
+            if partSize == 4 {
+                emitLine(".long \(UInt32(truncatingIfNeeded: Int(Float(realVal).bitPattern)))")
+                emitLine(".long \(UInt32(truncatingIfNeeded: Int(Float(imagVal).bitPattern)))")
+            } else if partSize == 2 {
+                emitLine(".short \(UInt16(truncatingIfNeeded: Int(realVal)) & 0xFFFF)")
+                emitLine(".short \(UInt16(truncatingIfNeeded: Int(imagVal)) & 0xFFFF)")
+            } else if partSize == 1 {
+                emitLine(".byte \(Int(realVal) & 0xFF)")
+                emitLine(".byte \(Int(imagVal) & 0xFF)")
             } else {
                 emitLine(".quad \(Double(realVal).bitPattern)")
                 emitLine(".quad \(Double(imagVal).bitPattern)")
