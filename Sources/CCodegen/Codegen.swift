@@ -6,7 +6,7 @@ import Foundation
 
 /// ARM64 code generator: emits assembly from the typed AST.
 public final class Codegen {
-    private var output = ""
+    private var output: [String] = []
     private var stringLiterals: [(label: String, value: String)] = []
     private var stringLabelCounter = 0
     private var globalLabels: Set<String> = []
@@ -99,7 +99,7 @@ public final class Codegen {
     // MARK: - Public API
 
     public func generate(_ decls: [Decl]) -> String {
-        output = ""
+        output = []
 
         // Collect global variable names and types, and function names
         for d in decls {
@@ -231,7 +231,7 @@ public final class Codegen {
         // Emit string literals at the end
         emitStringLiterals()
 
-        return output
+        return output.joined(separator: "\n") + "\n"
     }
 
     // MARK: - Data section
@@ -1816,8 +1816,8 @@ public final class Codegen {
         }
 
         // Allocate space for local variables (will be patched after we know the size)
-        let frameAllocLine = "sub sp, sp, #0  ; FRAME_SIZE_PLACEHOLDER"
-        emitLine(frameAllocLine)
+        let frameAllocIndex = output.count
+        emitLine("sub sp, sp, #0  ; FRAME_SIZE_PLACEHOLDER")
         // Save the post-fixed-frame sp for VLA deallocation on backward gotos.
         // sp here is x29 - frameSize (after the fixed frame is carved out, before
         // any VLA allocation). VLAs decrement sp further; restoring this value
@@ -2064,9 +2064,7 @@ public final class Codegen {
                          "movk x16, #\(hi), lsl #16\n" +
                          "sub sp, sp, x16"
         }
-        output = output.replacingOccurrences(
-            of: "sub sp, sp, #0  ; FRAME_SIZE_PLACEHOLDER",
-            with: frameInstr)
+        output[frameAllocIndex] = frameInstr
 
         // Restore static local map so function-specific statics don't leak
         staticLocalGlobals = savedStaticLocals
@@ -10735,7 +10733,7 @@ public final class Codegen {
     // MARK: - Utility
 
     private func emitLine(_ s: String) {
-        output += s + "\n"
+        output.append(s)
     }
 
     /// Emit a store to [x29, #offset] handling large offsets (>255 or < -256)
