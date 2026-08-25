@@ -2447,14 +2447,22 @@ public final class Codegen {
                                             }
                                         }
                                     } else {
-                                        // Large struct: pass x8 pointer, callee writes to it
-                                        if offset >= -256 && offset <= 255 {
-                                            emitLine("add x8, x29, #\(offset)")
-                                        } else {
-                                            emitLoadImm("x16", Int64(offset))
-                                            emitLine("add x8, x29, x16")
+                                        // Large struct (>16 bytes): emitCallExpr sets up x8
+                                        // and returns the buffer address. Copy from there
+                                        // to the local variable.
+                                        let retBuf = emitExpr(init_)
+                                        if let offset = localVarOffsets[vd.name] {
+                                            let dstAddr = regAlloc.alloc() ?? .x9
+                                            if offset >= -256 && offset <= 255 {
+                                                emitLine("add \(dstAddr.x), x29, #\(offset)")
+                                            } else {
+                                                emitLoadImm("x16", Int64(offset))
+                                                emitLine("add \(dstAddr.x), x29, x16")
+                                            }
+                                            emitStructCopyToField("\(dstAddr.x)", retBuf, structSize)
+                                            regAlloc.free(dstAddr)
                                         }
-                                        _ = emitExpr(init_)  // make the call
+                                        regAlloc.free(retBuf)
                                     }
                                 }
                             } else if case .call = init_, vd.type.unqualified.isComplex {
