@@ -1021,7 +1021,12 @@ public final class Parser {
                             bitOffset += bw
                         } else {
                             // Non-bitfield: round bit offset up to byte, then align
-                            var byteOff = (bitOffset + 7) / 8
+                            var byteOff: Int
+                            if bitOffset == Int.max {
+                                byteOff = Int.max
+                            } else {
+                                byteOff = (bitOffset + 7) / 8
+                            }
                             var fieldAlign = fieldType.alignOf ?? 1
                             // Apply __attribute__((aligned(N))) — either from the
                             // field declarator (parsed above via skipAsmAndAttributes)
@@ -1040,9 +1045,17 @@ public final class Parser {
                             // Apply #pragma pack: effective alignment is min(natural, pack)
                             let effectiveAlign = currentPack > 0 ? min(fieldAlign, currentPack) : fieldAlign
                             maxAlign = max(maxAlign, effectiveAlign)
-                            byteOff = (byteOff + effectiveAlign - 1) & ~(effectiveAlign - 1)
+                            if byteOff < Int.max {
+                                byteOff = (byteOff + effectiveAlign - 1) & ~(effectiveAlign - 1)
+                            }
                             fields.append(RecordField(name: fieldName, type: fieldType, bitWidth: nil, offset: byteOff, bitOffset: 0))
-                            bitOffset = (byteOff + fieldSize) * 8
+                            // Use overflow-checked arithmetic to avoid trap on huge arrays
+                            if byteOff >= Int.max / 2 {
+                                bitOffset = Int.max
+                            } else {
+                                let (prod, ovf) = (byteOff + fieldSize).multipliedReportingOverflow(by: 8)
+                                bitOffset = ovf ? Int.max : prod
+                            }
                         }
                     } while match(kind: .punct, spelling: ",")
                     _ = try consume(kind: .punct, spelling: ";")
@@ -1051,9 +1064,16 @@ public final class Parser {
                 // Parse __attribute__((aligned(N))) after the closing brace
                 let attrAlign = extractAlignment()
                 // Round up bitOffset to bytes, then to maxAlign
-                var totalBytes = (bitOffset + 7) / 8
+                var totalBytes: Int
+                if bitOffset == Int.max {
+                    totalBytes = Int.max
+                } else {
+                    totalBytes = (bitOffset + 7) / 8
+                }
                 if let aa = attrAlign { maxAlign = max(maxAlign, aa) }
-                totalBytes = (totalBytes + maxAlign - 1) & ~(maxAlign - 1)
+                if totalBytes < Int.max {
+                    totalBytes = (totalBytes + maxAlign - 1) & ~(maxAlign - 1)
+                }
                 let rec = RecordType(name: tag ?? "", fields: fields, size: totalBytes, alignment: maxAlign)
                 if let tag = tag {
                     completedRecords[tag] = rec

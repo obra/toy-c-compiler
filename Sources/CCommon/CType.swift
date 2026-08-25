@@ -247,7 +247,10 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 8
         case .array(let elem, let count):
             guard let elemSize = elem.sizeInBytes else { return nil }
-            return elemSize * count
+            // Use overflow-checked multiplication to avoid trap on huge arrays
+            // (e.g., 991014-1 has short[~4.6e18] which overflows Int64)
+            let (result, overflow) = elemSize.multipliedReportingOverflow(by: count)
+            return overflow ? Int.max : result
         case .incompleteArray:
             return nil
         case .structType(let rec), .unionType(let rec):
