@@ -4,8 +4,8 @@
 #include <sys/types.h>
 
 typedef struct _malloc_zone_t {
-    unsigned reserved1;
-    unsigned reserved2;
+    void *reserved1;
+    void *reserved2;
     size_t (*size)(struct _malloc_zone_t *, const void *);
     void *(*malloc)(struct _malloc_zone_t *, size_t);
     void *(*calloc)(struct _malloc_zone_t *, size_t, size_t);
