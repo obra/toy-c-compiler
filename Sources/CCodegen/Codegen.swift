@@ -8597,7 +8597,7 @@ public final class Codegen {
                         emitLine("mov \(elemAddr.x), x16")
                         emitLocalInit(elemAddr, cl.initList, type: elemType)
                         regAlloc.free(elemAddr)
-                    } else if case .stringLiteral(let sl) = v, case .array(let charElem, let charCount) = leafType.unqualified, charElem.isChar {
+                    } else if case .stringLiteral(let sl) = v, case .array(let charElem, let charCount) = elemType.unqualified, charElem.isChar {
                         // String literal for char array element — copy bytes inline
                         let label = addStringLiteral(sl.value)
                         emitLine("adrp x14, \(label)@PAGE")
