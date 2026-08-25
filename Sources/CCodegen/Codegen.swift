@@ -70,6 +70,8 @@ public final class Codegen {
     private var functionLocalTypes: [String: [String: CType]] = [:]
     /// Set of nested function names (functions with a parentFuncName).
     private var nestedFunctions: Set<String> = []
+    /// Map from source name → mangled name for nested functions.
+    private var nestedNameMap: [String: String] = [:]
     /// __label__ declarations for the current function (nonlocal labels).
     private var currentLocalLabels: [String] = []
     /// Nonlocal labels accessible from nested functions: "funcName" → [labelName → asmLabel]
@@ -169,7 +171,20 @@ public final class Codegen {
         // Pre-scan: identify all nested functions so callers know to pass x18
         for decl in decls {
             if case .funcDecl(let fd) = decl, fd.body != nil, fd.parentFuncName != nil {
-                nestedFunctions.insert(fd.name)
+                let mangled = mangledNestedName(fd.name, parent: fd.parentFuncName!)
+                nestedFunctions.insert(mangled)
+                // Map source name → mangled name for call sites.
+                // Key by parent__name for precise lookup. Also key by source name
+                // as fallback for doubly-nested functions where the immediate caller's
+                // name differs from the registered parent.
+                let callKey = "\(fd.parentFuncName!)__\(fd.name)"
+                nestedNameMap[callKey] = mangled
+                // Only set the source-name fallback if not already set (first wins)
+                // to avoid ambiguity when multiple parents have same nested name.
+                // For doubly-nested functions, the source name is usually unique.
+                if nestedNameMap[fd.name] == nil {
+                    nestedNameMap[fd.name] = mangled
+                }
             }
         }
 
@@ -1533,6 +1548,12 @@ public final class Codegen {
 
     // MARK: - Function emission
 
+    /// Mangle a nested function name to avoid symbol collisions.
+    /// "nested" inside "foo" becomes "foo__nested".
+    private func mangledNestedName(_ name: String, parent: String) -> String {
+        return "\(parent)__\(name)"
+    }
+
     private func emitFunction(_ fd: FuncDecl) {
         currentFuncName = fd.name
         currentFunctionReturnType = fd.returnType
@@ -1548,7 +1569,10 @@ public final class Codegen {
         nonlocalLabelNames = []
         currentLocalLabels = fd.localLabels
         if isNested {
-            nestedFunctions.insert(fd.name)
+            let mangled = mangledNestedName(fd.name, parent: fd.parentFuncName!)
+            nestedFunctions.insert(mangled)
+            let callKey = "\(fd.parentFuncName!)__\(fd.name)"
+            nestedNameMap[callKey] = mangled
             // Load parent locals from the saved functionLocals map
             if let parentName = fd.parentFuncName {
                 if let parentOffsets = functionLocals[parentName] {
@@ -1613,8 +1637,10 @@ public final class Codegen {
         emitLine("")
         if isNested {
             // Nested function: don't emit .globl (it's static)
+            // Use mangled name (parent__nested) to avoid symbol collisions
+            let mangled = mangledNestedName(fd.name, parent: fd.parentFuncName!)
             emitLine(".p2align 2")
-            emitLine("_\(fd.name):")
+            emitLine("_\(mangled):")
             // Prologue: save fp, lr, and x18 (static chain from parent)
             emitLine("stp x29, x30, [sp, #-32]!")
             emitLine("str x18, [sp, #16]")  // save static chain
@@ -6934,10 +6960,12 @@ public final class Codegen {
             // Make the call
             if !funcName.isEmpty {
                 // If calling a nested function, pass parent frame pointer in x18
-                if nestedFunctions.contains(funcName) {
+                let callKey = "\(currentFuncName)__\(funcName)"
+                let mangledName = nestedNameMap[callKey] ?? nestedNameMap[funcName] ?? funcName
+                if nestedFunctions.contains(mangledName) {
                     emitLine("mov x18, x29")
                 }
-                emitLine("bl _\(funcName)")
+                emitLine("bl _\(mangledName)")
             }
 
             // Restore spilled registers
@@ -7546,10 +7574,12 @@ public final class Codegen {
                 emitLine("blr \(fpReg.x)")
             } else if !funcName.isEmpty {
                 // If calling a nested function, pass parent frame pointer in x18
-                if nestedFunctions.contains(funcName) {
+                let callKey = "\(currentFuncName)__\(funcName)"
+                let mangledName = nestedNameMap[callKey] ?? nestedNameMap[funcName] ?? funcName
+                if nestedFunctions.contains(mangledName) {
                     emitLine("mov x18, x29")
                 }
-                emitLine("bl _\(funcName)")
+                emitLine("bl _\(mangledName)")
             }
 
             // Clean up variadic stack args (for internal variadic calls)
