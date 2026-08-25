@@ -2428,8 +2428,7 @@ public final class Codegen {
                                     regAlloc.free(dstAddr)
                                 } else if varType.isComplex, let offset = localVarOffsets[vd.name] {
                                     // _Complex variable initialization
-                                    let isFloat = (varType == .complexFloat)
-                                    emitComplexExpr(init_, storeAtOffset: offset, isFloat: isFloat)
+                                    emitComplexExpr(init_, storeAtOffset: offset, complexType: varType)
                                 } else if case .array = varType, let arrSize = varType.sizeInBytes, arrSize > 0,
                                           let offset = localVarOffsets[vd.name] {
                                     // Array (vector) initialization from expression: copy data
@@ -3653,12 +3652,33 @@ public final class Codegen {
 /// the given stack offset (relative to x29). Used for initializing _Complex local
 /// variables. Supports: imaginary literals, real+complex, complex+real,
 /// real*complex, complex*real, complex*complex, and plain complex identifiers.
-    private func emitComplexExpr(_ expr: Expr, storeAtOffset offset: Int, isFloat: Bool) {
-        let fpPrefix = isFloat ? "s" : "d"
-        let partSize = isFloat ? 4 : 8
+    /// Overload that accepts the full complex type and derives isFP/partSize.
+    private func emitComplexExpr(_ expr: Expr, storeAtOffset offset: Int, complexType: CType) {
+        let (isFP, partSize) = complexTypeInfo(complexType)
+        emitComplexExprTyped(expr, storeAtOffset: offset, isFP: isFP, partSize: partSize)
+    }
 
-        // Helper to emit a load of a double/float constant into an FP register
+    private func emitComplexExpr(_ expr: Expr, storeAtOffset offset: Int, isFP: Bool) {
+        emitComplexExprTyped(expr, storeAtOffset: offset, isFP: isFP, partSize: isFP ? 4 : 8)
+    }
+
+    private func emitComplexExprTyped(_ expr: Expr, storeAtOffset offset: Int, isFP: Bool, partSize: Int) {
+        let fpPrefix = isFP ? (partSize == 4 ? "s" : "d") : ""
+        // Register name for load/store: FP uses s/d prefix, integer uses w (≤4) or x (>4)
+        func regName(_ reg: ARM64Reg) -> String {
+            if isFP { return "\(fpPrefix)\(reg.regNum)" }
+            return partSize <= 4 ? reg.w : reg.x
+        }
+        func arithName(_ reg: ARM64Reg) -> String { regName(reg) }
+
+        // Helper to emit a load of a constant into a register (FP or integer)
         func loadFPConst(_ _reg: ARM64Reg, _ value: Double, _ float: Bool) {
+            if !isFP {
+                // Integer complex: load as integer
+                let intVal = Int64(value)
+                emitLoadImm(_reg.x, intVal)
+                return
+            }
             if float {
                 let bits = UInt64(Float(value).bitPattern)
                 emitLoadImm(_reg.x, Int64(bitPattern: bits))
@@ -3675,10 +3695,10 @@ public final class Codegen {
             // Imaginary literal: real=0, imag=value
             let realReg = regAlloc.alloc() ?? .x9
             let imagReg = regAlloc.alloc() ?? .x10
-            emitLine("fmov \(fpPrefix)\(realReg.regNum), #0.0")
-            loadFPConst(imagReg, f.value, isFloat)
-            emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-            emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+            if isFP { emitLine("fmov \(fpPrefix)\(realReg.regNum), #0.0") } else { emitLine("mov \(realReg.w), #0") }
+            loadFPConst(imagReg, f.value, isFP)
+            emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+            emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
             regAlloc.free(realReg)
             regAlloc.free(imagReg)
 
@@ -3691,29 +3711,29 @@ public final class Codegen {
                 // complex ± complex: (a±c, b±d)
                 // Store left parts to temp, right parts to temp2, then add/sub
                 let tmpOff = ensureTempSpace(size: partSize * 4)
-                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
-                emitComplexExpr(b.right, storeAtOffset: tmpOff + partSize * 2, isFloat: isFloat)
+                emitComplexExprTyped(b.left, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
+                emitComplexExprTyped(b.right, storeAtOffset: tmpOff + partSize * 2, isFP: isFP, partSize: partSize)
                 // Real part
                 let lr = regAlloc.alloc() ?? .x9
                 let rr = regAlloc.alloc() ?? .x10
-                emitLoadFP(lr, offset: tmpOff, isFloat: isFloat)
-                emitLoadFP(rr, offset: tmpOff + partSize * 2, isFloat: isFloat)
+                emitLoadFP(lr, offset: tmpOff, isFP: isFP, partSize: partSize)
+                emitLoadFP(rr, offset: tmpOff + partSize * 2, isFP: isFP, partSize: partSize)
                 if b.op == .add { emitLine("fadd \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
                 else { emitLine("fsub \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
-                emitStoreFP(lr, offset: offset, isFloat: isFloat)
+                emitStoreFP(lr, offset: offset, isFP: isFP, partSize: partSize)
                 // Imaginary part
-                emitLoadFP(lr, offset: tmpOff + partSize, isFloat: isFloat)
-                emitLoadFP(rr, offset: tmpOff + partSize * 3, isFloat: isFloat)
+                emitLoadFP(lr, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
+                emitLoadFP(rr, offset: tmpOff + partSize * 3, isFP: isFP, partSize: partSize)
                 if b.op == .add { emitLine("fadd \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
                 else { emitLine("fsub \(fpPrefix)\(lr.regNum), \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)") }
-                emitStoreFP(lr, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(lr, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(lr)
                 regAlloc.free(rr)
             } else if leftComplex && !rightComplex {
                 // complex + real: (a+real, b)
                 // Store left complex parts
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExprTyped(b.left, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
                 // Evaluate right (real)
                 let rightReg = emitExpr(b.right)
                 // Convert to FP if needed
@@ -3722,61 +3742,61 @@ public final class Codegen {
                         emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     }
                     let cvtf = exprType(b.right).unqualified.isUnsigned ? "ucvtf" : "scvtf"
-                    if isFloat { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
+                    if isFP { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
                     else { emitLine("\(cvtf) d\(rightReg.regNum), \(rightReg.x)") }
-                } else if exprType(b.right).unqualified == .float && !isFloat {
+                } else if exprType(b.right).unqualified == .float && !isFP {
                     emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
-                } else if exprType(b.right).unqualified == .double && isFloat {
+                } else if exprType(b.right).unqualified == .double && isFP {
                     emitLine("fcvt s\(rightReg.regNum), d\(rightReg.regNum)")
                 }
                 let realReg = regAlloc.alloc() ?? .x9
-                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
                 if b.op == .add { emitLine("fadd \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)") }
                 else { emitLine("fsub \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)") }
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 // Imaginary part stays the same
-                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
-                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
+                emitStoreFP(realReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(rightReg)
             } else if !leftComplex && rightComplex {
                 // real + complex: (real+a, d)
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(b.right, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExprTyped(b.right, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
                 let leftReg = emitExpr(b.left)
                 if !exprType(b.left).unqualified.isFloating {
                     if exprType(b.left).unqualified.isSigned32Bit {
                         emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     }
                     let cvtf = exprType(b.left).unqualified.isUnsigned ? "ucvtf" : "scvtf"
-                    if isFloat { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
+                    if isFP { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
                     else { emitLine("\(cvtf) d\(leftReg.regNum), \(leftReg.x)") }
-                } else if exprType(b.left).unqualified == .float && !isFloat {
+                } else if exprType(b.left).unqualified == .float && !isFP {
                     emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
-                } else if exprType(b.left).unqualified == .double && isFloat {
+                } else if exprType(b.left).unqualified == .double && isFP {
                     emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
                 }
                 let realReg = regAlloc.alloc() ?? .x9
-                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
                 if b.op == .add { emitLine("fadd \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)") }
                 else { emitLine("fsub \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)") }
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
                 // For subtraction: real - complex = (real-c) + (-d)i — negate imag part
                 if b.op == .sub {
                     emitLine("fneg \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum)")
                 }
-                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(leftReg)
             } else {
                 // Both real — shouldn't happen (result would be real, not complex)
                 // Fall through: evaluate as real, store with imag=0
                 let realReg = emitExpr(expr)
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 let zeroReg = regAlloc.alloc() ?? .x9
-                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+                emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(zeroReg)
             }
 
@@ -3787,28 +3807,28 @@ public final class Codegen {
             if leftComplex && rightComplex {
                 // complex * complex: (a*c-b*d, a*d+b*c)
                 let tmpOff = ensureTempSpace(size: partSize * 4)
-                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
-                emitComplexExpr(b.right, storeAtOffset: tmpOff + partSize * 2, isFloat: isFloat)
+                emitComplexExprTyped(b.left, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
+                emitComplexExprTyped(b.right, storeAtOffset: tmpOff + partSize * 2, isFP: isFP, partSize: partSize)
                 let ar = regAlloc.alloc() ?? .x9
                 let br = regAlloc.alloc() ?? .x10
                 let cr = regAlloc.alloc() ?? .x11
                 let dr = regAlloc.alloc() ?? .x12
-                emitLoadFP(ar, offset: tmpOff, isFloat: isFloat)
-                emitLoadFP(br, offset: tmpOff + partSize, isFloat: isFloat)
-                emitLoadFP(cr, offset: tmpOff + partSize * 2, isFloat: isFloat)
-                emitLoadFP(dr, offset: tmpOff + partSize * 3, isFloat: isFloat)
+                emitLoadFP(ar, offset: tmpOff, isFP: isFP, partSize: partSize)
+                emitLoadFP(br, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
+                emitLoadFP(cr, offset: tmpOff + partSize * 2, isFP: isFP, partSize: partSize)
+                emitLoadFP(dr, offset: tmpOff + partSize * 3, isFP: isFP, partSize: partSize)
                 // real = a*c - b*d
                 emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(cr.regNum)")
                 emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(dr.regNum)")
                 emitLine("fsub \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
-                emitStoreFP(ar, offset: offset, isFloat: isFloat)
+                emitStoreFP(ar, offset: offset, isFP: isFP, partSize: partSize)
                 // imag = a*d + b*c  — but we overwrote ar and br. Reload.
-                emitLoadFP(ar, offset: tmpOff, isFloat: isFloat)
-                emitLoadFP(br, offset: tmpOff + partSize, isFloat: isFloat)
+                emitLoadFP(ar, offset: tmpOff, isFP: isFP, partSize: partSize)
+                emitLoadFP(br, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
                 emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(dr.regNum)")
                 emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(cr.regNum)")
                 emitLine("fadd \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
-                emitStoreFP(ar, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(ar, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(ar)
                 regAlloc.free(br)
                 regAlloc.free(cr)
@@ -3816,68 +3836,68 @@ public final class Codegen {
             } else if leftComplex && !rightComplex {
                 // complex * real: (a*r, b*r)
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(b.left, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExprTyped(b.left, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
                 let rightReg = emitExpr(b.right)
                 if !exprType(b.right).unqualified.isFloating {
                     if exprType(b.right).unqualified.isSigned32Bit {
                         emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                     }
                     let cvtf = exprType(b.right).unqualified.isUnsigned ? "ucvtf" : "scvtf"
-                    if isFloat { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
+                    if isFP { emitLine("\(cvtf) s\(rightReg.regNum), \(rightReg.x)") }
                     else { emitLine("\(cvtf) d\(rightReg.regNum), \(rightReg.x)") }
-                } else if exprType(b.right).unqualified == .float && !isFloat {
+                } else if exprType(b.right).unqualified == .float && !isFP {
                     emitLine("fcvt d\(rightReg.regNum), s\(rightReg.regNum)")
-                } else if exprType(b.right).unqualified == .double && isFloat {
+                } else if exprType(b.right).unqualified == .double && isFP {
                     emitLine("fcvt s\(rightReg.regNum), d\(rightReg.regNum)")
                 }
                 let realReg = regAlloc.alloc() ?? .x9
-                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
                 emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
                 emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(rightReg.regNum)")
-                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(rightReg)
             } else if !leftComplex && rightComplex {
                 // real * complex: (r*a, r*b)
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(b.right, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExprTyped(b.right, storeAtOffset: tmpOff, isFP: isFP, partSize: partSize)
                 let leftReg = emitExpr(b.left)
                 if !exprType(b.left).unqualified.isFloating {
                     if exprType(b.left).unqualified.isSigned32Bit {
                         emitLine("sxtw \(leftReg.x), \(leftReg.w)")
                     }
                     let cvtf = exprType(b.left).unqualified.isUnsigned ? "ucvtf" : "scvtf"
-                    if isFloat { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
+                    if isFP { emitLine("\(cvtf) s\(leftReg.regNum), \(leftReg.x)") }
                     else { emitLine("\(cvtf) d\(leftReg.regNum), \(leftReg.x)") }
-                } else if exprType(b.left).unqualified == .float && !isFloat {
+                } else if exprType(b.left).unqualified == .float && !isFP {
                     emitLine("fcvt d\(leftReg.regNum), s\(leftReg.regNum)")
-                } else if exprType(b.left).unqualified == .double && isFloat {
+                } else if exprType(b.left).unqualified == .double && isFP {
                     emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
                 }
                 let realReg = regAlloc.alloc() ?? .x9
-                emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
+                emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
                 emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitLoadFP(realReg, offset: tmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitLoadFP(realReg, offset: tmpOff + partSize, isFP: isFP, partSize: partSize)
                 emitLine("fmul \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(leftReg.regNum), \(fpPrefix)\(realReg.regNum)")
-                emitStoreFP(realReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(leftReg)
             } else {
                 // Both real (shouldn't produce complex result)
                 let realReg = emitExpr(expr)
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 let zeroReg = regAlloc.alloc() ?? .x9
-                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+                emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(zeroReg)
             }
 
         case .cast(let c):
             // Cast of a complex expression — just forward
-            emitComplexExpr(c.expr, storeAtOffset: offset, isFloat: isFloat)
+            emitComplexExprTyped(c.expr, storeAtOffset: offset, isFP: isFP, partSize: partSize)
 
         case .unary(let u):
             if exprType(expr).unqualified.isComplex {
@@ -3888,18 +3908,18 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x10
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
                 regAlloc.free(srcAddr)
             } else {
                 // Non-complex unary (e.g., negation of real): evaluate as real, store with imag=0
                 let realReg = emitExpr(expr)
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 let zeroReg = regAlloc.alloc() ?? .x9
-                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+                emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(zeroReg)
             }
 
@@ -3912,18 +3932,18 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x10
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
                 regAlloc.free(srcAddr)
             } else {
                 // Non-complex binary: evaluate as real, store with imag=0
                 let realReg = emitExpr(expr)
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 let zeroReg = regAlloc.alloc() ?? .x9
-                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+                emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(zeroReg)
             }
 
@@ -3932,10 +3952,10 @@ public final class Codegen {
             if let srcOff = localVarOffsets[id.name] {
                 let realReg = regAlloc.alloc() ?? .x9
                 let imagReg = regAlloc.alloc() ?? .x10
-                emitLoadFP(realReg, offset: srcOff, isFloat: isFloat)
-                emitLoadFP(imagReg, offset: srcOff + partSize, isFloat: isFloat)
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitLoadFP(realReg, offset: srcOff, isFP: isFP, partSize: partSize)
+                emitLoadFP(imagReg, offset: srcOff + partSize, isFP: isFP, partSize: partSize)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
             } else if globalLabels.contains(id.name) {
@@ -3952,8 +3972,8 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x11
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(addrReg.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(addrReg.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(addrReg)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
@@ -3973,15 +3993,15 @@ public final class Codegen {
                 emitLine("fmov \(callFpPrefix)\(realReg.regNum), \(callFpPrefix)0")
                 emitLine("fmov \(callFpPrefix)\(imagReg.regNum), \(callFpPrefix)1")
                 // Convert float→double or double→float if target type differs
-                if callIsFloat && !isFloat {
+                if callIsFloat && !isFP {
                     emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
                     emitLine("fcvt d\(imagReg.regNum), s\(imagReg.regNum)")
-                } else if !callIsFloat && isFloat {
+                } else if !callIsFloat && isFP {
                     emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
                     emitLine("fcvt s\(imagReg.regNum), d\(imagReg.regNum)")
                 }
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
             } else {
@@ -3991,8 +4011,8 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x10
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
                 regAlloc.free(srcAddr)
@@ -4007,8 +4027,8 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x10
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
+                emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
                 regAlloc.free(srcAddr)
@@ -4021,17 +4041,17 @@ public final class Codegen {
                         emitLine("sxtw \(realReg.x), \(realReg.w)")
                     }
                     let cvtf = exprT.isUnsigned ? "ucvtf" : "scvtf"
-                    if isFloat { emitLine("\(cvtf) s\(realReg.regNum), \(realReg.x)") }
+                    if isFP { emitLine("\(cvtf) s\(realReg.regNum), \(realReg.x)") }
                     else { emitLine("\(cvtf) d\(realReg.regNum), \(realReg.x)") }
-                } else if exprT == .float && !isFloat {
+                } else if exprT == .float && !isFP {
                     emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
-                } else if exprT == .double && isFloat {
+                } else if exprT == .double && isFP {
                     emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
                 }
-                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
                 let zeroReg = regAlloc.alloc() ?? .x9
-                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+                emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(zeroReg)
             }
 
@@ -4045,17 +4065,17 @@ public final class Codegen {
                     emitLine("sxtw \(realReg.x), \(realReg.w)")
                 }
                 let cvtf = exprT.isUnsigned ? "ucvtf" : "scvtf"
-                if isFloat { emitLine("\(cvtf) s\(realReg.regNum), \(realReg.x)") }
+                if isFP { emitLine("\(cvtf) s\(realReg.regNum), \(realReg.x)") }
                 else { emitLine("\(cvtf) d\(realReg.regNum), \(realReg.x)") }
-            } else if exprT == .float && !isFloat {
+            } else if exprT == .float && !isFP {
                 emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
-            } else if exprT == .double && isFloat {
+            } else if exprT == .double && isFP {
                 emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
             }
-            emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+            emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
             let zeroReg = regAlloc.alloc() ?? .x9
-            emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
-            emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+            if isFP { emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0") } else { emitLine("mov \(zeroReg.w), #0") }
+            emitStoreFP(zeroReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
             regAlloc.free(zeroReg)
         }
     }
@@ -4068,8 +4088,13 @@ public final class Codegen {
         return -localOffset  // return the negative offset
     }
 
-    private func emitStoreFP(_ reg: ARM64Reg, offset: Int, isFloat: Bool) {
-        let fpReg = isFloat ? "s\(reg.regNum)" : "d\(reg.regNum)"
+    private func emitStoreFP(_ reg: ARM64Reg, offset: Int, isFP: Bool, partSize: Int = 8) {
+        let fpReg: String
+        if isFP {
+            fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
+        } else {
+            fpReg = partSize <= 4 ? reg.w : reg.x
+        }
         if offset >= -256 && offset <= 255 {
             emitLine("str \(fpReg), [x29, #\(offset)]")
         } else {
@@ -4078,8 +4103,13 @@ public final class Codegen {
         }
     }
 
-    private func emitLoadFP(_ reg: ARM64Reg, offset: Int, isFloat: Bool) {
-        let fpReg = isFloat ? "s\(reg.regNum)" : "d\(reg.regNum)"
+    private func emitLoadFP(_ reg: ARM64Reg, offset: Int, isFP: Bool, partSize: Int = 8) {
+        let fpReg: String
+        if isFP {
+            fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
+        } else {
+            fpReg = partSize <= 4 ? reg.w : reg.x
+        }
         if offset >= -256 && offset <= 255 {
             emitLine("ldr \(fpReg), [x29, #\(offset)]")
         } else {
@@ -4110,21 +4140,21 @@ public final class Codegen {
         if b.op == .eq || b.op == .ne {
             // Evaluate left complex to temp1, right complex to temp2
             let tmpOff1 = ensureTempSpace(size: partSize * 2)
-            emitComplexExpr(b.left, storeAtOffset: tmpOff1, isFloat: isFloat)
+            emitComplexExpr(b.left, storeAtOffset: tmpOff1, isFP: isFloat)
             let tmpOff2 = ensureTempSpace(size: partSize * 2)
-            emitComplexExpr(b.right, storeAtOffset: tmpOff2, isFloat: isFloat)
+            emitComplexExpr(b.right, storeAtOffset: tmpOff2, isFP: isFloat)
             // Compare real parts
             let lr = regAlloc.alloc() ?? .x9
             let rr = regAlloc.alloc() ?? .x10
-            emitLoadFP(lr, offset: tmpOff1, isFloat: isFloat)
-            emitLoadFP(rr, offset: tmpOff2, isFloat: isFloat)
+            emitLoadFP(lr, offset: tmpOff1, isFP: isFloat)
+            emitLoadFP(rr, offset: tmpOff2, isFP: isFloat)
             emitLine("fcmp \(fpPrefix)\(lr.regNum), \(fpPrefix)\(rr.regNum)")
             emitLine("cset \(lr.x), eq")  // real parts equal?
             // Compare imag parts
             let li = regAlloc.alloc() ?? .x11
             let ri = regAlloc.alloc() ?? .x12
-            emitLoadFP(li, offset: tmpOff1 + partSize, isFloat: isFloat)
-            emitLoadFP(ri, offset: tmpOff2 + partSize, isFloat: isFloat)
+            emitLoadFP(li, offset: tmpOff1 + partSize, isFP: isFloat)
+            emitLoadFP(ri, offset: tmpOff2 + partSize, isFP: isFloat)
             emitLine("fcmp \(fpPrefix)\(li.regNum), \(fpPrefix)\(ri.regNum)")
             emitLine("cset \(li.x), eq")  // imag parts equal?
             // Both must be equal for ==, either different for !=
@@ -4146,19 +4176,19 @@ public final class Codegen {
 
         // Evaluate both operands to temps
         let leftOff = ensureTempSpace(size: partSize * 2)
-        emitComplexExpr(b.left, storeAtOffset: leftOff, isFloat: isFloat)
+        emitComplexExpr(b.left, storeAtOffset: leftOff, isFP: isFloat)
         let rightOff = ensureTempSpace(size: partSize * 2)
-        emitComplexExpr(b.right, storeAtOffset: rightOff, isFloat: isFloat)
+        emitComplexExpr(b.right, storeAtOffset: rightOff, isFP: isFloat)
 
         let ar = regAlloc.alloc() ?? .x9
         let br = regAlloc.alloc() ?? .x10
         let cr = regAlloc.alloc() ?? .x11
         let dr = regAlloc.alloc() ?? .x12
 
-        emitLoadFP(ar, offset: leftOff, isFloat: isFloat)
-        emitLoadFP(br, offset: leftOff + partSize, isFloat: isFloat)
-        emitLoadFP(cr, offset: rightOff, isFloat: isFloat)
-        emitLoadFP(dr, offset: rightOff + partSize, isFloat: isFloat)
+        emitLoadFP(ar, offset: leftOff, isFP: isFloat)
+        emitLoadFP(br, offset: leftOff + partSize, isFP: isFloat)
+        emitLoadFP(cr, offset: rightOff, isFP: isFloat)
+        emitLoadFP(dr, offset: rightOff + partSize, isFP: isFloat)
 
         switch b.op {
         case .add:
@@ -4173,7 +4203,7 @@ public final class Codegen {
             emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(dr.regNum)")
             emitLine("fsub \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
             // Reload br (clobbered), compute ad+bc
-            emitLoadFP(br, offset: leftOff + partSize, isFloat: isFloat)
+            emitLoadFP(br, offset: leftOff + partSize, isFP: isFloat)
             emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(cr.regNum)")
             emitLine("fmul \(fpPrefix)\(cr.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(dr.regNum)")
             // Wait, ar was clobbered. Need to save ar before the sub.
@@ -4181,7 +4211,7 @@ public final class Codegen {
             // Actually we already did fsub ar = ar*cr - br*dr. ar is now (ac-bd).
             // We need ad+bc. But ar is (ac-bd) now, can't use it.
             // Reload original a and d:
-            emitLoadFP(ar, offset: leftOff, isFloat: isFloat)
+            emitLoadFP(ar, offset: leftOff, isFP: isFloat)
             emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(dr.regNum)")
             emitLine("fadd \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(ar.regNum)")
             // br = ad+bc, which is the imaginary part
@@ -4192,33 +4222,33 @@ public final class Codegen {
             emitLine("fmul \(fpPrefix)\(dr.regNum), \(fpPrefix)\(dr.regNum), \(fpPrefix)\(dr.regNum)")
             emitLine("fadd \(fpPrefix)\(cr.regNum), \(fpPrefix)\(cr.regNum), \(fpPrefix)\(dr.regNum)")
             // real = (ac+bd)/denom — but we clobbered c and d. Need to reload.
-            emitLoadFP(cr, offset: rightOff, isFloat: isFloat)
-            emitLoadFP(dr, offset: rightOff + partSize, isFloat: isFloat)
+            emitLoadFP(cr, offset: rightOff, isFP: isFloat)
+            emitLoadFP(dr, offset: rightOff + partSize, isFP: isFloat)
             // Save denom to temp
             let denomOff = ensureTempSpace(size: partSize)
-            emitStoreFP(cr, offset: denomOff, isFloat: isFloat)
+            emitStoreFP(cr, offset: denomOff, isFP: isFloat)
             // real = (ac+bd)/denom
             emitLine("fmul \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(cr.regNum)")
             emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(dr.regNum)")
             emitLine("fadd \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(br.regNum)")
-            emitLoadFP(cr, offset: denomOff, isFloat: isFloat)
+            emitLoadFP(cr, offset: denomOff, isFP: isFloat)
             emitLine("fdiv \(fpPrefix)\(ar.regNum), \(fpPrefix)\(ar.regNum), \(fpPrefix)\(cr.regNum)")
             // imag = (bc-ad)/denom
-            emitLoadFP(br, offset: leftOff + partSize, isFloat: isFloat)
-            emitLoadFP(cr, offset: rightOff, isFloat: isFloat)
+            emitLoadFP(br, offset: leftOff + partSize, isFP: isFloat)
+            emitLoadFP(cr, offset: rightOff, isFP: isFloat)
             emitLine("fmul \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(cr.regNum)")
-            emitLoadFP(dr, offset: leftOff, isFloat: isFloat)
-            emitLoadFP(cr, offset: rightOff + partSize, isFloat: isFloat)
+            emitLoadFP(dr, offset: leftOff, isFP: isFloat)
+            emitLoadFP(cr, offset: rightOff + partSize, isFP: isFloat)
             emitLine("fmul \(fpPrefix)\(dr.regNum), \(fpPrefix)\(dr.regNum), \(fpPrefix)\(cr.regNum)")
             emitLine("fsub \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(dr.regNum)")
-            emitLoadFP(cr, offset: denomOff, isFloat: isFloat)
+            emitLoadFP(cr, offset: denomOff, isFP: isFloat)
             emitLine("fdiv \(fpPrefix)\(br.regNum), \(fpPrefix)\(br.regNum), \(fpPrefix)\(cr.regNum)")
         default:
             break
         }
 
-        emitStoreFP(ar, offset: tmpOff, isFloat: isFloat)
-        emitStoreFP(br, offset: tmpOff + partSize, isFloat: isFloat)
+        emitStoreFP(ar, offset: tmpOff, isFP: isFloat)
+        emitStoreFP(br, offset: tmpOff + partSize, isFP: isFloat)
         regAlloc.free(ar); regAlloc.free(br)
         regAlloc.free(cr); regAlloc.free(dr)
 
@@ -5060,11 +5090,11 @@ public final class Codegen {
             // Allocate temp for result
             let tmpOff = ensureTempSpace(size: partSize * 2)
             // Evaluate operand to temp
-            emitComplexExpr(u.operand, storeAtOffset: tmpOff, isFloat: isFloat)
+            emitComplexExpr(u.operand, storeAtOffset: tmpOff, isFP: isFloat)
             let realReg = regAlloc.alloc() ?? .x9
             let imagReg = regAlloc.alloc() ?? .x10
-            emitLoadFP(realReg, offset: tmpOff, isFloat: isFloat)
-            emitLoadFP(imagReg, offset: tmpOff + partSize, isFloat: isFloat)
+            emitLoadFP(realReg, offset: tmpOff, isFP: isFloat)
+            emitLoadFP(imagReg, offset: tmpOff + partSize, isFP: isFloat)
             switch u.op {
             case .neg:
                 // Negate both parts
@@ -5077,8 +5107,8 @@ public final class Codegen {
             }
             // Store result to a new temp
             let resultOff = ensureTempSpace(size: partSize * 2)
-            emitStoreFP(realReg, offset: resultOff, isFloat: isFloat)
-            emitStoreFP(imagReg, offset: resultOff + partSize, isFloat: isFloat)
+            emitStoreFP(realReg, offset: resultOff, isFP: isFloat)
+            emitStoreFP(imagReg, offset: resultOff + partSize, isFP: isFloat)
             regAlloc.free(realReg)
             regAlloc.free(imagReg)
             // Return address of result
@@ -5202,7 +5232,7 @@ public final class Codegen {
                 // For a complex expression (e.g. call returning complex, or complex binary op),
                 // evaluate to a temp and load the requested part.
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(u.operand, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExpr(u.operand, storeAtOffset: tmpOff, isFP: isFloat)
                 let partOff = tmpOff + (u.op == .imagPart ? partSize : 0)
                 if partOff >= -256 && partOff <= 255 {
                     emitLine("ldr \(fpPrefix)\(resultReg.regNum), [x29, #\(partOff)]")
@@ -5625,7 +5655,7 @@ public final class Codegen {
                 let fpPrefix = isFloat ? "s" : "d"
                 // Evaluate RHS complex to temp
                 let rhsTmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(a.value, storeAtOffset: rhsTmpOff, isFloat: isFloat)
+                emitComplexExpr(a.value, storeAtOffset: rhsTmpOff, isFP: isFloat)
                 // Get target address
                 let dstAddr = emitAddr(a.target)
                 // Load current value to another temp
@@ -5634,20 +5664,20 @@ public final class Codegen {
                 let imagReg = regAlloc.alloc() ?? .x10
                 emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(dstAddr.x)]")
                 emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(dstAddr.x), #\(partSize)]")
-                emitStoreFP(realReg, offset: curTmpOff, isFloat: isFloat)
-                emitStoreFP(imagReg, offset: curTmpOff + partSize, isFloat: isFloat)
+                emitStoreFP(realReg, offset: curTmpOff, isFP: isFloat)
+                emitStoreFP(imagReg, offset: curTmpOff + partSize, isFP: isFloat)
                 regAlloc.free(realReg)
                 regAlloc.free(imagReg)
                 // Load RHS parts
                 let rhsReal = regAlloc.alloc() ?? .x9
                 let rhsImag = regAlloc.alloc() ?? .x10
-                emitLoadFP(rhsReal, offset: rhsTmpOff, isFloat: isFloat)
-                emitLoadFP(rhsImag, offset: rhsTmpOff + partSize, isFloat: isFloat)
+                emitLoadFP(rhsReal, offset: rhsTmpOff, isFP: isFloat)
+                emitLoadFP(rhsImag, offset: rhsTmpOff + partSize, isFP: isFloat)
                 // Load current parts
                 let curReal = regAlloc.alloc() ?? .x11
                 let curImag = regAlloc.alloc() ?? .x12
-                emitLoadFP(curReal, offset: curTmpOff, isFloat: isFloat)
-                emitLoadFP(curImag, offset: curTmpOff + partSize, isFloat: isFloat)
+                emitLoadFP(curReal, offset: curTmpOff, isFP: isFloat)
+                emitLoadFP(curImag, offset: curTmpOff + partSize, isFP: isFloat)
                 // Perform operation
                 switch a.op {
                 case .addAssign:
@@ -5679,13 +5709,13 @@ public final class Codegen {
                     emitLine("fadd \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(rhsImag.regNum)")
                     emitLine("fdiv \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(denom.regNum)")
                     // imag = (bc-ad)/denom  — but we clobbered some regs. Reload.
-                    emitLoadFP(rhsReal, offset: rhsTmpOff, isFloat: isFloat)
-                    emitLoadFP(rhsImag, offset: rhsTmpOff + partSize, isFloat: isFloat)
-                    emitLoadFP(curImag, offset: curTmpOff + partSize, isFloat: isFloat)
+                    emitLoadFP(rhsReal, offset: rhsTmpOff, isFP: isFloat)
+                    emitLoadFP(rhsImag, offset: rhsTmpOff + partSize, isFP: isFloat)
+                    emitLoadFP(curImag, offset: curTmpOff + partSize, isFP: isFloat)
                     emitLine("fmul \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(rhsReal.regNum)")
                     emitLine("fmul \(fpPrefix)\(rhsReal.regNum), \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(rhsImag.regNum)")
                     // Wait, curReal was already modified. Need original real.
-                    emitLoadFP(curReal, offset: curTmpOff, isFloat: isFloat)
+                    emitLoadFP(curReal, offset: curTmpOff, isFP: isFloat)
                     emitLine("fmul \(fpPrefix)\(rhsReal.regNum), \(fpPrefix)\(curReal.regNum), \(fpPrefix)\(rhsImag.regNum)")
                     emitLine("fsub \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(rhsReal.regNum)")
                     emitLine("fdiv \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(curImag.regNum), \(fpPrefix)\(denom.regNum)")
@@ -6102,7 +6132,7 @@ public final class Codegen {
             let dstAddr = emitAddr(a.target)
             // Evaluate complex RHS to a temp, then copy to target
             let tmpOff = ensureTempSpace(size: partSize * 2)
-            emitComplexExpr(a.value, storeAtOffset: tmpOff, isFloat: isFloat)
+            emitComplexExpr(a.value, storeAtOffset: tmpOff, isFP: isFloat)
             // Load from temp and store to target
             let realReg = regAlloc.alloc() ?? .x9
             let imagReg = regAlloc.alloc() ?? .x10
@@ -7055,7 +7085,7 @@ public final class Codegen {
             } else {
                 // Evaluate the complex expression to a temp and extract the part
                 let tmpOff = ensureTempSpace(size: partSize * 2)
-                emitComplexExpr(arg, storeAtOffset: tmpOff, isFloat: isFloat)
+                emitComplexExpr(arg, storeAtOffset: tmpOff, isFP: isFloat)
                 let partOff = tmpOff + (isImagPart ? partSize : 0)
                 if partOff >= -256 && partOff <= 255 {
                     emitLine("ldr \(fpPrefix)\(reg.regNum), [x29, #\(partOff)]")
@@ -7473,7 +7503,7 @@ public final class Codegen {
                         let isFloat = hfaInfo.isFloat
                         let partSize = isFloat ? 4 : 8
                         let tmpOff = ensureTempSpace(size: partSize * 2)
-                        emitComplexExpr(arg, storeAtOffset: tmpOff, isFloat: isFloat)
+                        emitComplexExpr(arg, storeAtOffset: tmpOff, isFP: isFloat)
                         // Return a register holding the base address of the temp
                         let r = regAlloc.alloc() ?? .x9
                         if tmpOff >= -4095 && tmpOff <= 4095 {
@@ -9123,6 +9153,16 @@ public final class Codegen {
         case .structType, .unionType, .array, .vector: return true
         default: return false
         }
+    }
+
+    /// Get complex type info: whether it uses FP registers, and the part size in bytes.
+    /// For FP complex types (complexFloat/complexDouble), uses FP registers.
+    /// For integer complex types (complexInt etc.), uses integer registers.
+    private func complexTypeInfo(_ t: CType) -> (isFloat: Bool, partSize: Int) {
+        let realType = t.unqualified.complexRealType
+        let isFP = realType.isFloating
+        let partSize = realType.sizeInBytes ?? 8
+        return (isFP, partSize)
     }
 
     /// Check if a type is a pointer or array (i.e. something that is passed as a
