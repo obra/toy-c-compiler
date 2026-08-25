@@ -10918,6 +10918,15 @@ public final class Codegen {
                     }
                 }
             }
+            // Pattern 4: Consecutive duplicate mov instructions (e.g., "mov x9, #0"
+            // emitted multiple times). Eliminate the duplicate.
+            if line.hasPrefix("mov ") && writeIdx > 0 {
+                let prevLine = output[writeIdx - 1]
+                if prevLine == line {
+                    eliminated += 1
+                    continue
+                }
+            }
             output[writeIdx] = line
             writeIdx += 1
         }
