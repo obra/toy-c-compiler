@@ -23,6 +23,17 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     case complexFloat    // _Complex float
     case complexDouble   // _Complex double
     case complexLongDouble // _Complex long double (approximated as complex double)
+    case complexChar      // _Complex char (2 × char = 2 bytes)
+    case complexSchar     // _Complex signed char
+    case complexUchar     // _Complex unsigned char
+    case complexShort     // _Complex short
+    case complexUshort    // _Complex unsigned short
+    case complexInt       // _Complex int
+    case complexUint      // _Complex unsigned int
+    case complexLong      // _Complex long
+    case complexUlong     // _Complex unsigned long
+    case complexLongLong  // _Complex long long
+    case complexUlongLong // _Complex unsigned long long
     case pointer(to: CType)
     case array(of: CType, count: Int)
     case incompleteArray(of: CType)
@@ -110,10 +121,15 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         return isArithmetic || isPointer
     }
 
-    /// True for complex floating-point types.
+    /// True for complex types (both floating and integer).
     public var isComplex: Bool {
         switch self {
-        case .complexFloat, .complexDouble, .complexLongDouble:
+        case .complexFloat, .complexDouble, .complexLongDouble,
+             .complexChar, .complexSchar, .complexUchar,
+             .complexShort, .complexUshort,
+             .complexInt, .complexUint,
+             .complexLong, .complexUlong,
+             .complexLongLong, .complexUlongLong:
             return true
         case .qualified(let base, _, _, _):
             return base.isComplex
@@ -130,6 +146,17 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         case .complexFloat: return .float
         case .complexDouble: return .double
         case .complexLongDouble: return .longDouble
+        case .complexChar: return .char
+        case .complexSchar: return .schar
+        case .complexUchar: return .uchar
+        case .complexShort: return .short
+        case .complexUshort: return .ushort
+        case .complexInt: return .int
+        case .complexUint: return .uint
+        case .complexLong: return .long
+        case .complexUlong: return .ulong
+        case .complexLongLong: return .longLong
+        case .complexUlongLong: return .ulongLong
         case .qualified(let base, _, _, _):
             return base.complexRealType
         case .typedef(_, let base):
@@ -245,6 +272,14 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 8   // 2 × float
         case .complexDouble, .complexLongDouble:
             return 16  // 2 × double
+        case .complexChar, .complexSchar, .complexUchar:
+            return 2   // 2 × char
+        case .complexShort, .complexUshort:
+            return 4   // 2 × short
+        case .complexInt, .complexUint:
+            return 8   // 2 × int
+        case .complexLong, .complexUlong, .complexLongLong, .complexUlongLong:
+            return 16  // 2 × long/longLong
         case .pointer, .function:
             return 8
         case .array(let elem, let count):
@@ -286,6 +321,14 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 4   // aligned to float
         case .complexDouble, .complexLongDouble:
             return 8  // aligned to double
+        case .complexChar, .complexSchar, .complexUchar:
+            return 1
+        case .complexShort, .complexUshort:
+            return 2
+        case .complexInt, .complexUint:
+            return 4
+        case .complexLong, .complexUlong, .complexLongLong, .complexUlongLong:
+            return 8
         case .pointer, .function:
             return 8
         case .array(let elem, _):

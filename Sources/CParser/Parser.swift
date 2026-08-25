@@ -947,10 +947,12 @@ public final class Parser {
         if hasChar { return isUnsigned ? .uchar : .char }
         if hasComplex {
             if hasFloat { return .complexFloat }
-            if longCount > 0 { return .complexLongDouble }
+            if longCount > 0 { return isUnsigned ? .complexUlong : .complexLongLong }
             if hasDouble { return .complexDouble }
-            // _Complex with integer type is allowed but rare; default to complex double
-            return .complexDouble
+            if hasChar { return isUnsigned ? .complexUchar : .complexSchar }
+            if hasShort { return isUnsigned ? .complexUshort : .complexShort }
+            // Default: _Complex int
+            return isUnsigned ? .complexUint : .complexInt
         }
         if hasImaginary {
             // Treat _Imaginary like _Complex with zero real part
