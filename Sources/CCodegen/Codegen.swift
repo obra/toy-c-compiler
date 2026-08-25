@@ -10886,12 +10886,45 @@ public final class Codegen {
                         }
                         let loadReg = String(nextLine[nextLine.index(nextLine.startIndex, offsetBy: 4)..<nextCommaIdx])
                         let loadAddr = String(nextLine[nextLine.index(after: nextCommaIdx)...]).trimmingCharacters(in: .whitespaces)
-                        if storeReg == loadReg && storeAddr == loadAddr {
-                            output[writeIdx] = line
-                            writeIdx += 1
-                            skipNext = true
-                            eliminated += 1
-                            continue
+                        if storeAddr == loadAddr {
+                            if storeReg == loadReg {
+                                // Same register: just keep the store, skip the load
+                                output[writeIdx] = line
+                                writeIdx += 1
+                                skipNext = true
+                                eliminated += 1
+                                continue
+                            } else {
+                                // Different register, same address: replace ldr with mov.
+                                // The value is already in storeReg from the str.
+                                // Handle width: if store is x and load is w (or vice versa),
+                                // use the appropriate mov width.
+                                let storeIsW = storeReg.hasPrefix("w")
+                                let loadIsW = loadReg.hasPrefix("w")
+                                let storeNum = storeReg.dropFirst()
+                                let loadNum = loadReg.dropFirst()
+                                if storeNum == loadNum {
+                                    // Same register number, different width (x vs w):
+                                    // the 32-bit value is already in the low half.
+                                    // No mov needed — just skip the ldr.
+                                    output[writeIdx] = line
+                                    writeIdx += 1
+                                    skipNext = true
+                                    eliminated += 1
+                                    continue
+                                } else {
+                                    // Different register numbers: emit mov
+                                    let movSrc = loadIsW ? "w\(storeNum)" : "x\(storeNum)"
+                                    let movDst = loadIsW ? "w\(loadNum)" : "x\(loadNum)"
+                                    output[writeIdx] = line
+                                    writeIdx += 1
+                                    output[writeIdx] = "mov \(movDst), \(movSrc)"
+                                    writeIdx += 1
+                                    skipNext = true
+                                    eliminated += 1
+                                    continue
+                                }
+                            }
                         }
                     }
                 }
