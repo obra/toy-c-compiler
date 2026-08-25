@@ -2801,6 +2801,17 @@ public final class Codegen {
                     emitEpilogue()
                     return
                 }
+                // Scalar-to-__int128 return: cast expression to __int128, return in x0/x1
+                if !isInt128(retType) && isInt128(funcRet) {
+                    let tmpOff = ensureTempSpace(size: 16)
+                    emitInt128Expr(v, storeAtOffset: tmpOff)
+                    let r = regAlloc.alloc() ?? .x9
+                    emitLdrFP(r, tmpOff); emitLine("mov x0, \(r.x)")
+                    emitLdrFP(r, tmpOff + 8); emitLine("mov x1, \(r.x)")
+                    regAlloc.free(r)
+                    emitEpilogue()
+                    return
+                }
                 // __int128-to-scalar return: extract lo half
                 if isInt128(retType) && !isInt128(funcRet) {
                     let srcAddr = emitAddr(v)
@@ -11578,15 +11589,30 @@ public final class Codegen {
         switch expr {
         case .identifier(let id):
             if let off = localVarOffsets[id.name] {
-                let src = regAlloc.alloc() ?? .x9
-                let dst = regAlloc.alloc() ?? .x10
-                if off >= -256 && off <= 255 { emitLine("add \(src.x), x29, #\(off)") }
-                else { emitLoadImm("x16", Int64(off)); emitLine("add \(src.x), x29, x16") }
-                if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
-                else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
-                emitLine("ldr x16, [\(src.x)]"); emitLine("str x16, [\(dst.x)]")
-                emitLine("ldr x16, [\(src.x), #8]"); emitLine("str x16, [\(dst.x), #8]")
-                regAlloc.free(src); regAlloc.free(dst)
+                // Check if the local is actually __int128 (16 bytes) or a smaller type
+                let varType = localVarTypes[id.name]?.unqualified
+                if varType != nil && isInt128(varType!) {
+                    // __int128 local: copy 16 bytes
+                    let src = regAlloc.alloc() ?? .x9
+                    let dst = regAlloc.alloc() ?? .x10
+                    if off >= -256 && off <= 255 { emitLine("add \(src.x), x29, #\(off)") }
+                    else { emitLoadImm("x16", Int64(off)); emitLine("add \(src.x), x29, x16") }
+                    if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+                    else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+                    emitLine("ldr x16, [\(src.x)]"); emitLine("str x16, [\(dst.x)]")
+                    emitLine("ldr x16, [\(src.x), #8]"); emitLine("str x16, [\(dst.x), #8]")
+                    regAlloc.free(src); regAlloc.free(dst)
+                } else {
+                    // Smaller type: load with correct width, sign/zero-extend to 128 bits
+                    let lo = emitExpr(expr)
+                    emitStoreFP(lo.x, offset)
+                    let h = offset + 8
+                    let isSigned = varType?.isSigned ?? true
+                    if isSigned { emitLine("asr \(lo.x), \(lo.x), #63") }
+                    else { emitLine("mov \(lo.x), xzr") }
+                    emitStoreFP(lo.x, h)
+                    regAlloc.free(lo)
+                }
             } else {
                 // Global variable or parameter not in locals: use emitExpr (returns lo value)
                 let lo = emitExpr(expr)
