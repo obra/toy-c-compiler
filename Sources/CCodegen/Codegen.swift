@@ -2482,7 +2482,10 @@ public final class Codegen {
                     emitEpilogue()
                     return
                 }
-                if isAggregateType(retType) {
+                // If function returns a pointer but expression is an array (e.g. string
+                // literal), the array decays to a pointer — emit normally, don't treat
+                // as aggregate return.
+                if isAggregateType(retType) && !isPointerOrArrayType(funcRet) {
                     // Struct/union return: depends on size and HFA status
                     let structSize = retType.sizeInBytes ?? 0
                     if let hfaInfo = isHFA(retType) {
@@ -3916,18 +3919,41 @@ public final class Codegen {
             }
 
         case .subscript_, .member:
-            // Complex array element or struct member: emitExpr returns the address.
-            // Load both parts from that address and store to the target offset.
-            let srcAddr = emitExpr(expr)
-            let realReg = regAlloc.alloc() ?? .x9
-            let imagReg = regAlloc.alloc() ?? .x10
-            emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
-            emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
-            emitStoreFP(realReg, offset: offset, isFloat: isFloat)
-            emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
-            regAlloc.free(realReg)
-            regAlloc.free(imagReg)
-            regAlloc.free(srcAddr)
+            if exprType(expr).unqualified.isComplex {
+                // Complex array element or struct member: emitExpr returns the address.
+                // Load both parts from that address and store to the target offset.
+                let srcAddr = emitExpr(expr)
+                let realReg = regAlloc.alloc() ?? .x9
+                let imagReg = regAlloc.alloc() ?? .x10
+                emitLine("ldr \(fpPrefix)\(realReg.regNum), [\(srcAddr.x)]")
+                emitLine("ldr \(fpPrefix)\(imagReg.regNum), [\(srcAddr.x), #\(partSize)]")
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                emitStoreFP(imagReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(realReg)
+                regAlloc.free(imagReg)
+                regAlloc.free(srcAddr)
+            } else {
+                // Non-complex subscript/member assigned to complex: evaluate as real
+                let realReg = emitExpr(expr)
+                let exprT = exprType(expr).unqualified
+                if !exprT.isFloating {
+                    if exprT.isSigned32Bit {
+                        emitLine("sxtw \(realReg.x), \(realReg.w)")
+                    }
+                    let cvtf = exprT.isUnsigned ? "ucvtf" : "scvtf"
+                    if isFloat { emitLine("\(cvtf) s\(realReg.regNum), \(realReg.x)") }
+                    else { emitLine("\(cvtf) d\(realReg.regNum), \(realReg.x)") }
+                } else if exprT == .float && !isFloat {
+                    emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
+                } else if exprT == .double && isFloat {
+                    emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
+                }
+                emitStoreFP(realReg, offset: offset, isFloat: isFloat)
+                let zeroReg = regAlloc.alloc() ?? .x9
+                emitLine("fmov \(fpPrefix)\(zeroReg.regNum), #0.0")
+                emitStoreFP(zeroReg, offset: offset + partSize, isFloat: isFloat)
+                regAlloc.free(zeroReg)
+            }
 
         default:
             // Fallback: evaluate as real, store with imag=0
@@ -5799,10 +5825,14 @@ public final class Codegen {
             }
             emitLine("str \(fpPrefix)\(realReg.regNum), [\(dstAddr.x)]")
             emitLine("str \(fpPrefix)\(imagReg.regNum), [\(dstAddr.x), #\(partSize)]")
-            regAlloc.free(realReg)
             regAlloc.free(imagReg)
             regAlloc.free(dstAddr)
-            return .x9
+            // Return the real part register so the assignment result can be used
+            // in boolean contexts. The if/while condition check will compare this
+            // FP register against 0.0. For complex truthiness, both parts would
+            // need checking, but the common idiom `if (c = f())` expects the real
+            // part to be non-zero for a non-zero complex result.
+            return realReg
         }
         let valueReg = emitExpr(a.value)
         // Convert float type if needed (e.g., double→float for assignment to float var)
@@ -8763,6 +8793,16 @@ public final class Codegen {
     private func isAggregateType(_ t: CType) -> Bool {
         switch t.unqualified {
         case .structType, .unionType, .array: return true
+        default: return false
+        }
+    }
+
+    /// Check if a type is a pointer or array (i.e. something that is passed as a
+    /// pointer value, not an aggregate). Used to distinguish "return a pointer
+    /// to an array" from "return a struct/union by value".
+    private func isPointerOrArrayType(_ t: CType) -> Bool {
+        switch t.unqualified {
+        case .pointer, .array, .incompleteArray: return true
         default: return false
         }
     }
