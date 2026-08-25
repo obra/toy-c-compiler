@@ -4505,33 +4505,43 @@ public final class Codegen {
 
     private func emitStoreFP(_ reg: ARM64Reg, offset: Int, isFP: Bool, partSize: Int = 8) {
         let fpReg: String
+        let storeInstr: String
         if isFP {
             fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
+            storeInstr = "str"
         } else {
-            // Integer complex type: use integer registers (w for ≤4 bytes, x for 8)
-            fpReg = partSize <= 4 ? reg.w : reg.x
+            // Integer complex type: use correct store instruction for part size
+            if partSize <= 1 { storeInstr = "strb"; fpReg = reg.w }
+            else if partSize <= 2 { storeInstr = "strh"; fpReg = reg.w }
+            else if partSize <= 4 { storeInstr = "str"; fpReg = reg.w }
+            else { storeInstr = "str"; fpReg = reg.x }
         }
         if offset >= -256 && offset <= 255 {
-            emitLine("str \(fpReg), [x29, #\(offset)]")
+            emitLine("\(storeInstr) \(fpReg), [x29, #\(offset)]")
         } else {
             emitLoadImm("x16", Int64(offset))
-            emitLine("str \(fpReg), [x29, x16]")
+            emitLine("\(storeInstr) \(fpReg), [x29, x16]")
         }
     }
 
     private func emitLoadFP(_ reg: ARM64Reg, offset: Int, isFP: Bool, partSize: Int = 8) {
         let fpReg: String
+        let loadInstr: String
         if isFP {
             fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
+            loadInstr = "ldr"
         } else {
-            // Integer complex type: use integer registers (w for ≤4 bytes, x for 8)
-            fpReg = partSize <= 4 ? reg.w : reg.x
+            // Integer complex type: use correct load instruction for part size
+            if partSize <= 1 { loadInstr = "ldrb"; fpReg = reg.w }
+            else if partSize <= 2 { loadInstr = "ldrh"; fpReg = reg.w }
+            else if partSize <= 4 { loadInstr = "ldr"; fpReg = reg.w }
+            else { loadInstr = "ldr"; fpReg = reg.x }
         }
         if offset >= -256 && offset <= 255 {
-            emitLine("ldr \(fpReg), [x29, #\(offset)]")
+            emitLine("\(loadInstr) \(fpReg), [x29, #\(offset)]")
         } else {
             emitLoadImm("x16", Int64(offset))
-            emitLine("ldr \(fpReg), [x29, x16]")
+            emitLine("\(loadInstr) \(fpReg), [x29, x16]")
         }
     }
 

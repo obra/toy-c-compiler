@@ -2682,6 +2682,21 @@ public final class Parser {
         case .integerLiteral:
             advance()
             let (val, isUnsigned, type) = parseIntLiteral(token.spelling)
+            // Check for imaginary suffix (e.g., 2i, 3i) — GNU extension
+            let hasImagSuffix = token.spelling.hasSuffix("i") || token.spelling.hasSuffix("I") ||
+                                token.spelling.hasSuffix("j") || token.spelling.hasSuffix("J")
+            // Also check for imaginary suffix after U/L suffixes (e.g., 2ui, 2li)
+            let hasImagSuffixAfterUL: Bool = {
+                let s = token.spelling
+                for suffix in ["ui", "Ui", "uI", "UI", "li", "Li", "lI", "LI", "lli", "Lli", "LLI", "LLi"] {
+                    if s.hasSuffix(suffix) { return true }
+                }
+                return false
+            }()
+            if hasImagSuffix || hasImagSuffixAfterUL {
+                // Imaginary integer literal: treat as imaginary double
+                return .floatLiteral(FloatLiteral(value: Double(val), type: .double, isImaginary: true, loc: token.loc))
+            }
             return .integerLiteral(IntegerLiteral(value: val, isUnsigned: isUnsigned, type: type, loc: token.loc))
 
         case .floatLiteral:
