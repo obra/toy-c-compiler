@@ -2576,7 +2576,9 @@ public final class Parser {
             let isImaginary = token.spelling.hasSuffix("i") || token.spelling.hasSuffix("I") ||
                               token.spelling.hasSuffix("j") || token.spelling.hasSuffix("J") ||
                               token.spelling.hasSuffix("fi") || token.spelling.hasSuffix("Fi") ||
-                              token.spelling.hasSuffix("li") || token.spelling.hasSuffix("Li")
+                              token.spelling.hasSuffix("li") || token.spelling.hasSuffix("Li") ||
+                              token.spelling.hasSuffix("il") || token.spelling.hasSuffix("iL") ||
+                              token.spelling.hasSuffix("Il") || token.spelling.hasSuffix("IL")
             let type: CType = isFloat ? .float : .double
             return .floatLiteral(FloatLiteral(value: val, type: type, isImaginary: isImaginary, loc: token.loc))
 

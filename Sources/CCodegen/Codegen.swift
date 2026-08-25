@@ -6205,11 +6205,11 @@ public final class Codegen {
             emitLine("str \(newPtr.x), [\(apAddr.x)]")
             regAlloc.free(apAddr)
             regAlloc.free(newPtr)
-            // For pointer types, the value IS the pointer (curPtr already holds the pointer value)
-            // For integer/float types <= 8 bytes, load from curPtr
+            // For pointer types, load the pointer value from the save area
             let resolvedType = argType.unqualified
             if case .pointer = resolvedType {
-                // Pointer type: curPtr holds the pointer value already
+                // Pointer type: load the pointer value from curPtr
+                emitLine("ldr \(curPtr.x), [\(curPtr.x)]")
                 return curPtr
             } else if case .structType = resolvedType {
                 // Struct: return the address
