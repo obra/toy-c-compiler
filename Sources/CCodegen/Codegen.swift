@@ -11421,6 +11421,13 @@ public final class Codegen {
         // Compute S = extend(truncate(lo, wR), sR) into x13, then S_hi into x14
         // (sign of S for signed R, 0 for unsigned R). overflow = (hi != S_hi)
         // || (lo != S), i.e. the exact result T differs from its R-typed value.
+        // For 128-bit result types, S = T (no truncation), so overflow is always 0.
+        if wR >= 16 {
+            emitLine("add sp, sp, #48")
+            let resultReg2 = regAlloc.alloc() ?? .x9
+            emitLine("mov \(resultReg2.w), wzr")
+            return resultReg2
+        }
         emitComputeS("x13", from: "x11", width: wR, signed: sRSigned)
         if sRSigned {
             emitLine("asr x14, x13, #63")
@@ -11518,6 +11525,10 @@ public final class Codegen {
             emitLine("str s\(valReg.regNum), [\(addrReg.x)]")
         case .double, .longDouble:
             emitLine("str d\(valReg.regNum), [\(addrReg.x)]")
+        case .int128, .uint128:
+            // 128-bit store: lo in valReg, hi in the next register (x12 by convention)
+            emitLine("str \(valReg.x), [\(addrReg.x)]")
+            emitLine("str x12, [\(addrReg.x), #8]")
         default:
             emitLine("str \(valReg.x), [\(addrReg.x)]")
         }
