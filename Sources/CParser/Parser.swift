@@ -2130,7 +2130,15 @@ public final class Parser {
             }
             _ = try consume(kind: .punct, spelling: "}")
         } else {
-            cases.append(try parseStmt())
+            // Braceless switch: parse consecutive case/default labels and their body.
+            // Each case label is a separate statement that the codegen handles.
+            while !isAtEnd() {
+                cases.append(try parseStmt())
+                // If the parsed statement was a case/default label (which ends with ':'),
+                // continue parsing more statements (more case labels or the body).
+                // If it was a regular statement, stop.
+                if !isKeyword("case") && !isKeyword("default") { break }
+            }
         }
         return SwitchStmt(value: val, cases: cases, loc: loc)
     }
