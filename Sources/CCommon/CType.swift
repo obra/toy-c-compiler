@@ -17,6 +17,8 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     case ulong
     case longLong
     case ulongLong
+    case int128      // __int128 (signed)
+    case uint128     // unsigned __int128
     case float
     case double
     case longDouble  // approximated as double on ARM64
@@ -53,7 +55,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     public var isInteger: Bool {
         switch self {
         case .bool, .char, .schar, .uchar, .short, .ushort, .int, .uint,
-             .long, .ulong, .longLong, .ulongLong:
+             .long, .ulong, .longLong, .ulongLong, .int128, .uint128:
             return true
         case .qualified(let base, _, _, _):
             return base.isInteger
@@ -110,7 +112,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     /// True for unsigned integer types.
     public var isUnsigned: Bool {
         switch self {
-        case .bool, .uchar, .ushort, .uint, .ulong, .ulongLong: return true
+        case .bool, .uchar, .ushort, .uint, .ulong, .ulongLong, .uint128: return true
         case .qualified(let base, _, _, _): return base.isUnsigned
         case .typedef(_, let base): return base.isUnsigned
         default: return false
@@ -268,6 +270,8 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 4
         case .long, .ulong, .longLong, .ulongLong, .double, .longDouble:
             return 8
+        case .int128, .uint128:
+            return 16
         case .complexFloat:
             return 8   // 2 × float
         case .complexDouble, .complexLongDouble:
@@ -317,6 +321,8 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             return 4
         case .long, .ulong, .longLong, .ulongLong, .double, .longDouble:
             return 8
+        case .int128, .uint128:
+            return 16
         case .complexFloat:
             return 4   // aligned to float
         case .complexDouble, .complexLongDouble:
@@ -353,7 +359,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     /// Is this a signed integer type?
     public var isSigned: Bool {
         switch self {
-        case .char, .schar, .short, .int, .long, .longLong:
+        case .char, .schar, .short, .int, .long, .longLong, .int128:
             return true
         case .bool, .uchar, .ushort, .uint, .ulong, .ulongLong:
             return false

@@ -318,7 +318,8 @@ public final class Parser {
                  "struct", "union", "enum",
                  "register", "auto", "static", "extern",
                  "__const", "__const__", "__volatile", "__volatile__",
-                 "__restrict", "__restrict__", "__signed", "__signed__":
+                 "__restrict", "__restrict__", "__signed", "__signed__",
+                 "__int128", "_Bool", "_Complex", "_Imaginary":
                 return true
             default:
                 return false
@@ -363,7 +364,7 @@ public final class Parser {
                 if ["int", "char", "short", "long", "float", "double", "void",
                     "unsigned", "signed", "const", "static", "extern", "struct",
                     "union", "enum", "typedef", "inline", "register", "volatile",
-                    "_Bool", "auto"].contains(kw) {
+                    "_Bool", "auto", "__int128"].contains(kw) {
                     return
                 }
             }
@@ -833,6 +834,7 @@ public final class Parser {
                 case "signed": typeSpecifiers.append("signed"); advance()
                 case "unsigned": typeSpecifiers.append("unsigned"); advance()
                 case "_Bool": typeSpecifiers.append("_Bool"); advance()
+                case "__int128": typeSpecifiers.append("__int128"); advance()
                 case "_Complex": typeSpecifiers.append("_Complex"); advance()
                 case "__complex__": typeSpecifiers.append("_Complex"); advance()
                 case "__complex": typeSpecifiers.append("_Complex"); advance()
@@ -987,6 +989,7 @@ public final class Parser {
         let hasChar = specs.contains("char")
         let hasVoid = specs.contains("void")
         let hasBool = specs.contains("_Bool")
+        let hasInt128 = specs.contains("__int128")
         let hasComplex = specs.contains("_Complex")
         let hasImaginary = specs.contains("_Imaginary")
 
@@ -1018,6 +1021,7 @@ public final class Parser {
         if hasShort { return isUnsigned ? .ushort : .short }
         if longCount >= 2 { return isUnsigned ? .ulongLong : .longLong }
         if longCount == 1 { return isUnsigned ? .ulong : .long }
+        if hasInt128 { return isUnsigned ? .uint128 : .int128 }
         // Default: int (possibly unsigned)
         return isUnsigned ? .uint : .int
     }
@@ -2418,7 +2422,7 @@ public final class Parser {
         return ["void", "char", "short", "int", "long", "float", "double",
                 "signed", "unsigned", "const", "volatile", "struct", "union",
                 "enum", "_Bool", "restrict", "_Complex", "_Imaginary",
-                "__complex__", "__complex",
+                "__complex__", "__complex", "__int128",
                 "typeof", "__typeof", "__typeof__"].contains(s)
     }
 
