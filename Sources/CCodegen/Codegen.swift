@@ -10975,8 +10975,18 @@ public final class Codegen {
                                 // The value is already in storeReg from the str.
                                 // Handle width: if store is x and load is w (or vice versa),
                                 // use the appropriate mov width.
+                                // CRITICAL: do not cross register banks (integer x/w vs FP s/d).
                                 let storeIsW = storeReg.hasPrefix("w")
                                 let loadIsW = loadReg.hasPrefix("w")
+                                let storeIsFP = storeReg.hasPrefix("s") || storeReg.hasPrefix("d")
+                                let loadIsFP = loadReg.hasPrefix("s") || loadReg.hasPrefix("d")
+                                // Only optimize within the same register bank
+                                if storeIsFP != loadIsFP {
+                                    // Cross-bank: cannot replace, keep both instructions
+                                    output[writeIdx] = line
+                                    writeIdx += 1
+                                    continue
+                                }
                                 let storeNum = storeReg.dropFirst()
                                 let loadNum = loadReg.dropFirst()
                                 if storeNum == loadNum {
@@ -10990,6 +11000,26 @@ public final class Codegen {
                                     continue
                                 } else {
                                     // Different register numbers: emit mov
+                                    if storeIsFP {
+                                        // FP register move: use fmov s/d
+                                        let fpPrefix = storeReg.hasPrefix("s") ? "s" : "d"
+                                        let loadPrefix = loadReg.hasPrefix("s") ? "s" : "d"
+                                        // Only fmov within same FP width (s→s or d→d)
+                                        if fpPrefix == loadPrefix {
+                                            output[writeIdx] = line
+                                            writeIdx += 1
+                                            output[writeIdx] = "fmov \(loadPrefix)\(loadNum), \(fpPrefix)\(storeNum)"
+                                            writeIdx += 1
+                                            skipNext = true
+                                            eliminated += 1
+                                            continue
+                                        }
+                                        // Different FP widths (s vs d): can't fmov, keep ldr
+                                        output[writeIdx] = line
+                                        writeIdx += 1
+                                        continue
+                                    }
+                                    // Integer register move
                                     let movSrc = loadIsW ? "w\(storeNum)" : "x\(storeNum)"
                                     let movDst = loadIsW ? "w\(loadNum)" : "x\(loadNum)"
                                     output[writeIdx] = line
