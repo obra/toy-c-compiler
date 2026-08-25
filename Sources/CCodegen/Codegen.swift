@@ -5996,14 +5996,13 @@ public final class Codegen {
                     // Load target[i]
                     emitLine("ldr x9, [sp, #0]")  // dst addr
                     emitLine("\(ldInstr) \(ldReg), [x9, #\(off)]")
-                    // Load scalar (broadcast)
-                    emitLine("ldr x9, [sp, #16]")  // scalar addr
+                    // Load scalar (broadcast) — scalar value is at sp+16, load directly
                     if isFP {
-                        emitLine(elemSize == 4 ? "ldr s17, [x9]" : "ldr d17, [x9]")
+                        emitLine(elemSize == 4 ? "ldr s17, [sp, #16]" : "ldr d17, [sp, #16]")
                     } else if elemSize <= 4 {
-                        emitLine("ldr w17, [x9]")
+                        emitLine("ldr w17, [sp, #16]")
                     } else {
-                        emitLine("ldr x17, [x9]")
+                        emitLine("ldr x17, [sp, #16]")
                     }
                     // Apply op
                     let arithReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
@@ -8061,7 +8060,13 @@ public final class Codegen {
                     regAlloc.free(addrReg)
                 } else if isStructOrVecArg && argSize <= 8 {
                     // Small struct/union (≤8 bytes): load the value from its address
-                    let addrReg = emitAddr(arg)
+                    let addrReg: ARM64Reg
+                    if let savedReg = compoundLiteralAddrs[i] {
+                        addrReg = regAlloc.alloc() ?? savedReg
+                        emitLine("mov \(addrReg.x), \(savedReg.x)")
+                    } else {
+                        addrReg = emitAddr(arg)
+                    }
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder
                     // Load the 8-byte (or smaller) struct value
                     emitLine("ldr x16, [\(addrReg.x)]")
@@ -8083,7 +8088,13 @@ public final class Codegen {
                     regAlloc.free(addrReg)
                 } else if isStructOrVecArg && argSize > 8 && argSize <= 16 {
                     // Struct by value (9-16 bytes): load two 8-byte chunks
-                    let addrReg = emitAddr(arg)
+                    let addrReg: ARM64Reg
+                    if let savedReg = compoundLiteralAddrs[i] {
+                        addrReg = regAlloc.alloc() ?? savedReg
+                        emitLine("mov \(addrReg.x), \(savedReg.x)")
+                    } else {
+                        addrReg = emitAddr(arg)
+                    }
                     // Push 2 slots (32 bytes) for the two chunks
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder for chunk 0
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder for chunk 1
@@ -8110,7 +8121,13 @@ public final class Codegen {
                     regAlloc.free(addrReg)
                 } else if isStructOrVecArg && argSize > 16 {
                     // Large struct (>16 bytes): copy all chunks to temp stack
-                    let addrReg = emitAddr(arg)
+                    let addrReg: ARM64Reg
+                    if let savedReg = compoundLiteralAddrs[i] {
+                        addrReg = regAlloc.alloc() ?? savedReg
+                        emitLine("mov \(addrReg.x), \(savedReg.x)")
+                    } else {
+                        addrReg = emitAddr(arg)
+                    }
                     let numChunks = (argSize + 7) / 8
                     // Push placeholder slots
                     for _ in 0..<numChunks {
