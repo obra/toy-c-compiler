@@ -10817,7 +10817,7 @@ public final class Codegen {
                 continue
             }
             let line = output[readIdx]
-            // Pattern: str Xn, [x29, #N] followed by ldr Xn, [x29, #N]
+            // Pattern 1: str Xn, [x29, #N] followed by ldr Xn, [x29, #N]
             // Only for x29-relative addresses (local variables on the frame).
             // The register width must match (both x or both w).
             // The address string must match exactly.
@@ -10847,11 +10847,72 @@ public final class Codegen {
                     }
                 }
             }
+            // Pattern 2: cset Xn, CC followed by cbz/cbnz Xn, label
+            // → b.CC'inverted label (for cbz) or b.CC label (for cbnz)
+            // This eliminates the cset instruction and uses a direct conditional branch.
+            if line.hasPrefix("cset ") {
+                // Parse: "cset x9, eq" → reg=x9, cc=eq
+                let parts = line.split(separator: ",")
+                if parts.count >= 2 {
+                    let regPart = parts[0].trimmingCharacters(in: .whitespaces)
+                    let ccPart = parts[1].trimmingCharacters(in: .whitespaces)
+                    let csetReg = String(regPart.dropFirst(5)) // "cset " is 5 chars
+                    if readIdx + 1 < output.count {
+                        let nextLine = output[readIdx + 1]
+                        // cbz xN, label → invert condition and use b.CC' label
+                        // cbnz xN, label → use b.CC label (same condition)
+                        if nextLine.hasPrefix("cbz ") || nextLine.hasPrefix("cbnz ") {
+                            let nextParts = nextLine.split(separator: ",", maxSplits: 1)
+                            if nextParts.count >= 2 {
+                                let branchReg = nextParts[0].dropFirst(4).trimmingCharacters(in: .whitespaces) // "cbz " or "cbnz" → drop prefix
+                                let branchReg2 = String(nextParts[0].dropFirst(5).trimmingCharacters(in: .whitespaces)) // for "cbz x9"
+                                let actualReg = nextLine.hasPrefix("cbz ") ? branchReg : branchReg2
+                                if actualReg == csetReg {
+                                    let label = String(nextParts[1].trimmingCharacters(in: .whitespaces))
+                                    let isInverted = nextLine.hasPrefix("cbz ")
+                                    let finalCC: String
+                                    if isInverted {
+                                        finalCC = invertCondition(ccPart)
+                                    } else {
+                                        finalCC = ccPart
+                                    }
+                                    output[writeIdx] = "b.\(finalCC) \(label)"
+                                    writeIdx += 1
+                                    skipNext = true
+                                    eliminated += 1
+                                    continue
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             output[writeIdx] = line
             writeIdx += 1
         }
         if writeIdx < output.count {
             output.removeSubrange(writeIdx..<output.count)
+        }
+    }
+
+    /// Invert an ARM64 condition code (for cbz → b.CC' transformation).
+    private func invertCondition(_ cc: String) -> String {
+        switch cc {
+        case "eq": return "ne"
+        case "ne": return "eq"
+        case "lt": return "ge"
+        case "ge": return "lt"
+        case "gt": return "le"
+        case "le": return "gt"
+        case "lo": return "hs"
+        case "hs": return "lo"
+        case "ls": return "hi"
+        case "hi": return "ls"
+        case "mi": return "pl"
+        case "pl": return "mi"
+        case "vs": return "vc"
+        case "vc": return "vs"
+        default: return cc
         }
     }
     private func emitLine(_ s: String) {
