@@ -5306,8 +5306,9 @@ public final class Codegen {
                 else if elemType.isSigned { emitLine("sdiv \(arithReg), \(ldStReg17), \(ldStReg)") }
                 else { emitLine("udiv \(arithReg), \(ldStReg17), \(ldStReg)") }
             case .mod:
-                if elemType.isSigned { emitLine("sdiv x9, \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), x9, \(ldStReg), \(ldStReg17)") }
-                else { emitLine("udiv x9, \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), x9, \(ldStReg), \(ldStReg17)") }
+                let divReg = elemSize <= 4 ? "w9" : "x9"
+                if elemType.isSigned { emitLine("sdiv \(divReg), \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), \(divReg), \(ldStReg), \(ldStReg17)") }
+                else { emitLine("udiv \(divReg), \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), \(divReg), \(ldStReg), \(ldStReg17)") }
             case .bitAnd: emitLine("and \(arithReg), \(ldStReg17), \(ldStReg)")
             case .bitOr: emitLine("orr \(arithReg), \(ldStReg17), \(ldStReg)")
             case .bitXor: emitLine("eor \(arithReg), \(ldStReg17), \(ldStReg)")
@@ -6013,8 +6014,9 @@ public final class Codegen {
                             else if elemType.isSigned { emitLine("sdiv \(arithReg), \(aReg), \(bReg)") }
                             else { emitLine("udiv \(arithReg), \(aReg), \(bReg)") }
                         case .modAssign:
-                            if elemType.isSigned { emitLine("sdiv x9, \(aReg), \(bReg)"); emitLine("msub \(arithReg), x9, \(bReg), \(aReg)") }
-                            else { emitLine("udiv x9, \(aReg), \(bReg)"); emitLine("msub \(arithReg), x9, \(bReg), \(aReg)") }
+                            let divReg = elemSize <= 4 ? "w9" : "x9"
+                            if elemType.isSigned { emitLine("sdiv \(divReg), \(aReg), \(bReg)"); emitLine("msub \(arithReg), \(divReg), \(bReg), \(aReg)") }
+                            else { emitLine("udiv \(divReg), \(aReg), \(bReg)"); emitLine("msub \(arithReg), \(divReg), \(bReg), \(aReg)") }
                         case .andAssign: emitLine("and \(arithReg), \(aReg), \(bReg)")
                         case .orAssign: emitLine("orr \(arithReg), \(aReg), \(bReg)")
                         case .xorAssign: emitLine("eor \(arithReg), \(aReg), \(bReg)")
