@@ -1720,13 +1720,18 @@ public final class Codegen {
             let hfaCount = hfaInfo?.count ?? 0  // number of FP registers
             let hfaIsFloat = hfaInfo?.isFloat ?? false  // true=float, false=double
 
+            let isStructOrVector = { () -> Bool in
+                if case .structType = pt { return true }
+                if case .vector = pt { return true }
+                return false
+            }()
             let regWidth: Int
             if isHFA {
                 regWidth = hfaCount
-            } else if case .structType = pt, paramSize > 8, paramSize <= 16 {
+            } else if isStructOrVector, paramSize > 8, paramSize <= 16 {
                 regWidth = 2
-            } else if case .structType = pt, paramSize > 16 {
-                // Large struct: entirely on stack, does NOT consume GP registers
+            } else if isStructOrVector, paramSize > 16 {
+                // Large struct/vector: entirely on stack, does NOT consume GP registers
                 regWidth = 0
             } else {
                 regWidth = 1
@@ -1801,8 +1806,8 @@ public final class Codegen {
                 emitStoreFP("d9", localOff)
                 localVarTypes[param.name ?? "_param_\(i)"] = param.type
                 stackParamIdx += 1
-            } else if !isHFA, case .structType = pt, paramSize > 16 {
-                // Large struct (>16 bytes): entirely on the stack.
+            } else if !isHFA, isStructOrVector, paramSize > 16 {
+                // Large struct/vector (>16 bytes): entirely on the stack.
                 // The caller copies the struct to [x29, #16 + stackParamIdx*8].
                 // Copy it to a local variable for consistent access.
                 let numChunks = (paramSize + 7) / 8
@@ -1827,8 +1832,8 @@ public final class Codegen {
                 if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
-                } else if case .structType = pt {
-                    // Struct parameter: store register(s) to stack
+                } else if isStructOrVector {
+                    // Struct/vector parameter: store register(s) to stack
                     emitStoreFP(argRegs[regIndex].x, offset)
                     if regWidth == 2 {
                         if regIndex + 1 < 8 {
@@ -7318,6 +7323,11 @@ public final class Codegen {
             let paramTypes = functionParamTypes[funcName] ?? indirectParamTypes
             for (i, arg) in effectiveArgs.enumerated() {
                 let argType = exprType(arg).unqualified
+                let isStructOrVecArg = { () -> Bool in
+                    if case .structType = argType { return true }
+                    if case .vector = argType { return true }
+                    return false
+                }()
                 // Use the declared parameter type to determine if the arg should be float.
                 // This handles implicit int→float conversion for function calls (e.g., sin(2)).
                 let paramType: CType? = i < paramTypes.count ? paramTypes[i].unqualified : nil
@@ -7370,7 +7380,7 @@ public final class Codegen {
                     evaluatedArgs.append(addrReg)
                     hfaArgs[i] = hfaInfo
                     regAlloc.free(addrReg)
-                } else if case .structType = argType, argSize <= 8 {
+                } else if isStructOrVecArg && argSize <= 8 {
                     // Small struct/union (≤8 bytes): load the value from its address
                     let addrReg = emitAddr(arg)
                     emitLine("str \(addrReg.x), [sp, #-16]!")  // placeholder
@@ -7392,7 +7402,7 @@ public final class Codegen {
                     }
                     evaluatedArgs.append(addrReg)
                     regAlloc.free(addrReg)
-                } else if case .structType = argType, argSize > 8, argSize <= 16 {
+                } else if isStructOrVecArg && argSize > 8 && argSize <= 16 {
                     // Struct by value (9-16 bytes): load two 8-byte chunks
                     let addrReg = emitAddr(arg)
                     // Push 2 slots (32 bytes) for the two chunks
@@ -7419,7 +7429,7 @@ public final class Codegen {
                     evaluatedArgs.append(addrReg)
                     wideArgs.insert(i)
                     regAlloc.free(addrReg)
-                } else if case .structType = argType, argSize > 16 {
+                } else if isStructOrVecArg && argSize > 16 {
                     // Large struct (>16 bytes): copy all chunks to temp stack
                     let addrReg = emitAddr(arg)
                     let numChunks = (argSize + 7) / 8
