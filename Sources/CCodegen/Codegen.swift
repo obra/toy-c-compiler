@@ -5112,21 +5112,41 @@ public final class Codegen {
             // Determine the operand types to decide between integer and FP operations.
             // For arithmetic, the result type reflects the (possibly promoted) float type.
             // For comparisons, the result is int but the operands may be float.
-            let leftType = exprType(b.left).unqualified
-            let rightType = exprType(b.right).unqualified
+            var leftType = exprType(b.left).unqualified
+            var rightType = exprType(b.right).unqualified
             let isFloatOp = leftType.isFloating || rightType.isFloating
             // For arithmetic, result type determines s vs d register width.
             let resultType = exprType(.binary(b)).unqualified
             let isFloatResult = resultType.isFloating
 
-            let leftReg = emitExpr(b.left)
+            // For commutative operations, if the right operand needs save (has a call)
+            // but the left doesn't, swap operands to avoid the save/restore.
+            // This evaluates the call-containing operand first, then the simple one.
+            let isCommutative: Bool = {
+                switch b.op {
+                case .add, .mul, .bitAnd, .bitOr, .bitXor, .eq, .ne:
+                    return true
+                default:
+                    return false
+                }
+            }()
+            var actualLeft = b.left
+            var actualRight = b.right
+            if isCommutative && exprNeedsSaveBeforeEval(b.right) && !exprNeedsSaveBeforeEval(b.left) {
+                actualLeft = b.right
+                actualRight = b.left
+                leftType = exprType(actualLeft).unqualified
+                rightType = exprType(actualRight).unqualified
+            }
+
+            let leftReg = emitExpr(actualLeft)
             // Save left result to stack before evaluating right — but only when the
             // right operand can clobber scratch registers (function calls clobber
             // x0-x18 per AAPCS64; statement expressions call regAlloc.reset()).
             // For simple expressions (variables, arithmetic, etc.), the register
             // allocator gives a different register for the right operand, so no
             // save/restore is needed.
-            let needsSave = exprNeedsSaveBeforeEval(b.right)
+            let needsSave = exprNeedsSaveBeforeEval(actualRight)
             if needsSave {
                 if isFloatOp {
                     let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
@@ -5135,7 +5155,7 @@ public final class Codegen {
                     emitLine("str \(leftReg.x), [sp, #-16]!")
                 }
             }
-            let rightResultReg = emitExpr(b.right)
+            let rightResultReg = emitExpr(actualRight)
             // If rightReg is the same as leftReg, keep right in a temp and use it as the right operand
             let rightReg: ARM64Reg
             if rightResultReg == leftReg {
