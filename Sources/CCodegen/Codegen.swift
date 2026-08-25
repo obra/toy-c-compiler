@@ -1692,6 +1692,7 @@ public final class Codegen {
         localOffset = 0
         localVarOffsets = [:]
         localVarTypes = [:]
+        regAlloc.reset()  // Reset register allocator for each function
 
         // If this is a nested function, set up parent locals access.
         // The parent's frame pointer is passed in x18 (AAPCS64 platform register).
@@ -2241,6 +2242,48 @@ public final class Codegen {
         }
     }
 
+    /// Check whether an expression can reset the register allocator or clobber
+    /// scratch registers during evaluation. This determines whether we need to
+    /// save the left operand of a binary expression to the stack before
+    /// evaluating the right operand.
+    ///
+    /// Save is needed when the right operand:
+    /// - Contains a function call (bl clobbers x0-x18 per AAPCS64)
+    /// - Contains a statement expression ({ ... }) which calls regAlloc.reset()
+    /// - Is deeply nested enough to potentially exhaust the 7 scratch registers
+    private func exprNeedsSaveBeforeEval(_ expr: Expr, depth: Int = 0) -> Bool {
+        switch expr {
+        case .call:
+            return true
+        case .stmtExpr:
+            return true
+        case .unary(let u):
+            return exprNeedsSaveBeforeEval(u.operand, depth: depth)
+        case .binary(let b):
+            // Deep nesting (3+ levels) can exhaust scratch registers and cause
+            // the alloc() fallback to return .x9 which may already be in use.
+            if depth >= 3 { return true }
+            return exprNeedsSaveBeforeEval(b.left, depth: depth + 1) || exprNeedsSaveBeforeEval(b.right, depth: depth + 1)
+        case .assign(let a):
+            return exprNeedsSaveBeforeEval(a.target, depth: depth) || exprNeedsSaveBeforeEval(a.value, depth: depth)
+        case .subscript_(let s):
+            return exprNeedsSaveBeforeEval(s.base, depth: depth) || exprNeedsSaveBeforeEval(s.index, depth: depth)
+        case .member(let m):
+            return exprNeedsSaveBeforeEval(m.base, depth: depth)
+        case .conditional(let c):
+            return exprNeedsSaveBeforeEval(c.condition, depth: depth) || exprNeedsSaveBeforeEval(c.trueExpr, depth: depth) || exprNeedsSaveBeforeEval(c.falseExpr, depth: depth)
+        case .cast(let c):
+            return exprNeedsSaveBeforeEval(c.expr, depth: depth)
+        case .initList(let il):
+            for v in il.values { if exprNeedsSaveBeforeEval(v, depth: depth) { return true } }
+            return false
+        case .compoundLiteral(let cl):
+            return exprNeedsSaveBeforeEval(cl.initList, depth: depth)
+        default:
+            return false
+        }
+    }
+
     private func emitStmt(_ stmt: Stmt) {
         switch stmt {
         case .expr(let es):
@@ -2638,6 +2681,9 @@ public final class Codegen {
                                         continue
                                     }
                                     reg = emitExpr(init_)
+                                    // Optimization: if the initializer is integer literal 0,
+                                    // we can use str wzr/xzr instead of mov+str. But emitExpr
+                                    // already emitted the mov, so this is handled by the peephole.
                                     if initType.isFloating && varType.isFloating {
                                         convertFloat(reg, from: initType, to: vd.type)
                                     } else if initType.isInteger && varType.isFloating {
@@ -3294,7 +3340,7 @@ public final class Codegen {
         emitStoreFP(valueReg.x, switchOffset)
         regAlloc.reset()
 
-        // Determine if the switch value is a 32-bit type (use w register for comparison)
+        // Determine if the switch value is a 32-bit signed type (use w register for comparison)
         let is32BitSwitch = (switchType.sizeInBytes ?? 8) == 4 && !switchType.isUnsigned
 
         // Use string keys to avoid collisions between top-level and nested case labels
@@ -5074,16 +5120,20 @@ public final class Codegen {
             let isFloatResult = resultType.isFloating
 
             let leftReg = emitExpr(b.left)
-            // Save left result to stack before evaluating right — the right operand
-            // (e.g., a statement expression) may reset the register allocator and
-            // clobber leftReg. After evaluating right, restore left into the same
-            // register, moving right to a temp if needed.
-            // For FP: save/restore the d register, not the x register.
-            if isFloatOp {
-                let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
-                emitLine("str \(fpLeftReg), [sp, #-16]!")
-            } else {
-                emitLine("str \(leftReg.x), [sp, #-16]!")
+            // Save left result to stack before evaluating right — but only when the
+            // right operand can clobber scratch registers (function calls clobber
+            // x0-x18 per AAPCS64; statement expressions call regAlloc.reset()).
+            // For simple expressions (variables, arithmetic, etc.), the register
+            // allocator gives a different register for the right operand, so no
+            // save/restore is needed.
+            let needsSave = exprNeedsSaveBeforeEval(b.right)
+            if needsSave {
+                if isFloatOp {
+                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                    emitLine("str \(fpLeftReg), [sp, #-16]!")
+                } else {
+                    emitLine("str \(leftReg.x), [sp, #-16]!")
+                }
             }
             let rightResultReg = emitExpr(b.right)
             // If rightReg is the same as leftReg, keep right in a temp and use it as the right operand
@@ -5103,15 +5153,19 @@ public final class Codegen {
                     rightReg = .x17
                 } else {
                     emitLine("mov x17, \(rightResultReg.x)")
-                    emitLine("ldr \(leftReg.x), [sp], #16")
+                    if needsSave {
+                        emitLine("ldr \(leftReg.x), [sp], #16")
+                    }
                     rightReg = .x17
                 }
             } else {
-                if isFloatOp {
-                    let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
-                    emitLine("ldr \(fpLeftReg), [sp], #16")
-                } else {
-                    emitLine("ldr \(leftReg.x), [sp], #16")
+                if needsSave {
+                    if isFloatOp {
+                        let fpLeftReg = leftType == .float ? "s\(leftReg.regNum)" : "d\(leftReg.regNum)"
+                        emitLine("ldr \(fpLeftReg), [sp], #16")
+                    } else {
+                        emitLine("ldr \(leftReg.x), [sp], #16")
+                    }
                 }
                 rightReg = rightResultReg
             }
@@ -5461,33 +5515,21 @@ public final class Codegen {
                     emitLine("eor \(leftReg.x), \(leftReg.x), \(rightReg.x)")
                 }
             case .eq:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), eq")
             case .ne:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), ne")
             case .lt:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -5505,22 +5547,14 @@ public final class Codegen {
                 }
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "ls" : "le")")
             case .gt:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hi" : "gt")")
             case .ge:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -10653,9 +10687,6 @@ public final class Codegen {
                 }
             case .int, .uint:
                 emitLine("ldr \(reg.w), [x29, #\(offset)]")
-                if t == .int {
-                    emitLine("sxtw \(reg.x), \(reg.w)")
-                }
             case .float:
                 emitLine("ldr s\(reg.regNum), [x29, #\(offset)]")
             case .double, .longDouble:
@@ -10679,9 +10710,6 @@ public final class Codegen {
                 }
             case .int, .uint:
                 emitLine("ldr \(reg.w), [x29, x16]")
-                if t == .int {
-                    emitLine("sxtw \(reg.x), \(reg.w)")
-                }
             case .float:
                 emitLine("ldr s\(reg.regNum), [x29, x16]")
             case .double, .longDouble:
@@ -10707,13 +10735,8 @@ public final class Codegen {
             }
         case .int, .uint:
             emitLine("ldr \(reg.w), [\(reg.x)]")
-            if t == .int {
-                // Sign-extend 32-bit signed int to 64 bits so that subsequent
-                // 64-bit arithmetic (mul, add, sub) produces correct results.
-                // Without this, negative int values like -315 are zero-extended
-                // to 4294966981 instead of sign-extended to -315.
-                emitLine("sxtw \(reg.x), \(reg.w)")
-            }
+            // No sxtw needed — 32-bit arithmetic uses w registers,
+            // and sxtw is added only where 64-bit context requires it.
         case .float:
             emitLine("ldr s\(reg.regNum), [\(reg.x)]")
         case .double, .longDouble:
@@ -10810,13 +10833,18 @@ public final class Codegen {
         var eliminated = 0
         var writeIdx = 0
         var skipNext = false
+        var deadCodeSkip = 0
         for readIdx in 0..<output.count {
             if skipNext {
                 skipNext = false
+                if deadCodeSkip > 0 {
+                    deadCodeSkip -= 1
+                    if deadCodeSkip > 0 { skipNext = true }
+                }
                 continue
             }
             let line = output[readIdx]
-            // Pattern: str Xn, [x29, #N] followed by ldr Xn, [x29, #N]
+            // Pattern 1: str Xn, [x29, #N] followed by ldr Xn, [x29, #N]
             // Only for x29-relative addresses (local variables on the frame).
             // The register width must match (both x or both w).
             // The address string must match exactly.
@@ -10846,11 +10874,153 @@ public final class Codegen {
                     }
                 }
             }
+            // Pattern 2: cset Xn, CC followed by cbz/cbnz Xn, label
+            // → b.CC'inverted label (for cbz) or b.CC label (for cbnz)
+            // This eliminates the cset instruction and uses a direct conditional branch.
+            if line.hasPrefix("cset ") {
+                // Parse: "cset x9, eq" → reg=x9, cc=eq
+                let parts = line.split(separator: ",")
+                if parts.count >= 2 {
+                    let regPart = parts[0].trimmingCharacters(in: .whitespaces)
+                    let ccPart = parts[1].trimmingCharacters(in: .whitespaces)
+                    let csetReg = String(regPart.dropFirst(5)) // "cset " is 5 chars
+                    if readIdx + 1 < output.count {
+                        let nextLine = output[readIdx + 1]
+                        // cbz xN, label → invert condition and use b.CC' label
+                        // cbnz xN, label → use b.CC label (same condition)
+                        if nextLine.hasPrefix("cbz ") || nextLine.hasPrefix("cbnz ") {
+                            let nextParts = nextLine.split(separator: ",", maxSplits: 1)
+                            if nextParts.count >= 2 {
+                                let branchReg = nextParts[0].dropFirst(4).trimmingCharacters(in: .whitespaces) // "cbz " or "cbnz" → drop prefix
+                                let branchReg2 = String(nextParts[0].dropFirst(5).trimmingCharacters(in: .whitespaces)) // for "cbz x9"
+                                let actualReg = nextLine.hasPrefix("cbz ") ? branchReg : branchReg2
+                                if actualReg == csetReg {
+                                    let label = String(nextParts[1].trimmingCharacters(in: .whitespaces))
+                                    let isInverted = nextLine.hasPrefix("cbz ")
+                                    let finalCC: String
+                                    if isInverted {
+                                        finalCC = invertCondition(ccPart)
+                                    } else {
+                                        finalCC = ccPart
+                                    }
+                                    output[writeIdx] = "b.\(finalCC) \(label)"
+                                    writeIdx += 1
+                                    skipNext = true
+                                    eliminated += 1
+                                    continue
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Pattern 3: Dead code after ret — eliminate "mov w0, #0  ; default return"
+            // and the following epilogue (mov sp, x29 + ldp + ret) when preceded by ret.
+            // This is 4 instructions of dead code per function that always returns.
+            if line == "mov w0, #0  ; default return" {
+                // Check if the previous emitted line is "ret"
+                if writeIdx > 0 && output[writeIdx - 1] == "ret" {
+                    // Skip this line and the next 3 (mov sp, x29 / ldp / ret)
+                    // unless a label follows (which would make it reachable)
+                    if readIdx + 3 < output.count {
+                        let l1 = output[readIdx + 1]  // mov sp, x29
+                        let l2 = output[readIdx + 2]  // ldp x29, x30, [sp], #16
+                        let l3 = output[readIdx + 3]  // ret
+                        // Check that these are the epilogue pattern and not followed by a label
+                        let l4: String? = readIdx + 4 < output.count ? output[readIdx + 4] : nil
+                        let isLabelAfter = l4?.hasSuffix(":") ?? false
+                        if l1 == "mov sp, x29" && l2 == "ldp x29, x30, [sp], #16" && l3 == "ret" && !isLabelAfter {
+                            // Skip all 4 lines (dead code after ret)
+                            skipNext = true  // skip mov sp, x29
+                            // We need to skip 3 more lines — use a counter
+                            deadCodeSkip = 3
+                            eliminated += 4
+                            continue
+                        }
+                    }
+                }
+            }
+            // Pattern 4: Consecutive duplicate mov instructions (e.g., "mov x9, #0"
+            // emitted multiple times). Eliminate the duplicate.
+            if line.hasPrefix("mov ") && writeIdx > 0 {
+                let prevLine = output[writeIdx - 1]
+                if prevLine == line {
+                    eliminated += 1
+                    continue
+                }
+            }
+            // Pattern 5: mov xN, #0 followed by str wN/xN, [x29, #M]
+            // → str wzr/xzr, [x29, #M] (save 1 instruction)
+            if line.hasPrefix("str ") && line.contains("[x29") {
+                // Parse: "str w9, [x29, #-16]" or "str x9, [x29, #-16]"
+                let parts = line.split(separator: ",", maxSplits: 1)
+                if parts.count >= 2 {
+                    let storeRegFull = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces) // "str " → drop 4
+                    // Extract register number (e.g., "w9" → 9, "x10" → 10)
+                    let regNum = storeRegFull.dropFirst(1) // drop 'w' or 'x'
+                    if writeIdx > 0 {
+                        let prevLine = output[writeIdx - 1]
+                        // Check if prev is "mov xN, #0" where N matches the store reg
+                        if prevLine == "mov x\(regNum), #0" {
+                            let isW = storeRegFull.hasPrefix("w")
+                            let zr = isW ? "wzr" : "xzr"
+                            let rest = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                            // Remove the mov instruction
+                            writeIdx -= 1
+                            output[writeIdx] = "str \(zr), \(rest)"
+                            writeIdx += 1
+                            eliminated += 1
+                            continue
+                        }
+                    }
+                }
+            }
+            // Pattern 6: mov xN, #0 followed by ldr xN/wN, [...] — dead code (mov is overwritten)
+            if line.hasPrefix("ldr ") {
+                // Parse: "ldr x9, [...]" or "ldr w9, [...]"
+                let parts = line.split(separator: ",", maxSplits: 1)
+                if parts.count >= 2 {
+                    let loadRegFull = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces) // "ldr " → drop 4
+                    let regNum = loadRegFull.dropFirst(1) // drop 'w' or 'x'
+                    if writeIdx > 0 {
+                        let prevLine = output[writeIdx - 1]
+                        if prevLine == "mov x\(regNum), #0" {
+                            // The mov is dead — remove it
+                            writeIdx -= 1
+                            output[writeIdx] = line
+                            writeIdx += 1
+                            eliminated += 1
+                            continue
+                        }
+                    }
+                }
+            }
             output[writeIdx] = line
             writeIdx += 1
         }
         if writeIdx < output.count {
             output.removeSubrange(writeIdx..<output.count)
+        }
+    }
+
+    /// Invert an ARM64 condition code (for cbz → b.CC' transformation).
+    private func invertCondition(_ cc: String) -> String {
+        switch cc {
+        case "eq": return "ne"
+        case "ne": return "eq"
+        case "lt": return "ge"
+        case "ge": return "lt"
+        case "gt": return "le"
+        case "le": return "gt"
+        case "lo": return "hs"
+        case "hs": return "lo"
+        case "ls": return "hi"
+        case "hi": return "ls"
+        case "mi": return "pl"
+        case "pl": return "mi"
+        case "vs": return "vc"
+        case "vc": return "vs"
+        default: return cc
         }
     }
     private func emitLine(_ s: String) {
@@ -11971,15 +12141,39 @@ public final class Codegen {
         } else if v == 0 {
             emitLine("mov \(reg), #0")
         } else {
-            // Use movz for the low 16 bits, then movk for higher 16-bit chunks
-            let w0 = UInt16(truncatingIfNeeded: v)
-            let w1 = UInt16(truncatingIfNeeded: v >> 16)
-            let w2 = UInt16(truncatingIfNeeded: v >> 32)
-            let w3 = UInt16(truncatingIfNeeded: v >> 48)
-            emitLine("movz \(reg), #\(w0)")
-            if w1 != 0 { emitLine("movk \(reg), #\(w1), lsl #16") }
-            if w2 != 0 { emitLine("movk \(reg), #\(w2), lsl #32") }
-            if w3 != 0 { emitLine("movk \(reg), #\(w3), lsl #48") }
+            // Check if movn can encode this in fewer instructions than movz+movk.
+            // movn x, #imm, lsl #shift loads ~(imm << shift).
+            // If ~v fits in a single 16-bit chunk (all other chunks are 0),
+            // movn is 1 instruction instead of 2-4.
+            let notV = ~v
+            // Check each 16-bit position for a movn encoding
+            let w0 = UInt16(truncatingIfNeeded: notV)
+            let w1 = UInt16(truncatingIfNeeded: notV >> 16)
+            let w2 = UInt16(truncatingIfNeeded: notV >> 32)
+            let w3 = UInt16(truncatingIfNeeded: notV >> 48)
+            if w1 == 0 && w2 == 0 && w3 == 0 && w0 != 0 {
+                // ~v fits in low 16 bits
+                emitLine("movn \(reg), #\(w0)")
+            } else if w0 == 0 && w2 == 0 && w3 == 0 && w1 != 0 {
+                // ~v fits in bits 16-31
+                emitLine("movn \(reg), #\(w1), lsl #16")
+            } else if w0 == 0 && w1 == 0 && w3 == 0 && w2 != 0 {
+                // ~v fits in bits 32-47
+                emitLine("movn \(reg), #\(w2), lsl #32")
+            } else if w0 == 0 && w1 == 0 && w2 == 0 && w3 != 0 {
+                // ~v fits in bits 48-63
+                emitLine("movn \(reg), #\(w3), lsl #48")
+            } else {
+                // Use movz for the low 16 bits, then movk for higher 16-bit chunks
+                let mw0 = UInt16(truncatingIfNeeded: v)
+                let mw1 = UInt16(truncatingIfNeeded: v >> 16)
+                let mw2 = UInt16(truncatingIfNeeded: v >> 32)
+                let mw3 = UInt16(truncatingIfNeeded: v >> 48)
+                emitLine("movz \(reg), #\(mw0)")
+                if mw1 != 0 { emitLine("movk \(reg), #\(mw1), lsl #16") }
+                if mw2 != 0 { emitLine("movk \(reg), #\(mw2), lsl #32") }
+                if mw3 != 0 { emitLine("movk \(reg), #\(mw3), lsl #48") }
+            }
         }
     }
 
