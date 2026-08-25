@@ -5420,6 +5420,92 @@ public final class Codegen {
     private func emitAssignExpr(_ a: AssignExpr) -> ARM64Reg {
         // For compound assignments (+=, -=, etc.), we need to read, operate, and write
         if a.op != .assign {
+            // Vector compound assignment: use element-wise operations
+            let targetIsVector = exprType(a.target).unqualified
+            if case .vector(let elemType, let count) = targetIsVector,
+               a.op != .assign {
+                // Evaluate RHS vector to temp, load target, do element-wise op, store back
+                let rhsTmpOff = ensureTempSpace(size: count * (elemType.sizeInBytes ?? 4))
+                // For compound literals, emitComplexExpr-like evaluation needed
+                let rhsType = exprType(a.value).unqualified
+                if case .vector(let rElemType, let rCount) = rhsType, rCount == count {
+                    // Vector op Vector: evaluate RHS to temp via emitAddr
+                    let rhsAddr = emitAddr(a.value)
+                    let dstAddr = emitAddr(a.target)
+                    // Use emitVectorBinary-like element-wise loop
+                    let elemSize = elemType.sizeInBytes ?? 4
+                    let isFP = elemType.isFloating
+                    let fpPrefix = elemType == .float ? "s" : "d"
+                    emitLine("str \(rhsAddr.x), [sp, #-16]!")
+                    emitLine("str \(dstAddr.x), [sp, #-16]!")
+                    for i in 0..<count {
+                        let off = i * elemSize
+                        // Load target[i]
+                        emitLine("ldr x9, [sp, #16]")  // dst addr
+                        if isFP {
+                            emitLine(elemSize == 4 ? "ldr s16, [x9, #\(off)]" : "ldr d16, [x9, #\(off)]")
+                        } else if elemSize <= 4 {
+                            emitLine("ldr w16, [x9, #\(off)]")
+                        } else {
+                            emitLine("ldr x16, [x9, #\(off)]")
+                        }
+                        // Load rhs[i]
+                        emitLine("ldr x9, [sp, #32]")  // rhs addr
+                        if isFP {
+                            emitLine(elemSize == 4 ? "ldr s17, [x9, #\(off)]" : "ldr d17, [x9, #\(off)]")
+                        } else if elemSize <= 4 {
+                            emitLine("ldr w17, [x9, #\(off)]")
+                        } else {
+                            emitLine("ldr x17, [x9, #\(off)]")
+                        }
+                        // Apply op
+                        let arithReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                        let aReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                        let bReg = isFP ? (elemSize == 4 ? "s17" : "d17") : (elemSize <= 4 ? "w17" : "x17")
+                        switch a.op {
+                        case .addAssign:
+                            if isFP { emitLine("fadd \(arithReg), \(aReg), \(bReg)") }
+                            else { emitLine("add \(arithReg), \(aReg), \(bReg)") }
+                        case .subAssign:
+                            if isFP { emitLine("fsub \(arithReg), \(aReg), \(bReg)") }
+                            else { emitLine("sub \(arithReg), \(aReg), \(bReg)") }
+                        case .mulAssign:
+                            if isFP { emitLine("fmul \(arithReg), \(aReg), \(bReg)") }
+                            else { emitLine("mul \(arithReg), \(aReg), \(bReg)") }
+                        case .divAssign:
+                            if isFP { emitLine("fdiv \(arithReg), \(aReg), \(bReg)") }
+                            else if elemType.isSigned { emitLine("sdiv \(arithReg), \(aReg), \(bReg)") }
+                            else { emitLine("udiv \(arithReg), \(aReg), \(bReg)") }
+                        case .modAssign:
+                            if elemType.isSigned { emitLine("sdiv x9, \(aReg), \(bReg)"); emitLine("msub \(arithReg), x9, \(bReg), \(aReg)") }
+                            else { emitLine("udiv x9, \(aReg), \(bReg)"); emitLine("msub \(arithReg), x9, \(bReg), \(aReg)") }
+                        case .andAssign: emitLine("and \(arithReg), \(aReg), \(bReg)")
+                        case .orAssign: emitLine("orr \(arithReg), \(aReg), \(bReg)")
+                        case .xorAssign: emitLine("eor \(arithReg), \(aReg), \(bReg)")
+                        case .shlAssign: emitLine("lsl \(arithReg), \(aReg), \(bReg)")
+                        case .shrAssign:
+                            if elemType.isSigned { emitLine("asr \(arithReg), \(aReg), \(bReg)") }
+                            else { emitLine("lsr \(arithReg), \(aReg), \(bReg)") }
+                        default: emitLine("add \(arithReg), \(aReg), \(bReg)")
+                        }
+                        // Store result[i]
+                        emitLine("ldr x9, [sp, #16]")  // dst addr
+                        if isFP {
+                            emitLine(elemSize == 4 ? "str s16, [x9, #\(off)]" : "str d16, [x9, #\(off)]")
+                        } else if elemSize <= 4 {
+                            emitLine("str w16, [x9, #\(off)]")
+                        } else {
+                            emitLine("str x16, [x9, #\(off)]")
+                        }
+                    }
+                    emitLine("add sp, sp, #32")  // pop 2 saved addrs
+                    regAlloc.free(rhsAddr)
+                    regAlloc.free(dstAddr)
+                    return .x9
+                }
+                // Scalar op Vector compound assignment
+                // Fall through to generic handling for now
+            }
             // Bitfield compound assignment: read the bitfield value (masked),
             // apply the operation, then write back via the bitfield read-modify-write
             // path (storeExprResult). This prevents clobbering adjacent bitfields.
