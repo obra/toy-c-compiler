@@ -59,6 +59,11 @@ public enum ARM64Reg: String, Equatable {
 /// Available caller-saved registers for temporary use (x9-x15 are scratch).
 public nonisolated(unsafe) let scratchRegs: [ARM64Reg] = [.x9, .x10, .x11, .x12, .x13, .x14, .x15]
 
+/// Callee-saved registers available for spillover when all scratch regs are exhausted.
+/// x19 is safe (not used by our codegen). x20 is used for nested function static chains.
+/// x18 is platform register (reserved). So we use x19, x21-x28.
+public nonisolated(unsafe) let calleeSavedPool: [ARM64Reg] = [.x19, .x21, .x22, .x23, .x24, .x25, .x26, .x27, .x28]
+
 /// Argument registers (AAPCS64).
 public nonisolated(unsafe) let argRegs: [ARM64Reg] = [.x0, .x1, .x2, .x3, .x4, .x5, .x6, .x7]
 
@@ -67,6 +72,10 @@ public nonisolated(unsafe) let argRegs: [ARM64Reg] = [.x0, .x1, .x2, .x3, .x4, .
 /// A simple register allocator that manages a pool of scratch registers.
 public final class RegAlloc {
     public var available: [ARM64Reg]
+    /// Callee-saved registers that have been handed out as spillover.
+    /// The codegen must save/restore these in the prologue/epilogue.
+    public var usedCalleeSaved: Set<ARM64Reg> = []
+    private var calleeSavedIdx = 0
 
     public init() {
         available = scratchRegs
@@ -74,6 +83,16 @@ public final class RegAlloc {
 
     public func alloc() -> ARM64Reg? {
         return available.isEmpty ? nil : available.removeFirst()
+    }
+
+    /// Allocate a callee-saved register as spillover when scratch is exhausted.
+    /// Returns nil if all callee-saved registers are also in use.
+    public func allocCalleeSaved() -> ARM64Reg? {
+        guard calleeSavedIdx < calleeSavedPool.count else { return nil }
+        let reg = calleeSavedPool[calleeSavedIdx]
+        calleeSavedIdx += 1
+        usedCalleeSaved.insert(reg)
+        return reg
     }
 
     public func free(_ reg: ARM64Reg) {
@@ -87,5 +106,7 @@ public final class RegAlloc {
 
     public func reset() {
         available = scratchRegs
+        usedCalleeSaved.removeAll()
+        calleeSavedIdx = 0
     }
 }

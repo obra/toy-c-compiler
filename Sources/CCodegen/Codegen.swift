@@ -57,6 +57,9 @@ public final class Codegen {
     /// Stack offset (from x29) where x8 (indirect return pointer) is saved for
     /// functions returning >16-byte non-HFA structs. nil if not needed.
     private var x8SaveOffset: Int? = nil
+    /// Map from callee-saved register → stack offset (from x29) where it's saved.
+    /// Populated during prologue; restored during epilogue.
+    private var calleeSavedSaveOffsets: [(reg: ARM64Reg, offset: Int)] = []
     private var vaSaveAreaOffset: Int = 0  // offset from x29 to va register save area (0 = no va)
     private var enumConstants: [String: Int64] = [:]  // enum constant name → value
     private var compoundLiterals: [(label: String, type: CType, init_: Expr)] = []
@@ -1994,6 +1997,18 @@ public final class Codegen {
         } else {
             emitLine("ldp x29, x30, [sp], #16")
         }
+    }
+
+    /// Allocate a register: try scratch first, then callee-saved spillover.
+    /// Falls back to .x9 only if both pools are exhausted (should be extremely rare).
+    private func allocReg() -> ARM64Reg {
+        if let r = regAlloc.alloc() {
+            return r
+        }
+        if let r = regAlloc.allocCalleeSaved() {
+            return r
+        }
+        return .x9  // last resort — should essentially never happen with 16 total regs
     }
 
     // MARK: - Local variable management
@@ -9371,14 +9386,40 @@ public final class Codegen {
             baseSpilled = true
             regAlloc.free(baseReg)
             let indexReg = emitExpr(s.index)
-            // Reload the base address from the stack
-            let baseReg2 = regAlloc.alloc() ?? .x9
-            emitLine("ldr \(baseReg2.x), [sp], #16")
-            baseSpilled = false
+            // Reload the base address from the stack.
+            // We must ensure baseReg2 != actualIndexReg, otherwise the pop clobbers the index.
+            // Strategy: try to alloc a register different from indexReg. If that fails
+            // (all remaining regs == indexReg or pool exhausted), move index to a
+            // safe scratch register (x16 or x17, whichever is NOT indexReg), free
+            // indexReg, then pop base into the freed slot.
+            var actualIndexReg = indexReg
+            var baseReg2: ARM64Reg
+            if let r = regAlloc.alloc(), r != indexReg {
+                baseReg2 = r
+                emitLine("ldr \(baseReg2.x), [sp], #16")
+            } else {
+                // Either alloc returned indexReg, or pool is empty.
+                // Move index to a safe unmanaged register (not indexReg itself).
+                let safeReg: ARM64Reg = (indexReg == .x16) ? .x17 : .x16
+                emitLine("mov \(safeReg.x), \(indexReg.x)")
+                actualIndexReg = safeReg
+                // Only free indexReg if it's a managed scratch register
+                if scratchRegs.contains(indexReg) || calleeSavedPool.contains(indexReg) {
+                    regAlloc.free(indexReg)
+                }
+                baseReg2 = regAlloc.alloc() ?? .x9
+                // Ensure baseReg2 != actualIndexReg
+                if baseReg2 == actualIndexReg {
+                    // Extremely unlikely: alloc returned the same as safeReg
+                    // Use the other safe register
+                    baseReg2 = (safeReg == .x16) ? .x17 : .x16
+                }
+                emitLine("ldr \(baseReg2.x), [sp], #16")
+            }
             // Sign-extend the index if it's a 32-bit signed type (e.g., negative array indices)
             let indexType = exprType(s.index).unqualified
             if indexType.isSigned32Bit {
-                emitLine("sxtw \(indexReg.x), \(indexReg.w)")
+                emitLine("sxtw \(actualIndexReg.x), \(actualIndexReg.w)")
             }
             // Determine the element type (what the base points to or contains)
             let elemType: CType
@@ -9408,41 +9449,41 @@ public final class Codegen {
                 // Sign-extend the dimension
                 emitLine("sxtw x16, w16")
                 // stride = index * inner_dim
-                emitLine("mul \(indexReg.x), \(indexReg.x), x16")
+                emitLine("mul \(actualIndexReg.x), \(actualIndexReg.x), x16")
                 // Multiply by inner element size
                 let innerElemSize = innerElemType.unqualified.sizeInBytes ?? 4
                 if innerElemSize == 4 {
-                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #2")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #2")
                 } else if innerElemSize == 8 {
-                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #3")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #3")
                 } else if innerElemSize == 2 {
-                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #1")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #1")
                 } else if innerElemSize == 1 {
-                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x)")
+                    emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x)")
                 } else {
                     emitLoadImm("x17", Int64(innerElemSize))
-                    emitLine("madd \(baseReg2.x), \(indexReg.x), x17, \(baseReg2.x)")
+                    emitLine("madd \(baseReg2.x), \(actualIndexReg.x), x17, \(baseReg2.x)")
                 }
-                regAlloc.free(indexReg)
+                regAlloc.free(actualIndexReg)
                 return baseReg2
             }
 
             let elemSize = elemType.unqualified.isPointer ? 8 : (elemType.sizeInBytes ?? 4)
             // addr = base + index * elemSize
             if elemSize == 1 {
-                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x)")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x)")
             } else if elemSize == 2 {
-                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #1")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #1")
             } else if elemSize == 4 {
-                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #2")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #2")
             } else if elemSize == 8 {
-                emitLine("add \(baseReg2.x), \(baseReg2.x), \(indexReg.x), lsl #3")
+                emitLine("add \(baseReg2.x), \(baseReg2.x), \(actualIndexReg.x), lsl #3")
             } else {
                 // Use mul for non-power-of-2 or large element sizes
                 emitLine("mov x16, #\(elemSize)")
-                emitLine("madd \(baseReg2.x), \(indexReg.x), x16, \(baseReg2.x)")
+                emitLine("madd \(baseReg2.x), \(actualIndexReg.x), x16, \(baseReg2.x)")
             }
-            regAlloc.free(indexReg)
+            regAlloc.free(actualIndexReg)
             return baseReg2
 
         case .member(let m):
