@@ -6164,6 +6164,26 @@ public final class Codegen {
                 funcPtrReg = .x16
             }
 
+            // Pre-evaluate compound literal arguments and save their addresses.
+            // Compound literals allocate stack inside emitExpr, which would change sp
+            // between arg pushes and corrupt the arg slot offsets. By pre-evaluating
+            // all compound literals before the push loop, all args are pushed
+            // contiguously and slot offsets remain correct.
+            // Save each compound literal address in a callee-saved register.
+            let clSaveRegs: [ARM64Reg] = [.x18, .x20, .x21, .x22, .x23, .x24, .x25, .x26]
+            var compoundLiteralAddrs: [Int: ARM64Reg] = [:]
+            var numPreEvaluated = 0
+            for (i, arg) in effectiveArgs.enumerated() {
+                if exprHasCompoundLiteral(arg) {
+                    let clReg = emitExpr(arg)
+                    let saveReg = clSaveRegs[numPreEvaluated]
+                    emitLine("mov \(saveReg.x), \(clReg.x)")
+                    compoundLiteralAddrs[i] = saveReg
+                    regAlloc.free(clReg)
+                    numPreEvaluated += 1
+                }
+            }
+
             // Evaluate all args first, saving results on the stack to avoid clobbering
             // by nested function calls within argument expressions.
             // For struct-by-value args (9-16 bytes), evaluate to address then load 2 chunks.
@@ -6346,7 +6366,14 @@ public final class Codegen {
                     floatArgs.insert(i)
                     regAlloc.free(argReg)
                 } else {
-                    let argReg = emitExpr(arg)
+                    let argReg: ARM64Reg
+                    if let savedReg = compoundLiteralAddrs[i] {
+                        // Use pre-evaluated compound literal address from callee-saved register.
+                        argReg = regAlloc.alloc() ?? savedReg
+                        emitLine("mov \(argReg.x), \(savedReg.x)")
+                    } else {
+                        argReg = emitExpr(arg)
+                    }
                     // Sign-extend 32-bit signed int to 64-bit for wide parameters
                     // (e.g., int -1 passed to i64 parameter must become -1, not 0xFFFFFFFF)
                     if argType.isSigned32Bit {
