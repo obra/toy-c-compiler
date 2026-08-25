@@ -2313,13 +2313,45 @@ public final class Codegen {
                                         }
                                     }
                                 }
+                            } else if case .call = init_, case .vector = vd.type.unqualified {
+                                // Function call returning a vector: read from x0/x1
+                                let vecSize = vd.type.unqualified.sizeInBytes ?? 0
+                                if let offset = localVarOffsets[vd.name] {
+                                    _ = emitExpr(init_)  // make the call
+                                    if vecSize <= 8 {
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("str x0, [x29, #\(offset)]")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("str x0, [x29, x16]")
+                                        }
+                                    } else if vecSize <= 16 {
+                                        if offset >= -256 && offset <= 255 {
+                                            emitLine("str x0, [x29, #\(offset)]")
+                                            emitLine("str x1, [x29, #\(offset + 8)]")
+                                        } else {
+                                            emitLoadImm("x16", Int64(offset))
+                                            emitLine("str x0, [x29, x16]")
+                                            emitLoadImm("x16", Int64(offset + 8))
+                                            emitLine("str x1, [x29, x16]")
+                                        }
+                                    }
+                                }
                             } else {
                                 let varType = vd.type.unqualified
                                 // For struct types initialized from a non-call expression (e.g., va_arg),
                                 // emitExpr returns the address of the struct data.
                                 // Copy the struct from that address to the local variable.
-                                if case .structType = varType, let structSize = varType.sizeInBytes, structSize > 0 {
-                                    // For struct-to-struct copy, get the source address (not value)
+                                let isAggregateInit = { () -> Bool in
+                                    if case .structType = varType { return true }
+                                    if case .vector = varType { return true }
+                                    return false
+                                }()
+                                if isAggregateInit,
+                                   let aggregateSize = varType.sizeInBytes, aggregateSize > 0 {
+                                    // For struct/vector initialized from a non-call expression,
+                                    // emitExpr returns the address of the data. Copy from that
+                                    // address to the local variable.
                                     let srcAddr: ARM64Reg
                                     if case .identifier = init_ {
                                         // Use emitAddr for identifiers to get the struct's address
@@ -2345,7 +2377,7 @@ public final class Codegen {
                                             emitLine("add \(dstAddr.x), x29, x16")
                                         }
                                     }
-                                    emitStructCopyToField(dstAddr.x, srcAddr, structSize)
+                                    emitStructCopyToField(dstAddr.x, srcAddr, aggregateSize)
                                     regAlloc.free(dstAddr)
                                 } else if case .unionType = varType, let unionSize = varType.sizeInBytes, unionSize > 0 {
                                     // For union copy, get the source address (not value)
@@ -5020,9 +5052,9 @@ public final class Codegen {
             return resultReg
         }
 
-        // Check for vector (array) type unary operations (neg, bitNot)
+        // Check for vector type unary operations (neg, bitNot)
         let vecOperandType = exprType(u.operand).unqualified
-        if case .array(let elemType, let count) = vecOperandType,
+        if case .vector(let elemType, let count) = vecOperandType,
            u.op == .neg || u.op == .bitNot {
             let srcAddr = emitAddr(u.operand)
             let elemSize = elemType.sizeInBytes ?? 4
@@ -7881,9 +7913,14 @@ public final class Codegen {
             }
             return .int
         case .binary(let b):
-            // Comparison and logical operators always return int (C standard)
+            // Comparison and logical operators return int for scalars (C standard),
+            // but for vector types the result is a vector of masks (same size).
             switch b.op {
             case .eq, .ne, .lt, .le, .gt, .ge, .logicAnd, .logicOr:
+                let lt = exprType(b.left)
+                if case .vector = lt.unqualified { return lt }
+                let rt = exprType(b.right)
+                if case .vector = rt.unqualified { return rt }
                 return .int
             default: break
             }
