@@ -1692,6 +1692,7 @@ public final class Codegen {
         localOffset = 0
         localVarOffsets = [:]
         localVarTypes = [:]
+        regAlloc.reset()  // Reset register allocator for each function
 
         // If this is a nested function, set up parent locals access.
         // The parent's frame pointer is passed in x18 (AAPCS64 platform register).
@@ -2249,31 +2250,35 @@ public final class Codegen {
     /// Save is needed when the right operand:
     /// - Contains a function call (bl clobbers x0-x18 per AAPCS64)
     /// - Contains a statement expression ({ ... }) which calls regAlloc.reset()
-    private func exprNeedsSaveBeforeEval(_ expr: Expr) -> Bool {
+    /// - Is deeply nested enough to potentially exhaust the 7 scratch registers
+    private func exprNeedsSaveBeforeEval(_ expr: Expr, depth: Int = 0) -> Bool {
         switch expr {
         case .call:
             return true
         case .stmtExpr:
             return true
         case .unary(let u):
-            return exprNeedsSaveBeforeEval(u.operand)
+            return exprNeedsSaveBeforeEval(u.operand, depth: depth)
         case .binary(let b):
-            return exprNeedsSaveBeforeEval(b.left) || exprNeedsSaveBeforeEval(b.right)
+            // Deep nesting (3+ levels) can exhaust scratch registers and cause
+            // the alloc() fallback to return .x9 which may already be in use.
+            if depth >= 3 { return true }
+            return exprNeedsSaveBeforeEval(b.left, depth: depth + 1) || exprNeedsSaveBeforeEval(b.right, depth: depth + 1)
         case .assign(let a):
-            return exprNeedsSaveBeforeEval(a.target) || exprNeedsSaveBeforeEval(a.value)
+            return exprNeedsSaveBeforeEval(a.target, depth: depth) || exprNeedsSaveBeforeEval(a.value, depth: depth)
         case .subscript_(let s):
-            return exprNeedsSaveBeforeEval(s.base) || exprNeedsSaveBeforeEval(s.index)
+            return exprNeedsSaveBeforeEval(s.base, depth: depth) || exprNeedsSaveBeforeEval(s.index, depth: depth)
         case .member(let m):
-            return exprNeedsSaveBeforeEval(m.base)
+            return exprNeedsSaveBeforeEval(m.base, depth: depth)
         case .conditional(let c):
-            return exprNeedsSaveBeforeEval(c.condition) || exprNeedsSaveBeforeEval(c.trueExpr) || exprNeedsSaveBeforeEval(c.falseExpr)
+            return exprNeedsSaveBeforeEval(c.condition, depth: depth) || exprNeedsSaveBeforeEval(c.trueExpr, depth: depth) || exprNeedsSaveBeforeEval(c.falseExpr, depth: depth)
         case .cast(let c):
-            return exprNeedsSaveBeforeEval(c.expr)
+            return exprNeedsSaveBeforeEval(c.expr, depth: depth)
         case .initList(let il):
-            for v in il.values { if exprNeedsSaveBeforeEval(v) { return true } }
+            for v in il.values { if exprNeedsSaveBeforeEval(v, depth: depth) { return true } }
             return false
         case .compoundLiteral(let cl):
-            return exprNeedsSaveBeforeEval(cl.initList)
+            return exprNeedsSaveBeforeEval(cl.initList, depth: depth)
         default:
             return false
         }
