@@ -4143,12 +4143,17 @@ public final class Codegen {
             return emitVectorBinary(b, elemType: elemType, count: count)
         }
         // Also handle scalar * vector and vector * scalar
+        // BUT: array + int is pointer arithmetic in C, not vector-scalar.
+        // Only dispatch to vector-scalar for *, not + or - (which are pointer arith
+        // for regular arrays). The vector_size extension uses + and - too, but
+        // without distinguishing vector arrays from regular arrays, we must
+        // prioritize standard C pointer arithmetic.
         if case .array(let elemType, let count) = leftType2, rightType2 == elemType.unqualified,
-           b.op == .mul || b.op == .add || b.op == .sub || b.op == .div {
+           b.op == .mul || b.op == .div {
             return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: true)
         }
         if case .array(let elemType, let count) = rightType2, leftType2 == elemType.unqualified,
-           b.op == .mul || b.op == .add || b.op == .sub || b.op == .div {
+           b.op == .mul || b.op == .div {
             return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: false)
         }
 
