@@ -22,8 +22,7 @@ public func addressFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
            case .vreg(let baseVReg) = base, baseVReg.id == 29 {
             // Check if dst is used exactly once in the next few instructions
             // as the base of a load/store
-            if let useInfo = findSingleUse(insts, after: i, reg: dst) {
-                let useIdx = useInfo.idx
+            if let useIdx = findSingleUse(insts, after: i, reg: dst) {
                 let useInst = insts[useIdx]
 
                 // Fold the address into the load/store
