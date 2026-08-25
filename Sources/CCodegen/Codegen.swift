@@ -10969,10 +10969,12 @@ public final class Codegen {
                     continue
                 }
             }
-            // Pattern 5: mov xN, #0 followed by str wN/xN, [x29, #M]
-            // → str wzr/xzr, [x29, #M] (save 1 instruction)
-            if line.hasPrefix("str ") && line.contains("[x29") {
-                // Parse: "str w9, [x29, #-16]" or "str x9, [x29, #-16]"
+            // Pattern 5: mov xN, #0 followed by str wN/xN, [addr]
+            // → str wzr/xzr, [addr] (save 1 instruction)
+            // Skip pre-indexed addresses ([sp, #-16]!) because the register
+            // value may be needed after the store (e.g., function call args).
+            if line.hasPrefix("str ") && !line.contains("!") {
+                // Parse: "str w9, [x29, #-16]" or "str x9, [x10]"
                 let parts = line.split(separator: ",", maxSplits: 1)
                 if parts.count >= 2 {
                     let storeRegFull = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces) // "str " → drop 4
