@@ -152,6 +152,8 @@ public final class Parser {
     /// Pending __attribute__((vector_size(N))) extracted from parseDeclSpecifiers.
     /// When set, the base type should be wrapped in an array of (N / sizeof(base)) elements.
     private var pendingVectorSize: Int? = nil
+    /// Pending mode type from __attribute__((mode(QI/HI/SI/DI))) — overrides the integer type size.
+    private var pendingModeType: CType? = nil
     /// Pending function alignment from __attribute__((aligned(N))) extracted by extractAlignment.
     private var pendingFuncAlignment: Int? = nil
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
@@ -430,14 +432,18 @@ public final class Parser {
                                 }
                             } else if attrName == "mode" || attrName == "__mode__" {
                                 // mode(SI) = 4-byte int, mode(DI) = 8-byte, mode(QI) = 1-byte, mode(HI) = 2-byte
-                                // Just skip the argument — the base type is already correct for SI/DI
                                 if isPunct("(") {
-                                    var depth = 0
-                                    while !isAtEnd() {
-                                        if isPunct("(") { depth += 1 }
-                                        else if isPunct(")") { depth -= 1; if depth == 0 { advance(); break } }
-                                        advance()
+                                    advance()
+                                    let modeName = current().spelling
+                                    advance()
+                                    switch modeName {
+                                    case "QI": pendingModeType = .uchar
+                                    case "HI": pendingModeType = .ushort
+                                    case "SI": pendingModeType = .uint
+                                    case "DI": pendingModeType = .ulongLong
+                                    default: break
                                     }
+                                    if isPunct(")") { advance() }
                                 }
                             } else {
                                 // Skip any arguments for unknown attributes
@@ -914,6 +920,12 @@ public final class Parser {
             baseType = .int  // default to int (implicit int, C89 style)
         } else {
             baseType = buildTypeFromSpecifiers(typeSpecifiers)
+        }
+
+        // Apply mode attribute: override the integer type size
+        if let mt = pendingModeType {
+            baseType = mt
+            pendingModeType = nil
         }
 
         // Apply qualifiers
@@ -2044,10 +2056,17 @@ public final class Parser {
             // The outer dimension is first, inner dimensions follow.
             let vlaExprs = pendingVLASizeExprs
             pendingVLASizeExprs = []
+            // Apply mode attribute from trailing __attribute__((mode(...)))
+            // Will be applied to actualType below
             let vlaExpr = vlaExprs.first  // outer dimension (first parsed)
             let vlaInnerExprs = vlaExprs.count > 1 ? Array(vlaExprs.dropFirst()) : []
             var initExpr: Expr? = nil
             var actualType = type
+            // Apply mode attribute from trailing __attribute__((mode(...)))
+            if let mt = pendingModeType {
+                actualType = mt
+                pendingModeType = nil
+            }
             if match(kind: .punct, spelling: "=") {
                 initExpr = try parseInitializer(type: type)
                 if case .incompleteArray(let elem) = type.unqualified,
