@@ -22,6 +22,7 @@ public final class Codegen {
     private var vlaInnerDims: [String: [String]] = [:]  // VLA name → inner dimension local var names (excludes outer)
     private var vlaAllDims: [String: [String]] = [:]   // VLA name → ALL dimension local var names (outer first, for sizeof)
     private var globalVarTypes: [String: CType] = [:]
+    private var globalConstValues: [String: Int64] = [:]  // global vars with constant int initializers
     private var knownRecords: [String: RecordType] = [:]
     private var functionNames: Set<String> = []   // names of all declared functions
     private var definedFunctions: Set<String> = []  // functions with bodies (locally defined)
@@ -117,6 +118,10 @@ public final class Codegen {
                     }
                 }
                 globalVarTypes[vd.name] = varType
+                // Track constant integer global initializers for constant folding
+                if let init_ = vd.initializer, let val = evalConstExpr(init_) {
+                    globalConstValues[vd.name] = val
+                }
                 if vd.storageClass == .extern && vd.initializer == nil {
                     externGlobals.insert(vd.name)
                 } else {
@@ -1264,7 +1269,10 @@ public final class Codegen {
             return Int64(cl.value)
         case .identifier(let id):
             // Enum constants are compile-time integer values
-            return enumConstants[id.name]
+            if let val = enumConstants[id.name] { return val }
+            // Global variables with constant integer initializers
+            if let val = globalConstValues[id.name] { return val }
+            return nil
         case .binary(let b):
             guard let lhs = evalConstExpr(b.left), let rhs = evalConstExpr(b.right) else { return nil }
             switch b.op {
@@ -6484,6 +6492,17 @@ public final class Codegen {
         if case .identifier(let id) = c.function, id.name == "__builtin_constant_p" {
             let reg = regAlloc.alloc() ?? .x9
             emitLine("mov \(reg.x), #0")
+            return reg
+        }
+
+        // Constant-fold llabs/abs when the argument is a compile-time constant
+        if case .identifier(let id) = c.function,
+           (id.name == "llabs" || id.name == "__builtin_llabs" || id.name == "abs" || id.name == "__builtin_abs"),
+           c.arguments.count == 1,
+           let constVal = evalConstExpr(c.arguments.first!) {
+            let result = constVal < 0 ? (0 &- constVal) : constVal
+            let reg = regAlloc.alloc() ?? .x9
+            emitLoadImm(reg.x, result)
             return reg
         }
 
