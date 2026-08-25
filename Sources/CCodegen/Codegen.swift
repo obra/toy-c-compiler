@@ -11019,6 +11019,27 @@ public final class Codegen {
                     }
                 }
             }
+            // Pattern 7: mov wN, wM followed by mov wM, wN — useless round-trip
+            // (e.g., mov w9, w0 + mov w0, w9). Eliminate both.
+            if line.hasPrefix("mov ") && writeIdx > 0 {
+                let parts = line.split(separator: ",", maxSplits: 1)
+                if parts.count >= 2 {
+                    let dst = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                    let src = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    let prevLine = output[writeIdx - 1]
+                    let prevParts = prevLine.split(separator: ",", maxSplits: 1)
+                    if prevParts.count >= 2 && prevLine.hasPrefix("mov ") {
+                        let prevDst = String(prevParts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                        let prevSrc = String(prevParts[1]).trimmingCharacters(in: .whitespaces)
+                        if dst == prevSrc && src == prevDst {
+                            // Eliminate both the previous mov and this one
+                            writeIdx -= 1
+                            eliminated += 2
+                            continue
+                        }
+                    }
+                }
+            }
             output[writeIdx] = line
             writeIdx += 1
         }
