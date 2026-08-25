@@ -70,6 +70,11 @@ public func deadCodeElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
             changed = true
             continue
         }
+        // Also remove movk comment lines (leftover from loadImm folding)
+        if case .comment(let text) = inst, text.hasPrefix("movk ") {
+            changed = true
+            continue
+        }
         result.append(inst)
     }
 
