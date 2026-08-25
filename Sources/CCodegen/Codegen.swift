@@ -10152,6 +10152,36 @@ public final class Codegen {
     }
 
     /// Emit a local aggregate initializer: write init list values to stack memory at addrReg.
+    /// Store a register to a frame-relative offset (handles large offsets).
+    private func emitStoreToFrame(_ reg: ARM64Reg, _ offset: Int) {
+        if offset >= -256 && offset <= 255 {
+            emitLine("str \(reg.x), [x29, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("str \(reg.x), [x29, x16]")
+        }
+    }
+
+    /// Load x16 from a frame-relative offset (handles large offsets).
+    private func emitLoadFromFrame(_ offset: Int) {
+        if offset >= -256 && offset <= 255 {
+            emitLine("ldr x16, [x29, #\(offset)]")
+        } else {
+            emitLoadImm("x16", Int64(offset))
+            emitLine("ldr x16, [x29, x16]")
+        }
+    }
+
+    /// Store x16 to a frame-relative offset (handles large offsets).
+    private func emitStoreX16ToFrame(_ offset: Int) {
+        if offset >= -256 && offset <= 255 {
+            emitLine("str x16, [x29, #\(offset)]")
+        } else {
+            emitLoadImm("x17", Int64(offset))
+            emitLine("str x16, [x29, x17]")
+        }
+    }
+
     private func emitLocalInit(_ addrReg: ARM64Reg, _ expr: Expr, type: CType) {
         guard case .initList(let il) = expr else { return }
         let t = type.unqualified
@@ -10181,9 +10211,13 @@ public final class Codegen {
                 offset += 1
             }
         }
-        // Save base address to stack to avoid clobbering by emitExpr
-        emitLine("sub sp, sp, #16")
-        emitLine("str \(addrReg.x), [sp, #0]")
+        // Save base address to frame-local slots (x29-relative, not sp-relative)
+        // so that emitExpr allocating stack (compound literals) doesn't corrupt it.
+        // Slot 0: base address, Slot 1: field address save.
+        ensureLocalSpace(size: 16)
+        let saveSlot0 = -localOffset      // base address
+        let saveSlot1 = -(localOffset - 8) // field address temp
+        emitStoreToFrame(addrReg, saveSlot0)
         if case .structType(let rec) = t {
             let fields = rec.fields
             var valueIdx = 0
@@ -10241,7 +10275,7 @@ public final class Codegen {
                     if !designatedIndices.isEmpty {
                         for idx in designatedIndices {
                         // Emit the designated value for this field
-                        emitLine("ldr x16, [sp, #0]")
+                        emitLoadFromFrame(saveSlot0)
                         if fieldOffset != 0 {
                             emitLine("add x16, x16, #\(fieldOffset)")
                         }
@@ -10316,9 +10350,9 @@ public final class Codegen {
                             // containing allocation unit (same logic as a normal
                             // bitfield member store). x16 holds the unit address.
                             let unitSize = field.type.sizeInBytes ?? 4
-                            emitLine("str x16, [sp, #8]")
+                            emitStoreX16ToFrame(saveSlot1)
                             let valReg = emitExpr(v)
-                            emitLine("ldr x16, [sp, #8]")
+                            emitLoadFromFrame(saveSlot1)
                             // Load the containing unit
                             switch unitSize {
                             case 1: emitLine("ldrb w17, [x16]")
@@ -10378,9 +10412,9 @@ public final class Codegen {
                         } else {
                             // Scalar value — store to field address
                             // Save x16 (field address) to sp+8 before emitExpr clobbers it
-                            emitLine("str x16, [sp, #8]")
+                            emitStoreX16ToFrame(saveSlot1)
                             let valReg = emitExpr(v)
-                            emitLine("ldr x16, [sp, #8]")
+                            emitLoadFromFrame(saveSlot1)
                             // Convert float/double if needed
                             let valType = exprType(v).unqualified
                             if valType == .double && field.type.unqualified == .float {
@@ -10398,7 +10432,7 @@ public final class Codegen {
                     continue
                 }
                 // Use x16 as field address to avoid clobbering by emitExpr
-                emitLine("ldr x16, [sp, #0]")
+                emitLoadFromFrame(saveSlot0)
                 if fieldOffset != 0 {
                     emitLine("add x16, x16, #\(fieldOffset)")
                 }
@@ -10507,9 +10541,9 @@ public final class Codegen {
                         // Scalar field (or bitfield)
                         valueIdx += 1
                         // Save x16 (field address) to sp+8 before emitExpr clobbers it
-                        emitLine("str x16, [sp, #8]")
+                        emitStoreX16ToFrame(saveSlot1)
                         let valReg = emitExpr(v)
-                        emitLine("ldr x16, [sp, #8]")
+                        emitLoadFromFrame(saveSlot1)
                         // Convert float/double if needed
                         let valType = exprType(v).unqualified
                         if valType == .double && field.type.unqualified == .float {
@@ -10585,10 +10619,10 @@ public final class Codegen {
             }
         } else if case .unionType(let rec) = t {
             // Union init: initialize the first field (or first named field)
-            // The base address was saved at [sp, #0] before this function was called.
-            // Move it to [sp, #8] so nested emitLocalInit calls don't overwrite it.
-            emitLine("ldr x9, [sp, #0]")
-            emitLine("str x9, [sp, #8]")
+            // The base address is in saveSlot0 (frame-relative).
+            // Move it to saveSlot1 so nested emitLocalInit calls don't overwrite it.
+            emitLoadFromFrame(saveSlot0); emitLine("mov x9, x16")
+            emitLine("mov x16, x9"); emitStoreX16ToFrame(saveSlot1)
             // Determine which field to initialize. With designated initializers,
             // use the designated field; otherwise use the first field.
             var targetField = rec.fields.first
@@ -10612,7 +10646,7 @@ public final class Codegen {
                 if il.values.count > 0 {
                     let v = il.values[targetIdx < il.values.count ? targetIdx : 0]
                     let fieldAddr = regAlloc.alloc() ?? .x9
-                    emitLine("ldr \(fieldAddr.x), [sp, #8]")
+                    emitLoadFromFrame(saveSlot1); emitLine("mov \(fieldAddr.x), x16")
                     // Handle nested designators (e.g., .f.f9 = val)
                     let nestedNames: [String] = {
                         if let names = il.designators.first, let ns = names { return Array(ns.dropFirst()) }
@@ -10652,17 +10686,17 @@ public final class Codegen {
                             }
                         }
                         // Save field addr, evaluate value, restore, store at nested offset
-                        emitLine("str \(fieldAddr.x), [sp, #0]")
+                        emitStoreToFrame(fieldAddr, saveSlot0)
                         let addrReg2 = regAlloc.alloc() ?? .x10
                         if nestedOffset > 0 {
                             emitLine("add \(addrReg2.x), \(fieldAddr.x), #\(nestedOffset)")
                         } else {
                             emitLine("mov \(addrReg2.x), \(fieldAddr.x)")
                         }
-                        emitLine("str \(addrReg2.x), [sp, #0]")
+                        emitStoreToFrame(addrReg2, saveSlot0)
                         regAlloc.free(fieldAddr)
                         let valReg = emitExpr(v)
-                        emitLine("ldr x16, [sp, #0]")
+                        emitLoadFromFrame(saveSlot0)
                         emitStoreToAddrRaw("x16", valReg, type: nestedType)
                         regAlloc.free(valReg)
                         regAlloc.free(addrReg2)
@@ -10685,8 +10719,9 @@ public final class Codegen {
                 }
             }
             // Restore the base address for the caller
-            emitLine("ldr x9, [sp, #8]")
-            emitLine("str x9, [sp, #0]")
+            emitLoadFromFrame(saveSlot1)
+            emitLine("mov x9, x16")
+            emitLine("mov x16, x9"); emitStoreX16ToFrame(saveSlot0)
         } else if let elemType = { if case .array(let e, _) = t { return e }; if case .vector(let e, _) = t { return e }; return nil }() {
             let elemSize = elemType.sizeInBytes ?? 8
             if case .structType(let subRec) = elemType.unqualified {
@@ -10694,7 +10729,7 @@ public final class Codegen {
                 var valueIdx = 0
                 var elemI = 0
                 while valueIdx < il.values.count {
-                    emitLine("ldr x16, [sp, #0]")
+                    emitLoadFromFrame(saveSlot0)
                     if elemI > 0 {
                         emitLine("add x16, x16, #\(elemI * elemSize)")
                     }
@@ -10745,7 +10780,7 @@ public final class Codegen {
                     stride = leafType.unqualified.sizeInBytes ?? 8
                 }
                 for (i, v) in il.values.enumerated() {
-                    emitLine("ldr x16, [sp, #0]")
+                    emitLoadFromFrame(saveSlot0)
                     if i > 0 {
                         emitLine("add x16, x16, #\(i * stride)")
                     }
@@ -10784,9 +10819,9 @@ public final class Codegen {
                         }
                     } else {
                         // Save x16 (element address) before emitExpr clobbers it
-                        emitLine("str x16, [sp, #8]")
+                        emitStoreX16ToFrame(saveSlot1)
                         let valReg = emitExpr(v)
-                        emitLine("ldr x16, [sp, #8]")
+                        emitLoadFromFrame(saveSlot1)
                         // Convert int to float/double if element type is floating
                         let valType = exprType(v).unqualified
                         if valType.isInteger && (leafType.unqualified == .float || leafType.unqualified == .double) {
@@ -10807,9 +10842,9 @@ public final class Codegen {
                 }
             }
         }
-        // Restore base address and stack
-        emitLine("ldr \(addrReg.x), [sp, #0]")
-        emitLine("add sp, sp, #16")
+        // Restore base address from frame slot
+        emitLoadFromFrame(saveSlot0)
+        emitLine("mov \(addrReg.x), x16")
     }
 
     /// Emit a local init for one struct element from a flat init list.
