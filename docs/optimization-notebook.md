@@ -60,18 +60,23 @@
 - What went well: simple pattern match, no issues
 
 ### 5. Stack adjustment merging (commit fa7a197)
-- Result: pending benchmark (running)
+- Result: 539,560 instructions (before push-pop/call fix — needs re-benchmark)
 - Analysis: 18,671 mergeable add sp,sp,#N instructions
 - What went bad: first version crashed — didn't flush pending sp adjustment
   when sp was referenced by mov sp,x29 or other instructions. Fixed by
   flushing on any sp reference (refsSP check).
-- What went bad: add sp/sub sp parsing was in fallback code that was never
-  reached (the regular add/sub case matched first). Fixed by moving sp check
-  into the add/sub switch cases.
+- What went bad: didn't flush on x29 (frame pointer) references. Stack
+  merge moved `sub sp,sp,#16` past frame setup, breaking stack layout.
+  Fixed by flushing on x29 references too.
 
-### Analysis of remaining opportunities (after opt 3-5)
-- 19,109 mov reg, #0 — but these are mostly used (not dead, just zero init)
-- 14,801 add xN, x29, #N — frame address computations, hard to fold
-- 58,130 str [sp, #-N]! — argument pushes (calling convention, hard to remove)
-- 59,019 ldr [sp, ...] — argument loads (calling convention)
-- 3,725 push-then-immediately-load (could be direct mov to arg reg)
+### 6. Push-pop elimination (commit 705a1a6)
+- Replaces str [sp,#-16]! + ldr [sp,#0] with str + mov (keeps store for alignment)
+- What went bad: first version removed both store AND load → broke stack
+  alignment → segfault. Fixed by keeping the store.
+- What went bad: copy propagation didn't invalidate caller-saved regs on
+  calls → mov x0,#5 before call was forwarded to mov w9,w0 after call,
+  giving wrong return value (factorial(5)=5 instead of 120). Fixed by
+  invalidating x0-x18 on call instructions.
+- What went bad: copy prop and constant folding used VReg (with isWord) as
+  keys, not NormalizedReg → sub w9,w9,w10 didn't invalidate x9 copy map
+  entry. Fixed by using NormalizedReg everywhere.

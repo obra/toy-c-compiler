@@ -292,6 +292,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 8: Address folding (fold addrr xN,x29,#N into load/store [x29, #N])
+        let (addrResult, addrChanged) = addressFolding(result)
+        if addrChanged {
+            result = addrResult
+            changed = true
+        }
+
         iterations += 1
     }
 
