@@ -850,6 +850,11 @@ public final class Codegen {
                             emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
                         }
                     }
+                } else if case .vector(let elemType, _) = t {
+                    // Vector initializer: emit each element with correct size
+                    for v in il.values {
+                        emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
+                    }
                 } else {
                     // Scalar type with brace-enclosed initializer: emit first value
                     if il.values.count > 0 {
@@ -3679,6 +3684,40 @@ public final class Codegen {
             return partSize <= 4 ? reg.w : reg.x
         }
         func arithName(_ reg: ARM64Reg) -> String { regName(reg) }
+
+        // For integer complex, load/store uses w/x but arithmetic is done in the full
+        // 64-bit x register to avoid sign/zero-extension issues; FP just uses s/d.
+        func arith(_ reg: ARM64Reg) -> String {
+            if isFP { return "\(fpPrefix)\(reg.regNum)" }
+            return reg.x
+        }
+        // Emit a binary arithmetic op (add/sub/mul) for the current complex element type.
+        func emitArith(_ op: String, _ d: ARM64Reg, _ l: ARM64Reg, _ r: ARM64Reg) {
+            if isFP {
+                emitLine("f\(op) \(fpPrefix)\(d.regNum), \(fpPrefix)\(l.regNum), \(fpPrefix)\(r.regNum)")
+            } else {
+                emitLine("\(op) \(d.x), \(l.x), \(r.x)")
+            }
+        }
+        // Emit a divide for the current element type. Integer complex needs signed (sdiv)
+        // or unsigned (udiv) per the real type's signedness.
+        func emitDiv(_ d: ARM64Reg, _ l: ARM64Reg, _ r: ARM64Reg, signed: Bool) {
+            if isFP {
+                emitLine("fdiv \(fpPrefix)\(d.regNum), \(fpPrefix)\(l.regNum), \(fpPrefix)\(r.regNum)")
+            } else {
+                emitLine("\(signed ? "sdiv" : "udiv") \(d.x), \(l.x), \(r.x)")
+            }
+        }
+        // Load a complex part from a computed address [addrReg, #disp].
+        func emitLoadAddrPart(_ d: ARM64Reg, _ addrReg: ARM64Reg, _ disp: Int) {
+            if isFP {
+                emitLine("ldr \(fpPrefix)\(d.regNum), [\(addrReg.x), #\(disp)]")
+            } else if partSize <= 4 {
+                emitLine("ldr \(d.w), [\(addrReg.x), #\(disp)]")
+            } else {
+                emitLine("ldr \(d.x), [\(addrReg.x), #\(disp)]")
+            }
+        }
 
         // Helper to emit a load of a constant into a register (FP or integer)
         func loadFPConst(_ _reg: ARM64Reg, _ value: Double, _ float: Bool) {
