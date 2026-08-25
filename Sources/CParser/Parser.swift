@@ -727,9 +727,12 @@ public final class Parser {
                 }
                 pendingVectorSize = nil
             }
+            // Capture VLA size expressions for this typedef (e.g., typedef int T[n+2])
+            let tdVLAExprs = pendingVLASizeExprs
+            pendingVLASizeExprs = []
             typedefNames.insert(name)
             typedefTypes[name] = finalType
-            let td = TypedefDecl(name: name, type: finalType, loc: declLoc)
+            let td = TypedefDecl(name: name, type: finalType, loc: declLoc, vlaSizeExprs: tdVLAExprs)
             if firstDecl == nil { firstDecl = .typedefDecl(td) }
         } while match(kind: .punct, spelling: ",")
 

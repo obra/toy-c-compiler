@@ -125,11 +125,15 @@ public struct TypedefDecl: Equatable {
     public let name: String
     public var type: CType       // the aliased type
     public let loc: SourceLoc
+    /// VLA size expressions for VLA typedefs (e.g., `typedef int T[n+2]`).
+    /// Stored in parse order: [outer_dim, inner_dim1, ...]. Empty for non-VLA typedefs.
+    public var vlaSizeExprs: [Expr]
 
-    public init(name: String, type: CType, loc: SourceLoc) {
+    public init(name: String, type: CType, loc: SourceLoc, vlaSizeExprs: [Expr] = []) {
         self.name = name
         self.type = type
         self.loc = loc
+        self.vlaSizeExprs = vlaSizeExprs
     }
 }
 
@@ -654,11 +658,15 @@ public struct SizeofExpr: Equatable {
     public let loc: SourceLoc
     /// True if this was created by __alignof__/_Alignof (returns alignment, not size)
     public let isAlignof: Bool
-    public init(expr: Expr?, typeName: CType?, loc: SourceLoc, isAlignof: Bool = false) {
+    /// VLA dimension expressions when typeName comes from a VLA typedef (e.g., sizeof(T) where
+    /// T is `typedef int T[n+2]`). Empty for non-VLA types. Evaluated at runtime for sizeof.
+    public var vlaSizeExprs: [Expr]
+    public init(expr: Expr?, typeName: CType?, loc: SourceLoc, isAlignof: Bool = false, vlaSizeExprs: [Expr] = []) {
         self.expr = expr; self.typeName = typeName
         self.resolvedType = .ulong  // sizeof returns size_t = unsigned long on LP64
         self.loc = loc
         self.isAlignof = isAlignof
+        self.vlaSizeExprs = vlaSizeExprs
     }
 }
 
