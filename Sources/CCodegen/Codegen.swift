@@ -6153,6 +6153,8 @@ public final class Codegen {
             let i128Type = exprType(a.target).unqualified
             if isInt128(i128Type) {
                 let dstAddr = emitAddr(a.target)
+                // Save dstAddr to stack before any RHS evaluation (which may clobber it)
+                emitLine("str \(dstAddr.x), [sp, #-16]!")
                 let curOff = ensureTempSpace(size: 16)
                 let t = regAlloc.alloc() ?? .x9
                 if curOff >= -256 && curOff <= 255 { emitLine("add \(t.x), x29, #\(curOff)") }
@@ -6160,6 +6162,7 @@ public final class Codegen {
                 emitLine("ldr x16, [\(dstAddr.x)]"); emitLine("str x16, [\(t.x)]")
                 emitLine("ldr x16, [\(dstAddr.x), #8]"); emitLine("str x16, [\(t.x), #8]")
                 regAlloc.free(t)
+                regAlloc.free(dstAddr)
                 let resOff = ensureTempSpace(size: 16)
                 let isUnsigned = i128Type == .uint128
                 switch a.op {
@@ -6220,12 +6223,14 @@ public final class Codegen {
                     emitLdrFP(s, curOff + 8); emitStrFP(s, resOff + 8)
                     regAlloc.free(s)
                 }
-                // Store result back to target
+                // Store result back to target (dstAddr was saved on stack)
                 let s = regAlloc.alloc() ?? .x9
-                emitLdrFP(s, resOff); emitLine("str \(s.x), [\(dstAddr.x)]")
-                emitLdrFP(s, resOff + 8); emitLine("str \(s.x), [\(dstAddr.x), #8]")
-                regAlloc.free(s); regAlloc.free(dstAddr)
-                return dstAddr
+                let d = regAlloc.alloc() ?? .x10
+                emitLine("ldr \(d.x), [sp], #16")  // pop dstAddr
+                emitLdrFP(s, resOff); emitLine("str \(s.x), [\(d.x)]")
+                emitLdrFP(s, resOff + 8); emitLine("str \(s.x), [\(d.x), #8]")
+                regAlloc.free(s); regAlloc.free(d)
+                return d
             }
             // Vector compound assignment: use element-wise operations
             let targetIsVector = exprType(a.target).unqualified
@@ -11607,13 +11612,25 @@ public final class Codegen {
         case .cast(let c):
             emitInt128Cast(c, storeAtOffset: offset)
         case .call:
-            let src = emitExpr(expr)
-            let dst = regAlloc.alloc() ?? .x9
-            if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
-            else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
-            emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
-            emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
-            regAlloc.free(src); regAlloc.free(dst)
+            let callRetType = exprType(expr).unqualified
+            if isInt128(callRetType) {
+                // Call returns __int128: emitExpr returns an address
+                let src = emitExpr(expr)
+                let dst = regAlloc.alloc() ?? .x9
+                if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+                else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+                emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
+                emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
+                regAlloc.free(src); regAlloc.free(dst)
+            } else {
+                // Call returns scalar: use emitExpr value, sign-extend to 128 bits
+                let lo = emitExpr(expr)
+                emitStoreFP(lo.x, offset)
+                let h = offset + 8
+                emitLine("asr \(lo.x), \(lo.x), #63")
+                emitStoreFP(lo.x, h)
+                regAlloc.free(lo)
+            }
         case .assign(let a):
             let src = emitExpr(.assign(a))
             let dst = regAlloc.alloc() ?? .x9
