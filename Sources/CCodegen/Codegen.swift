@@ -5831,34 +5831,84 @@ public final class Codegen {
                 // For compound literals, emitComplexExpr-like evaluation needed
                 let rhsType = exprType(a.value).unqualified
                 if case .vector(let rElemType, let rCount) = rhsType, rCount == count {
-                    // Vector op Vector: evaluate RHS to temp via emitAddr
-                    let rhsAddr = emitAddr(a.value)
+                    // Vector op Vector: evaluate RHS to temp in the local frame
+                    // (not on the dynamic stack, which can be clobbered by pushes).
+                    let elemSize = elemType.sizeInBytes ?? 4
+                    let rhsSize = count * elemSize
+                    let rhsTmpOff = ensureTempSpace(size: rhsSize)
+                    // Evaluate RHS vector expression — it returns an address.
+                    // Copy the vector data to the local temp frame.
+                    let srcAddr = emitExpr(a.value)
+                    let tmpAddr = regAlloc.alloc() ?? .x9
+                    if rhsTmpOff >= -4095 && rhsTmpOff <= 4095 {
+                        emitLine("add \(tmpAddr.x), x29, #\(rhsTmpOff)")
+                    } else {
+                        emitLoadImm("x16", Int64(rhsTmpOff))
+                        emitLine("add \(tmpAddr.x), x29, x16")
+                    }
+                    // Copy vector data from srcAddr to tmpAddr
+                    var remaining = rhsSize
+                    var copyOff = 0
+                    while remaining >= 8 {
+                        emitLine("ldr x16, [\(srcAddr.x), #\(copyOff)]")
+                        emitLine("str x16, [\(tmpAddr.x), #\(copyOff)]")
+                        copyOff += 8
+                        remaining -= 8
+                    }
+                    if remaining >= 4 {
+                        emitLine("ldr w16, [\(srcAddr.x), #\(copyOff)]")
+                        emitLine("str w16, [\(tmpAddr.x), #\(copyOff)]")
+                        copyOff += 4
+                        remaining -= 4
+                    }
+                    if remaining >= 2 {
+                        emitLine("ldrh w16, [\(srcAddr.x), #\(copyOff)]")
+                        emitLine("strh w16, [\(tmpAddr.x), #\(copyOff)]")
+                        copyOff += 2
+                        remaining -= 2
+                    }
+                    if remaining >= 1 {
+                        emitLine("ldrb w16, [\(srcAddr.x), #\(copyOff)]")
+                        emitLine("strb w16, [\(tmpAddr.x), #\(copyOff)]")
+                    }
+                    regAlloc.free(srcAddr)
+                    let rhsAddr = tmpAddr
                     let dstAddr = emitAddr(a.target)
                     // Use emitVectorBinary-like element-wise loop
-                    let elemSize = elemType.sizeInBytes ?? 4
                     let isFP = elemType.isFloating
                     let fpPrefix = elemType == .float ? "s" : "d"
+                    // Determine load/store instructions for integer elements
+                    let ldInstr: String, stInstr: String
+                    if isFP {
+                        ldInstr = "ldr"; stInstr = "str"
+                    } else if elemSize <= 1 {
+                        ldInstr = elemType.isSigned ? "ldrsb" : "ldrb"; stInstr = "strb"
+                    } else if elemSize <= 2 {
+                        ldInstr = elemType.isSigned ? "ldrsh" : "ldrh"; stInstr = "strh"
+                    } else if elemSize <= 4 {
+                        ldInstr = "ldr"; stInstr = "str"
+                    } else {
+                        ldInstr = "ldr"; stInstr = "str"
+                    }
+                    let ldReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                    let ldReg17 = isFP ? (elemSize == 4 ? "s17" : "d17") : (elemSize <= 4 ? "w17" : "x17")
                     emitLine("str \(rhsAddr.x), [sp, #-16]!")
                     emitLine("str \(dstAddr.x), [sp, #-16]!")
                     for i in 0..<count {
                         let off = i * elemSize
-                        // Load target[i]
-                        emitLine("ldr x9, [sp, #16]")  // dst addr
+                        // Load target[i] — dst addr is at sp+0 (last pushed)
+                        emitLine("ldr x9, [sp, #0]")  // dst addr
                         if isFP {
                             emitLine(elemSize == 4 ? "ldr s16, [x9, #\(off)]" : "ldr d16, [x9, #\(off)]")
-                        } else if elemSize <= 4 {
-                            emitLine("ldr w16, [x9, #\(off)]")
                         } else {
-                            emitLine("ldr x16, [x9, #\(off)]")
+                            emitLine("\(ldInstr) \(ldReg), [x9, #\(off)]")
                         }
-                        // Load rhs[i]
-                        emitLine("ldr x9, [sp, #32]")  // rhs addr
+                        // Load rhs[i] — rhs addr is at sp+16 (first pushed)
+                        emitLine("ldr x9, [sp, #16]")  // rhs addr
                         if isFP {
                             emitLine(elemSize == 4 ? "ldr s17, [x9, #\(off)]" : "ldr d17, [x9, #\(off)]")
-                        } else if elemSize <= 4 {
-                            emitLine("ldr w17, [x9, #\(off)]")
                         } else {
-                            emitLine("ldr x17, [x9, #\(off)]")
+                            emitLine("\(ldInstr) \(ldReg17), [x9, #\(off)]")
                         }
                         // Apply op
                         let arithReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
@@ -5890,14 +5940,12 @@ public final class Codegen {
                             else { emitLine("lsr \(arithReg), \(aReg), \(bReg)") }
                         default: emitLine("add \(arithReg), \(aReg), \(bReg)")
                         }
-                        // Store result[i]
-                        emitLine("ldr x9, [sp, #16]")  // dst addr
+                        // Store result[i] — dst addr is at sp+0
+                        emitLine("ldr x9, [sp, #0]")  // dst addr
                         if isFP {
                             emitLine(elemSize == 4 ? "str s16, [x9, #\(off)]" : "str d16, [x9, #\(off)]")
-                        } else if elemSize <= 4 {
-                            emitLine("str w16, [x9, #\(off)]")
                         } else {
-                            emitLine("str x16, [x9, #\(off)]")
+                            emitLine("\(stInstr) \(ldReg), [x9, #\(off)]")
                         }
                     }
                     emitLine("add sp, sp, #32")  // pop 2 saved addrs
