@@ -1780,7 +1780,13 @@ public final class Codegen {
             // indirect return location pointer. It's caller-saved, so internal
             // calls (e.g., sprintf) will clobber it. Save it to a stack slot
             // (relative to x29) and restore before writing the return value.
-            if case .structType = fd.returnType.unqualified,
+            let retIsLargeAggregate: Bool = {
+                let u = fd.returnType.unqualified
+                if case .structType = u { return true }
+                if case .vector = u { return true }
+                return false
+            }()
+            if retIsLargeAggregate,
                let sz = fd.returnType.sizeInBytes, sz > 16, isHFA(fd.returnType) == nil {
                 // Allocate a slot for x8 below x29
                 ensureLocalSpace(size: 16)
