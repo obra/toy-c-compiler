@@ -1030,6 +1030,24 @@ public final class Codegen {
                 // Emit as a symbol reference for the linker to resolve
                 emitLine(".quad _\(id.name)")
             }
+        case .binary(let b) where b.op == .sub:
+            // Label difference: &&lab1 - &&lab0 → emit as label1 - label0
+            // The assembler computes this at link time as the byte offset.
+            if let leftLabel = resolveLabelRef(b.left), let rightLabel = resolveLabelRef(b.right) {
+                emitLine(".long \(leftLabel) - \(rightLabel)")
+            } else if let (sym, offset) = resolveSymbolAndOffset(expr) {
+                if offset == 0 {
+                    emitLine(".quad \(sym)")
+                } else if offset > 0 {
+                    emitLine(".quad \(sym)+\(offset)")
+                } else {
+                    emitLine(".quad \(sym)-\(-offset)")
+                }
+            } else if let val = evalConstExpr(expr) {
+                emitInitializer(.integerLiteral(IntegerLiteral(value: val, type: type ?? .int, loc: SourceLoc.unknown)), size: size, type: type)
+            } else {
+                emitLine(".zero \(size)")
+            }
         default:
             // Try to resolve as symbol + offset (e.g., array + 10 in a pointer initializer)
             if let (sym, offset) = resolveSymbolAndOffset(expr) {
@@ -1145,6 +1163,35 @@ public final class Codegen {
         } else {
             emitLine(".quad \(sym)-\(-offset)")
         }
+    }
+
+    /// Resolve a label reference (&&label) to its assembly label name.
+    /// Used for label-difference expressions in static initializers.
+    private func resolveLabelRef(_ expr: Expr) -> String? {
+        // &&label is parsed as .unary(.addressOf, .identifier("label"))
+        guard case .unary(let u) = expr, u.op == .addressOf,
+              case .unary(let u2) = u.operand, u2.op == .addressOf,
+              case .identifier(let id) = u2.operand else {
+            // Also handle direct &&label if parsed as .unary(.addressOf, .identifier)
+            if case .unary(let u) = expr, u.op == .addressOf,
+               case .identifier(let id) = u.operand {
+                if let labelAsm = gotoLabels[id.name] {
+                    return labelAsm
+                }
+                if let labelAsm = allFunctionLabels["\(currentFuncName).\(id.name)"] {
+                    return labelAsm
+                }
+            }
+            return nil
+        }
+        // Double address-of: &&label
+        if let labelAsm = gotoLabels[id.name] {
+            return labelAsm
+        }
+        if let labelAsm = allFunctionLabels["\(currentFuncName).\(id.name)"] {
+            return labelAsm
+        }
+        return nil
     }
 
     /// Resolve a symbol name and its total byte offset for address-of expressions in initializers.
@@ -8789,6 +8836,11 @@ public final class Codegen {
                 if case .array(let elem, _) = t.unqualified { return elem }
                 return .int
             case .addressOf:
+                // &&label (computed goto) has type void* per GNU extension
+                if case .identifier(let id) = u.operand,
+                   gotoLabels[id.name] != nil || allFunctionLabels["\(currentFuncName).\(id.name)"] != nil {
+                    return .pointer(to: .void)
+                }
                 return .pointer(to: exprType(u.operand))
             case .not:
                 return .int  // logical NOT always returns int per C standard
