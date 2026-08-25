@@ -6882,6 +6882,82 @@ public final class Codegen {
                 return .x9
             }
 
+            // Fast path for simple local variable compound assignments (a += b where a is a local).
+            // Uses direct ldr/str [x29, #offset] instead of emitAddr + push/pop + ldr/str.
+            // Only for scalar integer/float types (not pointers, which need sizeof scaling).
+            if case .identifier(let id) = a.target,
+               let offset = localVarOffsets[id.name],
+               let varType = localVarTypes[id.name],
+               !varType.unqualified.isComplex,
+               !varType.unqualified.isPointer,
+               !vlaBasePointers.contains(id.name) {
+                let targetType = varType.unqualified
+                let rhsResult = emitExpr(a.value)
+                let rhsType = exprType(a.value).unqualified
+                let rhsIsFloat = rhsType.isFloating
+                // Save RHS to stack before loading target
+                if rhsIsFloat {
+                    let fpReg = rhsType == .float ? "s\(rhsResult.regNum)" : "d\(rhsResult.regNum)"
+                    emitLine("str \(fpReg), [sp, #-16]!")
+                } else {
+                    emitLine("str \(rhsResult.x), [sp, #-16]!")
+                }
+                regAlloc.free(rhsResult)
+                // Load current value directly from frame
+                let currentReg = regAlloc.alloc() ?? .x9
+                emitLoadFromFrame(currentReg, offset: offset, type: varType)
+                // Restore RHS into a different register
+                let rhsReg = regAlloc.alloc() ?? .x10
+                if rhsIsFloat {
+                    let fpReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
+                    emitLine("ldr \(fpReg), [sp], #16")
+                } else {
+                    emitLine("ldr \(rhsReg.x), [sp], #16")
+                }
+                // Apply the operation
+                let resultReg = currentReg
+                if rhsIsFloat {
+                    let lReg = targetType == .float ? "s\(currentReg.regNum)" : "d\(currentReg.regNum)"
+                    let rReg = rhsType == .float ? "s\(rhsReg.regNum)" : "d\(rhsReg.regNum)"
+                    switch a.op {
+                    case .addAssign: emitLine("fadd \(lReg), \(lReg), \(rReg)")
+                    case .subAssign: emitLine("fsub \(lReg), \(lReg), \(rReg)")
+                    case .mulAssign: emitLine("fmul \(lReg), \(lReg), \(rReg)")
+                    case .divAssign: emitLine("fdiv \(lReg), \(lReg), \(rReg)")
+                    default: break
+                    }
+                } else {
+                    switch a.op {
+                    case .addAssign: emitLine("add \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .subAssign: emitLine("sub \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .mulAssign: emitLine("mul \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .divAssign:
+                        if targetType.isSigned { emitLine("sdiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)") }
+                        else { emitLine("udiv \(currentReg.x), \(currentReg.x), \(rhsReg.x)") }
+                    case .modAssign:
+                        let temp = regAlloc.alloc() ?? .x16
+                        if targetType.isSigned { emitLine("sdiv \(temp.x), \(currentReg.x), \(rhsReg.x)") }
+                        else { emitLine("udiv \(temp.x), \(currentReg.x), \(rhsReg.x)") }
+                        emitLine("msub \(currentReg.x), \(temp.x), \(rhsReg.x), \(currentReg.x)")
+                        regAlloc.free(temp)
+                    case .shlAssign: emitLine("lsl \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .shrAssign:
+                        if targetType.isSigned { emitLine("asr \(currentReg.x), \(currentReg.x), \(rhsReg.x)") }
+                        else { emitLine("lsr \(currentReg.x), \(currentReg.x), \(rhsReg.x)") }
+                    case .andAssign: emitLine("and \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .orAssign: emitLine("orr \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    case .xorAssign: emitLine("eor \(currentReg.x), \(currentReg.x), \(rhsReg.x)")
+                    default: break
+                    }
+                }
+                regAlloc.free(rhsReg)
+                // Truncate result to target type
+                truncateReg(resultReg, type: targetType)
+                // Store result directly to frame
+                storeLocal(id.name, resultReg, type: varType)
+                return resultReg
+            }
+
             // Evaluate RHS first, then load the current value of the target.
             // This matches GCC behavior: the RHS is evaluated before reading the LHS,
             // which matters when the RHS has side effects that modify the target.
