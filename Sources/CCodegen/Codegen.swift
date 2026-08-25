@@ -11972,15 +11972,39 @@ public final class Codegen {
         } else if v == 0 {
             emitLine("mov \(reg), #0")
         } else {
-            // Use movz for the low 16 bits, then movk for higher 16-bit chunks
-            let w0 = UInt16(truncatingIfNeeded: v)
-            let w1 = UInt16(truncatingIfNeeded: v >> 16)
-            let w2 = UInt16(truncatingIfNeeded: v >> 32)
-            let w3 = UInt16(truncatingIfNeeded: v >> 48)
-            emitLine("movz \(reg), #\(w0)")
-            if w1 != 0 { emitLine("movk \(reg), #\(w1), lsl #16") }
-            if w2 != 0 { emitLine("movk \(reg), #\(w2), lsl #32") }
-            if w3 != 0 { emitLine("movk \(reg), #\(w3), lsl #48") }
+            // Check if movn can encode this in fewer instructions than movz+movk.
+            // movn x, #imm, lsl #shift loads ~(imm << shift).
+            // If ~v fits in a single 16-bit chunk (all other chunks are 0),
+            // movn is 1 instruction instead of 2-4.
+            let notV = ~v
+            // Check each 16-bit position for a movn encoding
+            let w0 = UInt16(truncatingIfNeeded: notV)
+            let w1 = UInt16(truncatingIfNeeded: notV >> 16)
+            let w2 = UInt16(truncatingIfNeeded: notV >> 32)
+            let w3 = UInt16(truncatingIfNeeded: notV >> 48)
+            if w1 == 0 && w2 == 0 && w3 == 0 && w0 != 0 {
+                // ~v fits in low 16 bits
+                emitLine("movn \(reg), #\(w0)")
+            } else if w0 == 0 && w2 == 0 && w3 == 0 && w1 != 0 {
+                // ~v fits in bits 16-31
+                emitLine("movn \(reg), #\(w1), lsl #16")
+            } else if w0 == 0 && w1 == 0 && w3 == 0 && w2 != 0 {
+                // ~v fits in bits 32-47
+                emitLine("movn \(reg), #\(w2), lsl #32")
+            } else if w0 == 0 && w1 == 0 && w2 == 0 && w3 != 0 {
+                // ~v fits in bits 48-63
+                emitLine("movn \(reg), #\(w3), lsl #48")
+            } else {
+                // Use movz for the low 16 bits, then movk for higher 16-bit chunks
+                let mw0 = UInt16(truncatingIfNeeded: v)
+                let mw1 = UInt16(truncatingIfNeeded: v >> 16)
+                let mw2 = UInt16(truncatingIfNeeded: v >> 32)
+                let mw3 = UInt16(truncatingIfNeeded: v >> 48)
+                emitLine("movz \(reg), #\(mw0)")
+                if mw1 != 0 { emitLine("movk \(reg), #\(mw1), lsl #16") }
+                if mw2 != 0 { emitLine("movk \(reg), #\(mw2), lsl #32") }
+                if mw3 != 0 { emitLine("movk \(reg), #\(mw3), lsl #48") }
+            }
         }
     }
 
