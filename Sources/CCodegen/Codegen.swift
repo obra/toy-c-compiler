@@ -1847,10 +1847,12 @@ public final class Codegen {
             }()
             // Integer complex types are passed like small structs in GP registers
             let isIntComplex = pt.isComplex && !isHFA
+            // __int128 is 16 bytes, passed in two GP registers (x0=lo, x1=hi)
+            let isInt128Param = isInt128(pt)
             let regWidth: Int
             if isHFA {
                 regWidth = hfaCount
-            } else if (isStructOrVector || isIntComplex), paramSize > 8, paramSize <= 16 {
+            } else if isInt128Param || ((isStructOrVector || isIntComplex) && paramSize > 8 && paramSize <= 16) {
                 regWidth = 2
             } else if isStructOrVector, paramSize > 16 {
                 // Large struct/vector: entirely on stack, does NOT consume GP registers
@@ -1951,7 +1953,17 @@ public final class Codegen {
                 let offset = -(localOffset)
                 localVarOffsets[param.name ?? "_param_\(i)"] = offset
                 let isInt = pt.isInteger || pt.isPointer || pt.isFunction || pt.isEnum
-                if isInt {
+                if isInt128Param {
+                    // __int128: x0=lo, x1=hi → store both to stack
+                    emitStoreFP(argRegs[regIndex].x, offset)
+                    if regIndex + 1 < 8 {
+                        emitStoreFP(argRegs[regIndex + 1].x, offset + 8)
+                    } else {
+                        let sso = 16 + stackParamIdx * 8
+                        emitLoadFP("x9", sso); emitStoreFP("x9", offset + 8)
+                        stackParamIdx += 1
+                    }
+                } else if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
                 } else if pt.isComplex {
@@ -2585,6 +2597,9 @@ public final class Codegen {
                                 } else if varType.isComplex, let offset = localVarOffsets[vd.name] {
                                     // _Complex variable initialization
                                     emitComplexExpr(init_, storeAtOffset: offset, complexType: varType)
+                                } else if isInt128(varType), let offset = localVarOffsets[vd.name] {
+                                    // __int128 variable initialization
+                                    emitInt128Expr(init_, storeAtOffset: offset)
                                 } else if case .array = varType, let arrSize = varType.sizeInBytes, arrSize > 0,
                                           let offset = localVarOffsets[vd.name] {
                                     // Array (vector) initialization from expression: copy data
@@ -2774,6 +2789,30 @@ public final class Codegen {
                         }
                         regAlloc.free(srcAddr)
                     }
+                    emitEpilogue()
+                    return
+                }
+                // __int128 return: x0=lo, x1=hi
+                if isInt128(retType) && isInt128(funcRet) {
+                    let srcAddr = emitAddr(v)
+                    emitLine("ldr x0, [\(srcAddr.x)]")
+                    emitLine("ldr x1, [\(srcAddr.x), #8]")
+                    regAlloc.free(srcAddr)
+                    emitEpilogue()
+                    return
+                }
+                // __int128-to-scalar return: extract lo half
+                if isInt128(retType) && !isInt128(funcRet) {
+                    let srcAddr = emitAddr(v)
+                    let r = regAlloc.alloc() ?? .x9
+                    emitLine("ldr \(r.x), [\(srcAddr.x)]")
+                    regAlloc.free(srcAddr)
+                    if funcRet.isSigned32Bit || funcRet == .uint || funcRet == .ushort || funcRet == .uchar || funcRet == .bool {
+                        emitLine("mov w0, \(r.w)")
+                    } else {
+                        emitLine("mov x0, \(r.x)")
+                    }
+                    regAlloc.free(r)
                     emitEpilogue()
                     return
                 }
@@ -3113,6 +3152,103 @@ public final class Codegen {
 
     private func emitSwitchStmt(_ ss: SwitchStmt) {
         let endLabel = newLabel()
+        let switchType = exprType(ss.value).unqualified
+        let isInt128Switch = isInt128(switchType)
+
+        if isInt128Switch {
+            // __int128 switch: store 16 bytes, compare both halves for each case
+            let valAddr = emitAddr(ss.value)  // returns address for int128
+            regAlloc.reset()
+            ensureLocalSpace(size: 16)
+            let loOff = -localOffset
+            let hiOff = loOff + 8
+            // Copy 16 bytes from valAddr to frame
+            emitLine("str \(valAddr.x), [sp, #-16]!")
+            let t = regAlloc.alloc() ?? .x9
+            emitLine("ldr x16, [\(valAddr.x)]")
+            if loOff >= -256 && loOff <= 255 { emitLine("str x16, [x29, #\(loOff)]") }
+            else { emitLoadImm("x17", Int64(loOff)); emitLine("str x16, [x29, x17]") }
+            emitLine("ldr x16, [\(valAddr.x), #8]")
+            if hiOff >= -256 && hiOff <= 255 { emitLine("str x16, [x29, #\(hiOff)]") }
+            else { emitLoadImm("x17", Int64(hiOff)); emitLine("str x16, [x29, x17]") }
+            emitLine("ldr \(t.x), [sp], #16")
+            regAlloc.free(t)
+            regAlloc.free(valAddr)
+            regAlloc.reset()
+
+            var caseLabelMap: [String: String] = [:]
+            var defaultLabel: String? = nil
+
+            func emitInt128CaseComparison(_ caseVal: Expr) -> String {
+                let label = newLabel()
+                let caseOff = ensureTempSpace(size: 16)
+                emitInt128Expr(caseVal, storeAtOffset: caseOff)
+                let l = regAlloc.alloc() ?? .x9
+                let r = regAlloc.alloc() ?? .x10
+                // Compare hi first
+                emitLdrFP(l, hiOff); emitLdrFP(r, caseOff + 8)
+                emitLine("cmp \(l.x), \(r.x)")
+                let neLabel = newLabel()
+                emitLine("b.ne \(neLabel)")
+                // hi equal: compare lo
+                emitLdrFP(l, loOff); emitLdrFP(r, caseOff)
+                emitLine("cmp \(l.x), \(r.x)")
+                emitLine("b.eq \(label)")
+                emitLine("\(neLabel):")
+                regAlloc.free(l); regAlloc.free(r)
+                regAlloc.reset()
+                return label
+            }
+
+            for (idx, stmt) in ss.cases.enumerated() {
+                if case .case(let cs) = stmt {
+                    caseLabelMap["\(idx)"] = emitInt128CaseComparison(cs.value)
+                    if case .compound(let comp) = cs.stmt {
+                        for (innerIdx, innerStmt) in comp.statements.enumerated() {
+                            if case .case(let innerCs) = innerStmt {
+                                caseLabelMap["\(idx).\(innerIdx)"] = emitInt128CaseComparison(innerCs.value)
+                            } else if case .default = innerStmt {
+                                defaultLabel = newLabel()
+                            }
+                        }
+                    }
+                } else if case .compound(let comp) = stmt {
+                    scanAndEmitCaseLabels(comp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx)", emitCaseComparison: emitInt128CaseComparison)
+                } else if case .if(let ifStmt) = stmt {
+                    if case .compound(let thenComp) = ifStmt.thenStmt {
+                        scanAndEmitCaseLabels(thenComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx).t", emitCaseComparison: emitInt128CaseComparison)
+                    }
+                    if let elseStmt = ifStmt.elseStmt, case .compound(let elseComp) = elseStmt {
+                        scanAndEmitCaseLabels(elseComp, caseLabelMap: &caseLabelMap, defaultLabel: &defaultLabel, keyPrefix: "\(idx).e", emitCaseComparison: emitInt128CaseComparison)
+                    }
+                } else if case .default = stmt {
+                    defaultLabel = newLabel()
+                }
+            }
+
+            if let dl = defaultLabel {
+                emitLine("b \(dl)")
+            } else {
+                emitLine("b \(endLabel)")
+            }
+
+            breakLabels.append(endLabel)
+            for (idx, stmt) in ss.cases.enumerated() {
+                if case .case(let cs) = stmt {
+                    emitLine("\(caseLabelMap["\(idx)"]!):")
+                    if let s = cs.stmt { emitStmt(s) }
+                } else if case .default = stmt {
+                    emitLine("\(defaultLabel!):")
+                    emitStmt(stmt)
+                } else {
+                    emitStmt(stmt)
+                }
+            }
+            breakLabels.removeLast()
+            emitLine("\(endLabel):")
+            return
+        }
+
         let valueReg = emitExpr(ss.value)
         regAlloc.reset()
 
@@ -3579,6 +3715,21 @@ public final class Codegen {
             // Handle int↔float conversions. Other casts just evaluate the inner expr.
             let fromType = exprType(c.expr).unqualified
             let toType = c.type.unqualified
+            // __int128 casts
+            if isInt128(toType) {
+                let tmpOff = ensureTempSpace(size: 16)
+                emitInt128Cast(c, storeAtOffset: tmpOff)
+                let r = regAlloc.alloc() ?? .x9
+                if tmpOff >= -4095 && tmpOff <= 4095 { emitLine("add \(r.x), x29, #\(tmpOff)") }
+                else { emitLoadImm("x16", Int64(tmpOff)); emitLine("add \(r.x), x29, x16") }
+                return r
+            }
+            if isInt128(fromType) && !isInt128(toType) {
+                // Cast FROM __int128 to smaller: emitExpr returns lo value
+                let v = emitExpr(c.expr)
+                truncateReg(v, type: toType)
+                return v
+            }
             if fromType.isFloating && toType.isFloating {
                 // float ↔ double conversion
                 let reg = emitExpr(c.expr)
@@ -4739,6 +4890,37 @@ public final class Codegen {
     }
 
     private func emitBinaryExpr(_ b: BinaryExpr) -> ARM64Reg {
+        // __int128 binary operations
+        let lt0 = exprType(b.left).unqualified
+        let rt0 = exprType(b.right).unqualified
+        if isInt128(lt0) || isInt128(rt0) {
+            let resType = exprType(.binary(b)).unqualified
+            if isInt128(resType) {
+                let tmpOff = ensureTempSpace(size: 16)
+                emitInt128Binary(b, storeAtOffset: tmpOff)
+                let r = regAlloc.alloc() ?? .x9
+                if tmpOff >= -4095 && tmpOff <= 4095 { emitLine("add \(r.x), x29, #\(tmpOff)") }
+                else { emitLoadImm("x16", Int64(tmpOff)); emitLine("add \(r.x), x29, x16") }
+                return r
+            }
+            // Result is scalar (e.g., __int128 | uint64_t → uint64_t, or comparison)
+            if b.op == .eq || b.op == .ne || b.op == .lt || b.op == .le || b.op == .gt || b.op == .ge {
+                return emitInt128Compare(b)
+            }
+            // Bitwise op with scalar result: extract lo half of int128 side
+            if b.op == .bitOr || b.op == .bitAnd || b.op == .bitXor {
+                let tmpOff = ensureTempSpace(size: 16)
+                emitInt128Expr(isInt128(lt0) ? b.left : b.right, storeAtOffset: tmpOff)
+                let lo = regAlloc.alloc() ?? .x9
+                emitLdrFP(lo, tmpOff)
+                let sc = emitExpr(isInt128(lt0) ? b.right : b.left)
+                let op = b.op == .bitOr ? "orr" : b.op == .bitAnd ? "and" : "eor"
+                if isInt128(lt0) { emitLine("\(op) \(lo.x), \(lo.x), \(sc.x)") }
+                else { emitLine("\(op) \(lo.x), \(sc.x), \(lo.x)") }
+                regAlloc.free(sc)
+                return lo
+            }
+        }
         // Complex type binary operations
         let leftType = exprType(b.left).unqualified
         let rightType = exprType(b.right).unqualified
@@ -5953,6 +6135,84 @@ public final class Codegen {
     private func emitAssignExpr(_ a: AssignExpr) -> ARM64Reg {
         // For compound assignments (+=, -=, etc.), we need to read, operate, and write
         if a.op != .assign {
+            // __int128 compound assignment
+            let i128Type = exprType(a.target).unqualified
+            if isInt128(i128Type) {
+                let dstAddr = emitAddr(a.target)
+                let curOff = ensureTempSpace(size: 16)
+                let t = regAlloc.alloc() ?? .x9
+                if curOff >= -256 && curOff <= 255 { emitLine("add \(t.x), x29, #\(curOff)") }
+                else { emitLoadImm("x16", Int64(curOff)); emitLine("add \(t.x), x29, x16") }
+                emitLine("ldr x16, [\(dstAddr.x)]"); emitLine("str x16, [\(t.x)]")
+                emitLine("ldr x16, [\(dstAddr.x), #8]"); emitLine("str x16, [\(t.x), #8]")
+                regAlloc.free(t)
+                let resOff = ensureTempSpace(size: 16)
+                let isUnsigned = i128Type == .uint128
+                switch a.op {
+                case .shlAssign:
+                    emitInt128ShiftLeft(leftOff: curOff, right: a.value, storeAtOffset: resOff)
+                case .shrAssign:
+                    emitInt128ShiftRight(leftOff: curOff, right: a.value, storeAtOffset: resOff, isUnsigned: isUnsigned)
+                case .addAssign, .subAssign:
+                    let rhsOff = ensureTempSpace(size: 16)
+                    emitInt128Expr(a.value, storeAtOffset: rhsOff)
+                    let isAdd = a.op == .addAssign
+                    let l = regAlloc.alloc() ?? .x9, r = regAlloc.alloc() ?? .x10
+                    emitLdrFP(l, curOff); emitLdrFP(r, rhsOff)
+                    emitLine("\(isAdd ? "adds" : "subs") \(l.x), \(l.x), \(r.x)")
+                    emitStrFP(l, resOff)
+                    emitLdrFP(l, curOff + 8); emitLdrFP(r, rhsOff + 8)
+                    emitLine("\(isAdd ? "adc" : "sbc") \(l.x), \(l.x), \(r.x)")
+                    emitStrFP(l, resOff + 8)
+                    regAlloc.free(l); regAlloc.free(r)
+                case .andAssign, .orAssign, .xorAssign:
+                    let rhsOff = ensureTempSpace(size: 16)
+                    emitInt128Expr(a.value, storeAtOffset: rhsOff)
+                    let op = a.op == .andAssign ? "and" : a.op == .orAssign ? "orr" : "eor"
+                    let l = regAlloc.alloc() ?? .x9, r = regAlloc.alloc() ?? .x10
+                    for j in 0..<2 {
+                        emitLdrFP(l, curOff + j * 8); emitLdrFP(r, rhsOff + j * 8)
+                        emitLine("\(op) \(l.x), \(l.x), \(r.x)")
+                        emitStrFP(l, resOff + j * 8)
+                    }
+                    regAlloc.free(l); regAlloc.free(r)
+                case .mulAssign:
+                    // 128-bit multiply: copy cur to a named temp, then multiply by RHS
+                    let curCopy = ensureTempSpace(size: 16)
+                    let s = regAlloc.alloc() ?? .x9
+                    emitLdrFP(s, curOff); emitStrFP(s, curCopy)
+                    emitLdrFP(s, curOff + 8); emitStrFP(s, curCopy + 8)
+                    regAlloc.free(s)
+                    let rhsOff2 = ensureTempSpace(size: 16)
+                    emitInt128Expr(a.value, storeAtOffset: rhsOff2)
+                    // Multiply curCopy * rhsOff2 → resOff
+                    let lo = regAlloc.alloc() ?? .x9
+                    let hi = regAlloc.alloc() ?? .x10
+                    let t1 = regAlloc.alloc() ?? .x11
+                    emitLdrFP(lo, curCopy); emitLdrFP(hi, rhsOff2)
+                    emitLine("mul \(t1.x), \(lo.x), \(hi.x)")    // t1 = lo result
+                    emitStrFP(t1, resOff)
+                    emitLine("umulh \(t1.x), \(lo.x), \(hi.x)")  // t1 = upper(a.lo*b.lo)
+                    emitLdrFP(lo, curCopy + 8)  // lo = a.hi
+                    emitLine("madd \(t1.x), \(lo.x), \(hi.x), \(t1.x)")  // t1 += a.hi * b.lo
+                    emitLdrFP(lo, curCopy)  // lo = a.lo
+                    emitLdrFP(hi, rhsOff2 + 8)  // hi = b.hi
+                    emitLine("madd \(t1.x), \(lo.x), \(hi.x), \(t1.x)")  // t1 += a.lo * b.hi
+                    emitStrFP(t1, resOff + 8)
+                    regAlloc.free(lo); regAlloc.free(hi); regAlloc.free(t1)
+                default:
+                    let s = regAlloc.alloc() ?? .x9
+                    emitLdrFP(s, curOff); emitStrFP(s, resOff)
+                    emitLdrFP(s, curOff + 8); emitStrFP(s, resOff + 8)
+                    regAlloc.free(s)
+                }
+                // Store result back to target
+                let s = regAlloc.alloc() ?? .x9
+                emitLdrFP(s, resOff); emitLine("str \(s.x), [\(dstAddr.x)]")
+                emitLdrFP(s, resOff + 8); emitLine("str \(s.x), [\(dstAddr.x), #8]")
+                regAlloc.free(s); regAlloc.free(dstAddr)
+                return dstAddr
+            }
             // Vector compound assignment: use element-wise operations
             let targetIsVector = exprType(a.target).unqualified
             if case .vector(let elemType, let count) = targetIsVector,
@@ -6682,6 +6942,22 @@ public final class Codegen {
 
         // Simple assignment: evaluate RHS, store to target
         let targetType = exprType(a.target).unqualified
+        // __int128 assignment: copy 16 bytes using emitInt128Expr
+        if isInt128(targetType) {
+            let dstAddr = emitAddr(a.target)
+            emitLine("str \(dstAddr.x), [sp, #-16]!")
+            let rhsOff = ensureTempSpace(size: 16)
+            emitInt128Expr(a.value, storeAtOffset: rhsOff)
+            let s = regAlloc.alloc() ?? .x9
+            let d = regAlloc.alloc() ?? .x10
+            if rhsOff >= -4095 && rhsOff <= 4095 { emitLine("add \(s.x), x29, #\(rhsOff)") }
+            else { emitLoadImm("x16", Int64(rhsOff)); emitLine("add \(s.x), x29, x16") }
+            emitLine("ldr \(d.x), [sp], #16")
+            emitLine("ldr x16, [\(s.x)]"); emitLine("str x16, [\(d.x)]")
+            emitLine("ldr x16, [\(s.x), #8]"); emitLine("str x16, [\(d.x), #8]")
+            regAlloc.free(s); regAlloc.free(d)
+            return dstAddr
+        }
         if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct/union assignment: get source address and copy bytes to target
             // If the RHS is a function call returning a struct, handle it specially.
@@ -8365,6 +8641,20 @@ public final class Codegen {
                         evaluatedArgs.append(addrReg)
                     }
                     regAlloc.free(addrReg)
+                } else if isInt128(argType) || (paramType != nil && isInt128(paramType!)) {
+                    // __int128 arg: evaluate to temp, push lo and hi
+                    let tmpOff = ensureTempSpace(size: 16)
+                    emitInt128Expr(arg, storeAtOffset: tmpOff)
+                    let addrReg = regAlloc.alloc() ?? .x9
+                    if tmpOff >= -4095 && tmpOff <= 4095 { emitLine("add \(addrReg.x), x29, #\(tmpOff)") }
+                    else { emitLoadImm("x16", Int64(tmpOff)); emitLine("add \(addrReg.x), x29, x16") }
+                    emitLine("str \(addrReg.x), [sp, #-16]!")
+                    emitLine("str \(addrReg.x), [sp, #-16]!")
+                    emitLine("ldr x16, [\(addrReg.x)]"); emitLine("str x16, [sp, #16]")
+                    emitLine("ldr x16, [\(addrReg.x), #8]"); emitLine("str x16, [sp, #0]")
+                    evaluatedArgs.append(addrReg)
+                    wideArgs.insert(i)
+                    regAlloc.free(addrReg)
                 } else {
                     let argReg: ARM64Reg
                     if let savedReg = compoundLiteralAddrs[i] {
@@ -8770,6 +9060,18 @@ public final class Codegen {
                 emitLine("add \(resultReg.x), x29, x16")
             }
             return resultReg
+        }
+
+        // __int128 return: x0=lo, x1=hi. Store to temp, return address.
+        let callRetType = exprType(.call(c)).unqualified
+        if isInt128(callRetType) {
+            let tmpOff = ensureTempSpace(size: 16)
+            emitStrFP(.x0, tmpOff)
+            emitStrFP(.x1, tmpOff + 8)
+            let r = regAlloc.alloc() ?? .x9
+            if tmpOff >= -4095 && tmpOff <= 4095 { emitLine("add \(r.x), x29, #\(tmpOff)") }
+            else { emitLoadImm("x16", Int64(tmpOff)); emitLine("add \(r.x), x29, x16") }
+            return r
         }
 
         // Result is in x0 (int), s0 (float), or d0 (double)
@@ -9688,6 +9990,10 @@ public final class Codegen {
             // We need to allocate a temp on the stack, store the return value
             // there, and return the temp's address so the caller can load from it.
             let retType = exprType(.call(c)).unqualified
+            // __int128 call: emitCallExpr already stores x0/x1 to temp, returns address
+            if isInt128(retType) {
+                return emitExpr(.call(c))
+            }
             var resolvedType = retType
             if case .structType(let rec) = retType, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
                 resolvedType = .structType(completed)
@@ -11227,5 +11533,349 @@ public final class Codegen {
     private func newLabel() -> String {
         labelCounter += 1
         return "L_\(currentFuncName)_\(labelCounter)"
+    }
+
+    // MARK: - __int128 128-bit integer support
+
+    /// Check if a type is scalar __int128 / unsigned __int128.
+    private func isInt128(_ t: CType) -> Bool {
+        let u = t.unqualified
+        return u == .int128 || u == .uint128
+    }
+
+    /// Evaluate an __int128 expression to a 16-byte temp at the given frame offset.
+    private func emitInt128Expr(_ expr: Expr, storeAtOffset offset: Int) {
+        switch expr {
+        case .identifier(let id):
+            if let off = localVarOffsets[id.name] {
+                let src = regAlloc.alloc() ?? .x9
+                let dst = regAlloc.alloc() ?? .x10
+                if off >= -256 && off <= 255 { emitLine("add \(src.x), x29, #\(off)") }
+                else { emitLoadImm("x16", Int64(off)); emitLine("add \(src.x), x29, x16") }
+                if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+                else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+                emitLine("ldr x16, [\(src.x)]"); emitLine("str x16, [\(dst.x)]")
+                emitLine("ldr x16, [\(src.x), #8]"); emitLine("str x16, [\(dst.x), #8]")
+                regAlloc.free(src); regAlloc.free(dst)
+            }
+        case .integerLiteral(let n):
+            emitLoadImm("x16", n.value)
+            emitStoreFP("x16", offset)
+            let h = offset + 8
+            // Sign-extend if the literal is negative (for signed __int128)
+            if n.value < 0 {
+                emitLine("asr x16, x16, #63")
+                emitStoreFP("x16", h)
+            } else {
+                emitStoreFP("xzr", h)
+            }
+        case .binary(let b):
+            emitInt128Binary(b, storeAtOffset: offset)
+        case .cast(let c):
+            emitInt128Cast(c, storeAtOffset: offset)
+        case .call:
+            let src = emitExpr(expr)
+            let dst = regAlloc.alloc() ?? .x9
+            if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+            else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+            emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
+            emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
+            regAlloc.free(src); regAlloc.free(dst)
+        case .assign(let a):
+            let src = emitExpr(.assign(a))
+            let dst = regAlloc.alloc() ?? .x9
+            if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+            else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+            emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
+            emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
+            regAlloc.free(src); regAlloc.free(dst)
+        default:
+            // Fallback: emitExpr returns lo value. Sign-extend to 128 bits.
+            let lo = emitExpr(expr)
+            emitStoreFP(lo.x, offset)
+            let h = offset + 8
+            // Sign-extend: hi = lo < 0 ? -1 : 0
+            emitLine("asr \(lo.x), \(lo.x), #63")
+            emitStoreFP(lo.x, h)
+            regAlloc.free(lo)
+        }
+    }
+
+    /// Load from frame offset helper
+    private func emitLdrFP(_ reg: ARM64Reg, _ off: Int) {
+        if off >= -4095 && off <= 4095 { emitLine("ldr \(reg.x), [x29, #\(off)]") }
+        else { emitLoadImm("x16", Int64(off)); emitLine("ldr \(reg.x), [x29, x16]") }
+    }
+    private func emitStrFP(_ reg: ARM64Reg, _ off: Int) {
+        if off >= -256 && off <= 255 { emitLine("str \(reg.x), [x29, #\(off)]") }
+        else { emitLoadImm("x16", Int64(off)); emitLine("str \(reg.x), [x29, x16]") }
+    }
+
+    /// 128-bit binary op, result at offset (16 bytes).
+    private func emitInt128Binary(_ b: BinaryExpr, storeAtOffset offset: Int) {
+        let lOff = ensureTempSpace(size: 16)
+        emitInt128Expr(b.left, storeAtOffset: lOff)
+        let rOff = ensureTempSpace(size: 16)
+        emitInt128Expr(b.right, storeAtOffset: rOff)
+        let resType = exprType(.binary(b)).unqualified
+        let isUnsigned = resType == .uint128
+        let l = regAlloc.alloc() ?? .x9
+        let r = regAlloc.alloc() ?? .x10
+
+        switch b.op {
+        case .bitAnd, .bitOr, .bitXor:
+            let op = b.op == .bitAnd ? "and" : b.op == .bitOr ? "orr" : "eor"
+            for j in 0..<2 {
+                emitLdrFP(l, lOff + j * 8); emitLdrFP(r, rOff + j * 8)
+                emitLine("\(op) \(l.x), \(l.x), \(r.x)")
+                emitStrFP(l, offset + j * 8)
+            }
+        case .add, .sub:
+            let isAdd = b.op == .add
+            emitLdrFP(l, lOff); emitLdrFP(r, rOff)
+            emitLine("\(isAdd ? "adds" : "subs") \(l.x), \(l.x), \(r.x)")
+            emitStrFP(l, offset)
+            emitLdrFP(l, lOff + 8); emitLdrFP(r, rOff + 8)
+            emitLine("\(isAdd ? "adc" : "sbc") \(l.x), \(l.x), \(r.x)")
+            emitStrFP(l, offset + 8)
+        case .shl:
+            emitInt128ShiftLeft(leftOff: lOff, right: b.right, storeAtOffset: offset)
+        case .shr:
+            emitInt128ShiftRight(leftOff: lOff, right: b.right, storeAtOffset: offset, isUnsigned: isUnsigned)
+        case .mul:
+            // 128-bit multiply: result = a * b (unsigned; for signed, sign handling omitted)
+            // result.lo = (a.lo * b.lo) mod 2^64
+            // result.hi = umulh(a.lo, b.lo) + a.hi*b.lo + a.lo*b.hi
+            let lo = regAlloc.alloc() ?? .x11
+            let hi = regAlloc.alloc() ?? .x12
+            let t1 = regAlloc.alloc() ?? .x13
+            emitLdrFP(l, lOff); emitLdrFP(r, rOff)
+            emitLine("mul \(lo.x), \(l.x), \(r.x)")    // lo = a.lo * b.lo (lower 64)
+            emitLine("umulh \(hi.x), \(l.x), \(r.x)")  // hi = upper(a.lo * b.lo)
+            emitLdrFP(l, lOff + 8); emitLdrFP(r, rOff)  // l=a.hi, r=b.lo
+            emitLine("madd \(hi.x), \(l.x), \(r.x), \(hi.x)")  // hi += a.hi * b.lo
+            emitLdrFP(l, lOff); emitLdrFP(t1, rOff + 8)  // l=a.lo, t1=b.hi
+            emitLine("madd \(hi.x), \(l.x), \(t1.x), \(hi.x)")  // hi += a.lo * b.hi
+            emitStrFP(lo, offset)
+            emitStrFP(hi, offset + 8)
+            regAlloc.free(lo); regAlloc.free(hi); regAlloc.free(t1)
+        case .div, .mod:
+            // 128-bit division: not commonly needed. Fall back to lo-only.
+            emitLdrFP(l, lOff); emitStrFP(l, offset)
+            emitLdrFP(l, lOff + 8); emitStrFP(l, offset + 8)
+        default:
+            emitLdrFP(l, lOff); emitStrFP(l, offset)
+            emitLdrFP(l, lOff + 8); emitStrFP(l, offset + 8)
+        }
+        regAlloc.free(l); regAlloc.free(r)
+    }
+
+    private func emitInt128ShiftLeft(leftOff: Int, right: Expr, storeAtOffset offset: Int) {
+        if case .integerLiteral(let n) = right, n.value >= 0, n.value < 128 {
+            let sh = Int(n.value)
+            let l = regAlloc.alloc() ?? .x9
+            let h = regAlloc.alloc() ?? .x10
+            if sh == 0 {
+                emitLdrFP(l, leftOff); emitStrFP(l, offset)
+                emitLdrFP(l, leftOff + 8); emitStrFP(l, offset + 8)
+            } else if sh < 64 {
+                emitLdrFP(l, leftOff); emitLdrFP(h, leftOff + 8)
+                emitLine("lsr x16, \(l.x), #\(64 - sh)")
+                emitLine("lsl \(h.x), \(h.x), #\(sh)")
+                emitLine("orr \(h.x), \(h.x), x16")
+                emitLine("lsl \(l.x), \(l.x), #\(sh)")
+                emitStrFP(l, offset); emitStrFP(h, offset + 8)
+            } else {
+                emitLdrFP(l, leftOff)
+                emitLine("lsl \(h.x), \(l.x), #\(sh - 64)")
+                emitLine("mov \(l.x), xzr")
+                emitStrFP(l, offset); emitStrFP(h, offset + 8)
+            }
+            regAlloc.free(l); regAlloc.free(h)
+        } else {
+            // Runtime shift
+            let sh = emitExpr(right)
+            emitInt128ShiftLeftRuntime(leftOff: leftOff, shiftReg: sh, storeAtOffset: offset)
+            regAlloc.free(sh)
+        }
+    }
+
+    private func emitInt128ShiftLeftRuntime(leftOff: Int, shiftReg: ARM64Reg, storeAtOffset offset: Int) {
+        let l = regAlloc.alloc() ?? .x9
+        let h = regAlloc.alloc() ?? .x10
+        let t = regAlloc.alloc() ?? .x11
+        let ge64 = newLabel(), ge128 = newLabel(), done = newLabel()
+        emitLine("cmp \(shiftReg.x), #128"); emitLine("b.ge \(ge128)")
+        emitLine("cmp \(shiftReg.x), #64"); emitLine("b.ge \(ge64)")
+        emitLdrFP(l, leftOff); emitLdrFP(h, leftOff + 8)
+        emitLine("mov \(t.x), #64"); emitLine("sub \(t.x), \(t.x), \(shiftReg.x)")
+        emitLine("lsr x16, \(l.x), \(t.x)")
+        emitLine("lsl \(h.x), \(h.x), \(shiftReg.x)")
+        emitLine("orr \(h.x), \(h.x), x16")
+        emitLine("lsl \(l.x), \(l.x), \(shiftReg.x)")
+        emitLine("b \(done)")
+        emitLine("\(ge64):")
+        emitLdrFP(l, leftOff)
+        emitLine("sub \(t.x), \(shiftReg.x), #64")
+        emitLine("lsl \(h.x), \(l.x), \(t.x)")
+        emitLine("mov \(l.x), xzr")
+        emitLine("b \(done)")
+        emitLine("\(ge128):")
+        emitLine("mov \(l.x), xzr"); emitLine("mov \(h.x), xzr")
+        emitLine("\(done):")
+        emitStrFP(l, offset); emitStrFP(h, offset + 8)
+        regAlloc.free(l); regAlloc.free(h); regAlloc.free(t)
+    }
+
+    private func emitInt128ShiftRight(leftOff: Int, right: Expr, storeAtOffset offset: Int, isUnsigned: Bool) {
+        if case .integerLiteral(let n) = right, n.value >= 0, n.value < 128 {
+            let sh = Int(n.value)
+            let l = regAlloc.alloc() ?? .x9
+            let h = regAlloc.alloc() ?? .x10
+            if sh == 0 {
+                emitLdrFP(l, leftOff); emitStrFP(l, offset)
+                emitLdrFP(l, leftOff + 8); emitStrFP(l, offset + 8)
+            } else if sh < 64 {
+                emitLdrFP(l, leftOff); emitLdrFP(h, leftOff + 8)
+                emitLine("lsl x16, \(h.x), #\(64 - sh)")
+                emitLine("\(isUnsigned ? "lsr" : "asr") \(l.x), \(l.x), #\(sh)")
+                emitLine("orr \(l.x), \(l.x), x16")
+                emitLine("\(isUnsigned ? "lsr" : "asr") \(h.x), \(h.x), #\(sh)")
+                emitStrFP(l, offset); emitStrFP(h, offset + 8)
+            } else {
+                emitLdrFP(l, leftOff + 8)
+                let s2 = sh - 64
+                if s2 == 0 {
+                    if !isUnsigned { emitLine("asr \(h.x), \(l.x), #63") }
+                    else { emitLine("mov \(h.x), xzr") }
+                } else {
+                    emitLine("\(isUnsigned ? "lsr" : "asr") \(l.x), \(l.x), #\(s2)")
+                    if isUnsigned { emitLine("mov \(h.x), xzr") }
+                    else { emitLine("asr \(h.x), \(l.x), #63") }
+                }
+                if isUnsigned && s2 == 0 { emitLine("mov \(h.x), xzr") }
+                emitStrFP(l, offset); emitStrFP(h, offset + 8)
+            }
+            regAlloc.free(l); regAlloc.free(h)
+        } else {
+            let sh = emitExpr(right)
+            emitInt128ShiftRightRuntime(leftOff: leftOff, shiftReg: sh, storeAtOffset: offset, isUnsigned: isUnsigned)
+            regAlloc.free(sh)
+        }
+    }
+
+    private func emitInt128ShiftRightRuntime(leftOff: Int, shiftReg: ARM64Reg, storeAtOffset offset: Int, isUnsigned: Bool) {
+        let l = regAlloc.alloc() ?? .x9
+        let h = regAlloc.alloc() ?? .x10
+        let t = regAlloc.alloc() ?? .x11
+        let ge64 = newLabel(), ge128 = newLabel(), done = newLabel()
+        emitLine("cmp \(shiftReg.x), #128"); emitLine("b.ge \(ge128)")
+        emitLine("cmp \(shiftReg.x), #64"); emitLine("b.ge \(ge64)")
+        emitLdrFP(l, leftOff); emitLdrFP(h, leftOff + 8)
+        emitLine("mov \(t.x), #64"); emitLine("sub \(t.x), \(t.x), \(shiftReg.x)")
+        emitLine("lsl x16, \(h.x), \(t.x)")
+        emitLine("\(isUnsigned ? "lsr" : "asr") \(l.x), \(l.x), \(shiftReg.x)")
+        emitLine("orr \(l.x), \(l.x), x16")
+        emitLine("\(isUnsigned ? "lsr" : "asr") \(h.x), \(h.x), \(shiftReg.x)")
+        emitLine("b \(done)")
+        emitLine("\(ge64):")
+        emitLdrFP(h, leftOff + 8)
+        emitLine("sub \(t.x), \(shiftReg.x), #64")
+        emitLine("\(isUnsigned ? "lsr" : "asr") \(l.x), \(h.x), \(t.x)")
+        if isUnsigned { emitLine("mov \(h.x), xzr") }
+        else { emitLine("asr \(h.x), \(h.x), #63") }
+        emitLine("b \(done)")
+        emitLine("\(ge128):")
+        if isUnsigned { emitLine("mov \(l.x), xzr"); emitLine("mov \(h.x), xzr") }
+        else {
+            emitLdrFP(h, leftOff + 8)
+            emitLine("asr \(l.x), \(h.x), #63"); emitLine("asr \(h.x), \(h.x), #63")
+        }
+        emitLine("\(done):")
+        emitStrFP(l, offset); emitStrFP(h, offset + 8)
+        regAlloc.free(l); regAlloc.free(h); regAlloc.free(t)
+    }
+
+    /// Cast to __int128, storing 16 bytes at offset.
+    private func emitInt128Cast(_ c: CastExpr, storeAtOffset offset: Int) {
+        let fromType = exprType(c.expr).unqualified
+        let toType = c.type.unqualified
+        if isInt128(toType) && !isInt128(fromType) {
+            let v = emitExpr(c.expr)
+            if fromType.isSigned32Bit { emitLine("sxtw \(v.x), \(v.w)") }
+            emitStrFP(v, offset)
+            let h = offset + 8
+            if toType == .int128 && !fromType.isUnsigned {
+                emitLine("asr \(v.x), \(v.x), #63")
+            } else { emitLine("mov \(v.x), xzr") }
+            emitStrFP(v, h)
+            regAlloc.free(v)
+        } else {
+            // int128 to int128: copy
+            let src = ensureTempSpace(size: 16)
+            emitInt128Expr(c.expr, storeAtOffset: src)
+            let r = regAlloc.alloc() ?? .x9
+            emitLdrFP(r, src); emitStrFP(r, offset)
+            emitLdrFP(r, src + 8); emitStrFP(r, offset + 8)
+            regAlloc.free(r)
+        }
+    }
+
+    /// 128-bit comparison, returns a scalar bool in a register.
+    private func emitInt128Compare(_ b: BinaryExpr) -> ARM64Reg {
+        let lOff = ensureTempSpace(size: 16)
+        emitInt128Expr(b.left, storeAtOffset: lOff)
+        let rOff = ensureTempSpace(size: 16)
+        emitInt128Expr(b.right, storeAtOffset: rOff)
+        let l = regAlloc.alloc() ?? .x9
+        let r = regAlloc.alloc() ?? .x10
+        let res = regAlloc.alloc() ?? .x11
+        let isUnsigned = exprType(b.left).unqualified == .uint128 || exprType(b.right).unqualified == .uint128
+
+        // Compare hi first
+        emitLdrFP(l, lOff + 8); emitLdrFP(r, rOff + 8)
+        switch b.op {
+        case .eq:
+            let ne = newLabel(), end = newLabel()
+            emitLine("cmp \(l.x), \(r.x)"); emitLine("b.ne \(ne)")
+            emitLdrFP(l, lOff); emitLdrFP(r, rOff)
+            emitLine("cmp \(l.x), \(r.x)"); emitLine("cset \(res.x), eq")
+            emitLine("b \(end)")
+            emitLine("\(ne):"); emitLine("mov \(res.x), #0")
+            emitLine("\(end):")
+        case .ne:
+            let ne = newLabel(), end = newLabel()
+            emitLine("cmp \(l.x), \(r.x)"); emitLine("b.ne \(ne)")
+            emitLdrFP(l, lOff); emitLdrFP(r, rOff)
+            emitLine("cmp \(l.x), \(r.x)"); emitLine("cset \(res.x), ne")
+            emitLine("b \(end)")
+            emitLine("\(ne):"); emitLine("mov \(res.x), #1")
+            emitLine("\(end):")
+        case .lt, .le, .gt, .ge:
+            let ltLab = newLabel(), gtLab = newLabel(), endLab = newLabel()
+            emitLine("cmp \(l.x), \(r.x)")
+            if isUnsigned { emitLine("b.lo \(ltLab)"); emitLine("b.hi \(gtLab)") }
+            else { emitLine("b.lt \(ltLab)"); emitLine("b.gt \(gtLab)") }
+            // hi equal: compare lo (unsigned)
+            emitLdrFP(l, lOff); emitLdrFP(r, rOff)
+            emitLine("cmp \(l.x), \(r.x)")
+            switch b.op {
+            case .lt: emitLine("cset \(res.x), lo")
+            case .le: emitLine("cset \(res.x), ls")
+            case .gt: emitLine("cset \(res.x), hi")
+            case .ge: emitLine("cset \(res.x), hs")
+            default: break
+            }
+            emitLine("b \(endLab)")
+            emitLine("\(ltLab):")
+            emitLine("mov \(res.x), \(b.op == .lt || b.op == .le ? "#1" : "#0")")
+            emitLine("b \(endLab)")
+            emitLine("\(gtLab):")
+            emitLine("mov \(res.x), \(b.op == .gt || b.op == .ge ? "#1" : "#0")")
+            emitLine("\(endLab):")
+        default: break
+        }
+        regAlloc.free(l); regAlloc.free(r)
+        return res
     }
 }

@@ -46,6 +46,7 @@ public final class Preprocessor {
         "__SIZEOF_POINTER__": "8",
         "__SIZEOF_SIZE_T__": "8",
         "__SIZEOF_LONG_DOUBLE__": "8",
+        "__SIZEOF_INT128__": "16",
         "__ORDER_LITTLE_ENDIAN__": "1234",
         "__ORDER_BIG_ENDIAN__": "4321",
         "__BYTE_ORDER__": "__ORDER_LITTLE_ENDIAN__",
