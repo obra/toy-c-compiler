@@ -306,6 +306,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 10: Compare-to-branch folding (cmp #0 + b.eq/ne → cbz/cbnz)
+        let (cmpResult, cmpChanged) = cmpToBranchFolding(result)
+        if cmpChanged {
+            result = cmpResult
+            changed = true
+        }
+
         iterations += 1
     }
 
