@@ -11766,8 +11766,8 @@ public final class Codegen {
             emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
             emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
             regAlloc.free(src); regAlloc.free(dst)
-        case .subscript_, .member:
-            // Subscript/member returning __int128: emitExpr returns address
+        case .subscript_, .member, .unary:
+            // These return an address for __int128 — copy 16 bytes
             let src = emitExpr(expr)
             let dst = regAlloc.alloc() ?? .x9
             if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
