@@ -3212,10 +3212,13 @@ public final class Codegen {
             } else if functionNames.contains(id.name) {
                 // Function name used as a value (e.g., assigned to a function pointer).
                 let reg = regAlloc.alloc() ?? .x9
-                if definedFunctions.contains(id.name) {
+                // Use mangled name for nested functions
+                let callKey = "\(currentFuncName)__\(id.name)"
+                let symName = nestedNameMap[callKey] ?? nestedNameMap[id.name] ?? id.name
+                if definedFunctions.contains(id.name) || nestedFunctions.contains(symName) {
                     // Locally defined — direct address
-                    emitLine("adrp \(reg.x), _\(id.name)@PAGE")
-                    emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
+                    emitLine("adrp \(reg.x), _\(symName)@PAGE")
+                    emitLine("add \(reg.x), \(reg.x), _\(symName)@PAGEOFF")
                 } else {
                     // External function — load address through GOT
                     emitLine("adrp \(reg.x), _\(id.name)@GOTPAGE")
@@ -8358,8 +8361,11 @@ public final class Codegen {
                 }
             } else if functionNames.contains(id.name) {
                 // Function name — take its address
-                emitLine("adrp \(reg.x), _\(id.name)@PAGE")
-                emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
+                // Use mangled name for nested functions
+                let callKey = "\(currentFuncName)__\(id.name)"
+                let symName = nestedNameMap[callKey] ?? nestedNameMap[id.name] ?? id.name
+                emitLine("adrp \(reg.x), _\(symName)@PAGE")
+                emitLine("add \(reg.x), \(reg.x), _\(symName)@PAGEOFF")
             }
             return reg
 
