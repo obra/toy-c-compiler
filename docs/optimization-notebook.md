@@ -87,7 +87,22 @@
   → compile error. Fixed by using the Int directly.
 - Analysis: 10,025 foldable patterns in SQLite
 
-### 8. Zero store elimination (commit 33503cc)
+### 8. Zero store elimination (commit 33503cc, fix 93136a7)
 - Replaces mov reg,#0 + str reg,[addr] with str wzr,[addr]
-- 4,108 patterns found in SQLite
+- What went bad: first version only looked at adjacent instructions. Many
+  patterns have sxtw between mov #0 and str (mov #0 + sxtw of zero + str).
+  Fixed by looking through sxtw.
+- What went bad: didn't handle storePre (str [sp,#-16]!) pattern. Added.
+- 4,108 patterns found (after sxtw fix)
+
+### 9. Compare-to-branch folding (commit bf0f16c)
+- Replaces cmp reg,#0 + b.eq/ne label with cbz/cbnz reg, label
+- Eliminates the cmp instruction
+- 689 patterns found in SQLite
 - No issues encountered
+
+## Summary (as of commit bf0f16c)
+- Original: 562,433 instructions
+- After opt 1-7: 536,862 (4.0% reduction)
+- After opt 8-9: pending benchmark (zero store + cmp-to-branch)
+- All 164 tests pass
