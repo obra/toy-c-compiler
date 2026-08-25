@@ -5447,33 +5447,21 @@ public final class Codegen {
                     emitLine("eor \(leftReg.x), \(leftReg.x), \(rightReg.x)")
                 }
             case .eq:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), eq")
             case .ne:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), ne")
             case .lt:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -5491,22 +5479,14 @@ public final class Codegen {
                 }
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "ls" : "le")")
             case .gt:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
                 }
                 emitLine("cset \(leftReg.x), \(isUnsignedCmp ? "hi" : "gt")")
             case .ge:
-                if is32BitSigned {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
-                    emitLine("sxtw \(rightReg.x), \(rightReg.w)")
-                    emitLine("cmp \(leftReg.x), \(rightReg.x)")
-                } else if is32BitOperand {
+                if is32BitOperand {
                     emitLine("cmp \(leftReg.w), \(rightReg.w)")
                 } else {
                     emitLine("cmp \(leftReg.x), \(rightReg.x)")
@@ -10639,9 +10619,6 @@ public final class Codegen {
                 }
             case .int, .uint:
                 emitLine("ldr \(reg.w), [x29, #\(offset)]")
-                if t == .int {
-                    emitLine("sxtw \(reg.x), \(reg.w)")
-                }
             case .float:
                 emitLine("ldr s\(reg.regNum), [x29, #\(offset)]")
             case .double, .longDouble:
@@ -10665,9 +10642,6 @@ public final class Codegen {
                 }
             case .int, .uint:
                 emitLine("ldr \(reg.w), [x29, x16]")
-                if t == .int {
-                    emitLine("sxtw \(reg.x), \(reg.w)")
-                }
             case .float:
                 emitLine("ldr s\(reg.regNum), [x29, x16]")
             case .double, .longDouble:
@@ -10693,13 +10667,8 @@ public final class Codegen {
             }
         case .int, .uint:
             emitLine("ldr \(reg.w), [\(reg.x)]")
-            if t == .int {
-                // Sign-extend 32-bit signed int to 64 bits so that subsequent
-                // 64-bit arithmetic (mul, add, sub) produces correct results.
-                // Without this, negative int values like -315 are zero-extended
-                // to 4294966981 instead of sign-extended to -315.
-                emitLine("sxtw \(reg.x), \(reg.w)")
-            }
+            // No sxtw needed — 32-bit arithmetic uses w registers,
+            // and sxtw is added only where 64-bit context requires it.
         case .float:
             emitLine("ldr s\(reg.regNum), [\(reg.x)]")
         case .double, .longDouble:
