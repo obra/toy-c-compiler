@@ -11557,6 +11557,14 @@ public final class Codegen {
                 emitLine("ldr x16, [\(src.x)]"); emitLine("str x16, [\(dst.x)]")
                 emitLine("ldr x16, [\(src.x), #8]"); emitLine("str x16, [\(dst.x), #8]")
                 regAlloc.free(src); regAlloc.free(dst)
+            } else {
+                // Global variable or parameter not in locals: use emitExpr (returns lo value)
+                let lo = emitExpr(expr)
+                emitStoreFP(lo.x, offset)
+                let h = offset + 8
+                emitLine("asr \(lo.x), \(lo.x), #63")
+                emitStoreFP(lo.x, h)
+                regAlloc.free(lo)
             }
         case .integerLiteral(let n):
             emitLoadImm("x16", n.value)
