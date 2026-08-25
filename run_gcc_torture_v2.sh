@@ -43,7 +43,7 @@ should_skip() {
             if [ ! -f "$resolved" ]; then
                 # The included file doesn't exist. Check if the test can still compile
                 # by trying a quick compile. If it fails, skip it.
-                timeout 10 $CDRIVER "$f" -o /dev/null $INCLUDE 2>/dev/null
+                timeout 5 $CDRIVER "$f" -o /dev/null $INCLUDE 2>/dev/null
                 if [ $? -ne 0 ]; then
                     return 0  # Can't compile — skip
                 fi
