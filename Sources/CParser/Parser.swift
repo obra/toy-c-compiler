@@ -1496,6 +1496,29 @@ public final class Parser {
                     }
                 }
                 return (suffixName, resultType, suffixLoc)
+            } else if isPunct("(") {
+                // Nested parenthesized declarator: ((*name)()) or ((name))
+                let (innerName, innerType, innerLoc) = try parseDeclarator(type)
+                _ = try consume(kind: .punct, spelling: ")")
+                var resultType = innerType
+                let savedName = innerName
+                let savedLoc = innerLoc
+                while isPunct("[") || isPunct("(") {
+                    if isPunct("[") {
+                        var dims: [Int?] = []
+                        while isPunct("[") {
+                            dims.append(try parseArrayDimension().count)
+                        }
+                        for d in dims.reversed() {
+                            if let c = d { resultType = .array(of: resultType, count: c) }
+                            else { resultType = .incompleteArray(of: resultType) }
+                        }
+                    } else if isPunct("(") {
+                        let (params, variadic, retType) = try parseFunctionParams(resultType)
+                        resultType = .function(params: params.map { $0.type }, returnType: retType, variadic: variadic)
+                    }
+                }
+                return (savedName, resultType, savedLoc)
             } else {
                 // Not a function pointer — restore and parse as normal declarator
                 pos = savePos
