@@ -5544,6 +5544,47 @@ public final class Codegen {
         // Stack: sp+0=result, sp+16=right, sp+32=left
         for i in 0..<count {
             let offset = i * elemSize
+            // Special case: __int128 elements (16 bytes) — compare both halves
+            if elemSize == 16 && (b.op == .ne || b.op == .eq) {
+                // Load left lo and hi
+                emitLine("ldr x9, [sp, #32]")  // left addr
+                emitLine("ldr x16, [x9, #\(offset)]")      // left lo
+                emitLine("ldr x17, [x9, #\(offset + 8)]")  // left hi
+                emitLine("str x16, [sp, #-16]!")  // push left lo
+                emitLine("str x17, [sp, #-16]!")  // push left hi
+                // Load right lo and hi
+                emitLine("ldr x9, [sp, #48]")  // right addr (sp shifted by 32 from 2 pushes)
+                emitLine("ldr x16, [x9, #\(offset)]")      // right lo
+                emitLine("ldr x17, [x9, #\(offset + 8)]")  // right hi
+                // Load left from stack
+                emitLine("ldr x10, [sp, #0]")   // left hi
+                emitLine("ldr x11, [sp, #16]")  // left lo
+                if b.op == .ne {
+                    // ne: mask = (left_lo != right_lo || left_hi != right_hi) ? all 1s : 0
+                    emitLine("cmp x11, x16")
+                    emitLine("cset x12, ne")
+                    emitLine("cmp x10, x17")
+                    emitLine("cset x13, ne")
+                    emitLine("orr x12, x12, x13")
+                    emitLine("cmp x12, #0")
+                    emitLine("csetm x12, ne")  // all 1s if true, 0 if false
+                } else {
+                    // eq: mask = (left_lo == right_lo && left_hi == right_hi) ? all 1s : 0
+                    emitLine("cmp x11, x16")
+                    emitLine("cset x12, eq")
+                    emitLine("cmp x10, x17")
+                    emitLine("cset x13, eq")
+                    emitLine("and x12, x12, x13")
+                    emitLine("cmp x12, #0")
+                    emitLine("csetm x12, ne")
+                }
+                // Store 16-byte mask: lo and hi both = mask
+                emitLine("ldr x9, [sp, #32]")  // result addr
+                emitLine("str x12, [x9, #\(offset)]")
+                emitLine("str x12, [x9, #\(offset + 8)]")
+                emitLine("add sp, sp, #32")  // pop 2 pushes
+                continue
+            }
             // Load left[i]: left addr at [sp+32]
             emitLine("ldr x9, [sp, #32]")
             if offset > 0 { emitLine("\(loadInstr) \(ldStReg), [x9, #\(offset)]") }
@@ -5696,6 +5737,38 @@ public final class Codegen {
 
         for i in 0..<count {
             let offset = i * elemSize
+            // Special case: __int128 elements (16 bytes) — compare both halves
+            if elemSize == 16 && (b.op == .ne || b.op == .eq) {
+                // Load vector element lo and hi
+                emitLine("ldr x9, [sp, #16]")  // vec addr
+                emitLine("ldr x16, [x9, #\(offset)]")      // vec lo
+                emitLine("ldr x17, [x9, #\(offset + 8)]")  // vec hi
+                // Load scalar (0) — it's 8 bytes at sp+32
+                emitLine("ldr x10, [sp, #32]")  // scalar
+                // For != 0: if either lo or hi is non-zero, mask = all 1s
+                if b.op == .ne {
+                    emitLine("cmp x16, x10")
+                    emitLine("cset x9, ne")
+                    emitLine("cmp x17, x10")
+                    emitLine("cset x10, ne")
+                    emitLine("orr x9, x9, x10")
+                    emitLine("cmp x9, #0")
+                    emitLine("csetm x9, ne")
+                } else {
+                    emitLine("cmp x16, x10")
+                    emitLine("cset x9, eq")
+                    emitLine("cmp x17, x10")
+                    emitLine("cset x10, eq")
+                    emitLine("and x9, x9, x10")
+                    emitLine("cmp x9, #0")
+                    emitLine("csetm x9, ne")
+                }
+                // Store 16-byte mask
+                emitLine("ldr x10, [sp, #0]")  // result addr
+                emitLine("str x9, [x10, #\(offset)]")
+                emitLine("str x9, [x10, #\(offset + 8)]")
+                continue
+            }
             // Load vector element via saved pointer at [sp+16]
             emitLine("ldr x9, [sp, #16]")
             if offset > 0 { emitLine("\(loadInstr) \(ldReg), [x9, #\(offset)]") }
@@ -11687,6 +11760,15 @@ public final class Codegen {
             }
         case .assign(let a):
             let src = emitExpr(.assign(a))
+            let dst = regAlloc.alloc() ?? .x9
+            if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+            else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+            emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
+            emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
+            regAlloc.free(src); regAlloc.free(dst)
+        case .subscript_, .member:
+            // Subscript/member returning __int128: emitExpr returns address
+            let src = emitExpr(expr)
             let dst = regAlloc.alloc() ?? .x9
             if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
             else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
