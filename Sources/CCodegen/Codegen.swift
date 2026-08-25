@@ -5716,9 +5716,13 @@ public final class Codegen {
             if case .array = pointedType.unqualified {
                 return addrReg
             }
-            // For structs, we can't load into a single register.
-            // Return the address — the caller (e.g., struct init) will use emitAddr/emitStructCopy.
+            // For structs and vectors (>8 bytes), we can't load into a single register.
+            // Return the address — the caller (e.g., struct init, vector assign) will
+            // copy from it.
             if case .structType = pointedType.unqualified, (pointedType.sizeInBytes ?? 0) > 0 {
+                return addrReg
+            }
+            if case .vector = pointedType.unqualified, (pointedType.sizeInBytes ?? 0) > 8 {
                 return addrReg
             }
             emitLoad(addrReg, type: pointedType)
