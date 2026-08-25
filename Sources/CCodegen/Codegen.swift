@@ -2676,6 +2676,9 @@ public final class Codegen {
                                         continue
                                     }
                                     reg = emitExpr(init_)
+                                    // Optimization: if the initializer is integer literal 0,
+                                    // we can use str wzr/xzr instead of mov+str. But emitExpr
+                                    // already emitted the mov, so this is handled by the peephole.
                                     if initType.isFloating && varType.isFloating {
                                         convertFloat(reg, from: initType, to: vd.type)
                                     } else if initType.isInteger && varType.isFloating {
@@ -10925,6 +10928,52 @@ public final class Codegen {
                 if prevLine == line {
                     eliminated += 1
                     continue
+                }
+            }
+            // Pattern 5: mov xN, #0 followed by str wN/xN, [x29, #M]
+            // → str wzr/xzr, [x29, #M] (save 1 instruction)
+            if line.hasPrefix("str ") && line.contains("[x29") {
+                // Parse: "str w9, [x29, #-16]" or "str x9, [x29, #-16]"
+                let parts = line.split(separator: ",", maxSplits: 1)
+                if parts.count >= 2 {
+                    let storeRegFull = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces) // "str " → drop 4
+                    // Extract register number (e.g., "w9" → 9, "x10" → 10)
+                    let regNum = storeRegFull.dropFirst(1) // drop 'w' or 'x'
+                    if writeIdx > 0 {
+                        let prevLine = output[writeIdx - 1]
+                        // Check if prev is "mov xN, #0" where N matches the store reg
+                        if prevLine == "mov x\(regNum), #0" {
+                            let isW = storeRegFull.hasPrefix("w")
+                            let zr = isW ? "wzr" : "xzr"
+                            let rest = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                            // Remove the mov instruction
+                            writeIdx -= 1
+                            output[writeIdx] = "str \(zr), \(rest)"
+                            writeIdx += 1
+                            eliminated += 1
+                            continue
+                        }
+                    }
+                }
+            }
+            // Pattern 6: mov xN, #0 followed by ldr xN/wN, [...] — dead code (mov is overwritten)
+            if line.hasPrefix("ldr ") {
+                // Parse: "ldr x9, [...]" or "ldr w9, [...]"
+                let parts = line.split(separator: ",", maxSplits: 1)
+                if parts.count >= 2 {
+                    let loadRegFull = String(parts[0].dropFirst(4)).trimmingCharacters(in: .whitespaces) // "ldr " → drop 4
+                    let regNum = loadRegFull.dropFirst(1) // drop 'w' or 'x'
+                    if writeIdx > 0 {
+                        let prevLine = output[writeIdx - 1]
+                        if prevLine == "mov x\(regNum), #0" {
+                            // The mov is dead — remove it
+                            writeIdx -= 1
+                            output[writeIdx] = line
+                            writeIdx += 1
+                            eliminated += 1
+                            continue
+                        }
+                    }
                 }
             }
             output[writeIdx] = line
