@@ -9314,8 +9314,10 @@ public final class Codegen {
                         }
                         stackArgIdx += largeChunks
                     } else {
-                        emitLoadSP("x9", tempOffset)
-                        emitLine("mov \(argRegs[regIdx].x), x9")
+                        // Load directly into the argument register, skipping the
+                        // intermediate x9 and mov. This saves one instruction per
+                        // scalar register argument.
+                        emitLoadSP("\(argRegs[regIdx].x)", tempOffset)
                     }
                     regAlloc.free(evaluatedArgs[i])
                 } else {
