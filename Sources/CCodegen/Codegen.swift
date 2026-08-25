@@ -2147,6 +2147,15 @@ public final class Codegen {
     }
 
     /// Check if an expression contains a compound literal (allocates stack dynamically).
+    /// Check if an expression is a __builtin_va_arg call.
+    private func isBuiltinVaArg(_ expr: Expr) -> Bool {
+        if case .call(let c) = expr, case .identifier(let id) = c.function,
+           id.name == "__builtin_va_arg" {
+            return true
+        }
+        return false
+    }
+
     private func exprHasCompoundLiteral(_ expr: Expr) -> Bool {
         switch expr {
         case .compoundLiteral:
@@ -2366,7 +2375,8 @@ public final class Codegen {
                                     emitLocalInit(addrReg, init_, type: vd.type)
                                 }
                                 regAlloc.free(addrReg)
-                            } else if case .call = init_, case .structType = vd.type.unqualified {
+                            } else if case .call = init_, case .structType = vd.type.unqualified,
+                                      !isBuiltinVaArg(init_) {
                                 // Function call returning a struct: read return registers
                                 // and store to the local variable's address.
                                 var resolvedType = vd.type
@@ -6615,7 +6625,7 @@ public final class Codegen {
         if isAggregateType(targetType), let size = targetType.sizeInBytes, size > 0 {
             // Struct/union assignment: get source address and copy bytes to target
             // If the RHS is a function call returning a struct, handle it specially.
-            if case .call = a.value {
+            if case .call = a.value, !isBuiltinVaArg(a.value) {
                 let dstReg = emitAddr(a.target)
                 if let hfaInfo = isHFA(targetType) {
                     // HFA struct: returned in d0-d3 (or s0-s3)
@@ -9578,6 +9588,11 @@ public final class Codegen {
             return baseAddr
 
         case .call(let c):
+            // __builtin_va_arg returns the address directly — don't use the
+            // struct-return temp path.
+            if case .identifier(let id) = c.function, id.name == "__builtin_va_arg" {
+                return emitExpr(.call(c))
+            }
             // Call returning a struct: the result is in x0/x1 (or s0-d3 for HFA).
             // We need to allocate a temp on the stack, store the return value
             // there, and return the temp's address so the caller can load from it.
