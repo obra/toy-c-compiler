@@ -21,6 +21,8 @@ TOTAL_TESTS=0
 # Skip patterns:
 # - dg-skip-if with x86-only target ({ i?86-*-* x86_64-*-* })
 # - dg-require-effective-target with unsupported features (dfp, dfprt)
+# Note: Tests with missing gcc.dg/ includes are NOT skipped here — some have
+# fallback behavior and compile fine. They'll be COMPILE_FAIL if they can't compile.
 should_skip() {
     local f="$1"
     # Check for x86-only dg-skip-if
@@ -30,17 +32,6 @@ should_skip() {
     # Check for DFP (decimal floating point) requirement
     if grep -q 'dg-require-effective-target dfp' "$f" 2>/dev/null; then
         return 0
-    fi
-    # Check for dg-require-effective-target that references missing source files
-    if grep -q '#include.*gcc.dg/' "$f" 2>/dev/null; then
-        # Check if the included file exists
-        local incfile=$(grep -o '#include.*gcc.dg/[^"]*' "$f" | head -1 | sed 's/#include "//' | sed 's|"$||')
-        if [ -n "$incfile" ]; then
-            local resolved="$TESTDIR/../../$(echo $incfile | sed 's|gcc.dg/|gcc.dg/|')"
-            if [ ! -f "$resolved" ]; then
-                return 0
-            fi
-        fi
     fi
     return 1
 }
