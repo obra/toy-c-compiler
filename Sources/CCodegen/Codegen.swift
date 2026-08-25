@@ -1066,6 +1066,14 @@ public final class Codegen {
                 }
             } else if let val = evalConstExpr(expr) {
                 emitInitializer(.integerLiteral(IntegerLiteral(value: val, type: type ?? .int, loc: SourceLoc.unknown)), size: size, type: type)
+            } else if let dbl = evalConstFloatExpr(expr) {
+                if let type = type, type.unqualified == .float {
+                    let bits = Float(dbl).bitPattern
+                    emitLine(".long \(bits)")
+                } else {
+                    let bits = dbl.bitPattern
+                    emitLine(".quad \(bits)")
+                }
             } else {
                 emitLine(".zero \(size)")
             }
