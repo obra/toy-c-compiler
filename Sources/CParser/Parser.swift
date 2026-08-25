@@ -725,6 +725,18 @@ public final class Parser {
             skipAsmAndAttributes()
             // Apply vector_size attribute from trailing __attribute__((vector_size(N)))
             var finalType = type
+            // Apply mode attribute from trailing __attribute__((mode(...)))
+            if let mt = pendingModeType {
+                let isUnsigned = type.unqualified.isUnsigned
+                switch mt {
+                case .uchar: finalType = isUnsigned ? .uchar : .schar
+                case .ushort: finalType = isUnsigned ? .ushort : .short
+                case .uint: finalType = isUnsigned ? .uint : .int
+                case .ulongLong: finalType = isUnsigned ? .ulongLong : .longLong
+                default: finalType = mt
+                }
+                pendingModeType = nil
+            }
             if let vs = pendingVectorSize {
                 let elemSize = type.sizeInBytes ?? 4
                 let count = vs / elemSize
@@ -922,9 +934,24 @@ public final class Parser {
             baseType = buildTypeFromSpecifiers(typeSpecifiers)
         }
 
-        // Apply mode attribute: override the integer type size
+        // Apply mode attribute: override the integer type size, preserving signedness
         if let mt = pendingModeType {
-            baseType = mt
+            // Check if the original type was signed or unsigned
+            let isUnsigned = typeSpecifiers.contains("unsigned")
+            let isExplicitSigned = typeSpecifiers.contains("signed")
+            // Apply signedness to the mode type
+            switch mt {
+            case .uchar:
+                baseType = (isUnsigned || !isExplicitSigned) ? .uchar : .schar
+            case .ushort:
+                baseType = (isUnsigned || !isExplicitSigned) ? .ushort : .short
+            case .uint:
+                baseType = (isUnsigned || !isExplicitSigned) ? .uint : .int
+            case .ulongLong:
+                baseType = (isUnsigned || !isExplicitSigned) ? .ulongLong : .longLong
+            default:
+                baseType = mt
+            }
             pendingModeType = nil
         }
 
@@ -2064,7 +2091,15 @@ public final class Parser {
             var actualType = type
             // Apply mode attribute from trailing __attribute__((mode(...)))
             if let mt = pendingModeType {
-                actualType = mt
+                // Preserve signedness from the base type
+                let isUnsigned = type.unqualified.isUnsigned
+                switch mt {
+                case .uchar: actualType = isUnsigned ? .uchar : .schar
+                case .ushort: actualType = isUnsigned ? .ushort : .short
+                case .uint: actualType = isUnsigned ? .uint : .int
+                case .ulongLong: actualType = isUnsigned ? .ulongLong : .longLong
+                default: actualType = mt
+                }
                 pendingModeType = nil
             }
             if match(kind: .punct, spelling: "=") {
