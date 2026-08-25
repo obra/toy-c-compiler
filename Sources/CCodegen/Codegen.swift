@@ -10420,9 +10420,9 @@ public final class Codegen {
         if offset >= -256 && offset <= 255 {
             emitLine("str \(reg), [x29, #\(offset)]")
         } else {
-            // Use x16 as scratch for the offset
-            emitLoadImm("x16", Int64(offset))
-            emitLine("str \(reg), [x29, x16]")
+            // Use x17 as scratch for the offset (x16 may hold the value being stored)
+            emitLoadImm("x17", Int64(offset))
+            emitLine("str \(reg), [x29, x17]")
         }
     }
 
@@ -11603,12 +11603,12 @@ public final class Codegen {
 
     /// Load from frame offset helper
     private func emitLdrFP(_ reg: ARM64Reg, _ off: Int) {
-        if off >= -4095 && off <= 4095 { emitLine("ldr \(reg.x), [x29, #\(off)]") }
-        else { emitLoadImm("x16", Int64(off)); emitLine("ldr \(reg.x), [x29, x16]") }
+        if off >= -256 && off <= 255 { emitLine("ldr \(reg.x), [x29, #\(off)]") }
+        else { emitLoadImm("x17", Int64(off)); emitLine("ldr \(reg.x), [x29, x17]") }
     }
     private func emitStrFP(_ reg: ARM64Reg, _ off: Int) {
         if off >= -256 && off <= 255 { emitLine("str \(reg.x), [x29, #\(off)]") }
-        else { emitLoadImm("x16", Int64(off)); emitLine("str \(reg.x), [x29, x16]") }
+        else { emitLoadImm("x17", Int64(off)); emitLine("str \(reg.x), [x29, x17]") }
     }
 
     /// 128-bit binary op, result at offset (16 bytes).
