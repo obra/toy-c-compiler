@@ -5953,8 +5953,96 @@ public final class Codegen {
                     regAlloc.free(dstAddr)
                     return .x9
                 }
-                // Scalar op Vector compound assignment
-                // Fall through to generic handling for now
+                // Scalar op Vector compound assignment: broadcast scalar to all elements
+                let elemSize = elemType.sizeInBytes ?? 4
+                let isFP = elemType.isFloating
+                let fpPrefix = elemType == .float ? "s" : "d"
+                let ldInstr: String, stInstr: String
+                if isFP {
+                    ldInstr = "ldr"; stInstr = "str"
+                } else if elemSize <= 1 {
+                    ldInstr = elemType.isSigned ? "ldrsb" : "ldrb"; stInstr = "strb"
+                } else if elemSize <= 2 {
+                    ldInstr = elemType.isSigned ? "ldrsh" : "ldrh"; stInstr = "strh"
+                } else if elemSize <= 4 {
+                    ldInstr = "ldr"; stInstr = "str"
+                } else {
+                    ldInstr = "ldr"; stInstr = "str"
+                }
+                let ldReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                let ldReg17 = isFP ? (elemSize == 4 ? "s17" : "d17") : (elemSize <= 4 ? "w17" : "x17")
+                // Evaluate scalar RHS
+                let scalarReg = emitExpr(a.value)
+                // Convert scalar to element type if needed
+                if isFP && !exprType(a.value).unqualified.isFloating {
+                    let cvtf = exprType(a.value).unqualified.isUnsigned ? "ucvtf" : "scvtf"
+                    if elemSize == 4 { emitLine("\(cvtf) s\(scalarReg.regNum), \(scalarReg.x)") }
+                    else { emitLine("\(cvtf) d\(scalarReg.regNum), \(scalarReg.x)") }
+                } else if !isFP && exprType(a.value).unqualified.isFloating {
+                    let srcFp = exprType(a.value).unqualified == .float ? "s" : "d"
+                    let cvt = elemType.isUnsigned ? "fcvtzu" : "fcvtzs"
+                    if elemSize <= 4 { emitLine("\(cvt) \(scalarReg.w), \(srcFp)\(scalarReg.regNum)") }
+                    else { emitLine("\(cvt) \(scalarReg.x), \(srcFp)\(scalarReg.regNum)") }
+                }
+                // Save scalar to temp on stack
+                emitLine("str \(scalarReg.x), [sp, #-16]!")
+                regAlloc.free(scalarReg)
+                // Get dst address
+                let dstAddr = emitAddr(a.target)
+                emitLine("str \(dstAddr.x), [sp, #-16]!")
+                // Stack: sp+0=dst, sp+16=scalar
+                for i in 0..<count {
+                    let off = i * elemSize
+                    // Load target[i]
+                    emitLine("ldr x9, [sp, #0]")  // dst addr
+                    emitLine("\(ldInstr) \(ldReg), [x9, #\(off)]")
+                    // Load scalar (broadcast)
+                    emitLine("ldr x9, [sp, #16]")  // scalar addr
+                    if isFP {
+                        emitLine(elemSize == 4 ? "ldr s17, [x9]" : "ldr d17, [x9]")
+                    } else if elemSize <= 4 {
+                        emitLine("ldr w17, [x9]")
+                    } else {
+                        emitLine("ldr x17, [x9]")
+                    }
+                    // Apply op
+                    let arithReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                    let aReg = isFP ? (elemSize == 4 ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+                    let bReg = isFP ? (elemSize == 4 ? "s17" : "d17") : (elemSize <= 4 ? "w17" : "x17")
+                    switch a.op {
+                    case .addAssign:
+                        if isFP { emitLine("fadd \(arithReg), \(aReg), \(bReg)") }
+                        else { emitLine("add \(arithReg), \(aReg), \(bReg)") }
+                    case .subAssign:
+                        if isFP { emitLine("fsub \(arithReg), \(aReg), \(bReg)") }
+                        else { emitLine("sub \(arithReg), \(aReg), \(bReg)") }
+                    case .mulAssign:
+                        if isFP { emitLine("fmul \(arithReg), \(aReg), \(bReg)") }
+                        else { emitLine("mul \(arithReg), \(aReg), \(bReg)") }
+                    case .divAssign:
+                        if isFP { emitLine("fdiv \(arithReg), \(aReg), \(bReg)") }
+                        else if elemType.isSigned { emitLine("sdiv \(arithReg), \(aReg), \(bReg)") }
+                        else { emitLine("udiv \(arithReg), \(aReg), \(bReg)") }
+                    case .modAssign:
+                        let divReg = elemSize <= 4 ? "w9" : "x9"
+                        if elemType.isSigned { emitLine("sdiv \(divReg), \(aReg), \(bReg)"); emitLine("msub \(arithReg), \(divReg), \(bReg), \(aReg)") }
+                        else { emitLine("udiv \(divReg), \(aReg), \(bReg)"); emitLine("msub \(arithReg), \(divReg), \(bReg), \(aReg)") }
+                    case .andAssign: emitLine("and \(arithReg), \(aReg), \(bReg)")
+                    case .orAssign: emitLine("orr \(arithReg), \(aReg), \(bReg)")
+                    case .xorAssign: emitLine("eor \(arithReg), \(aReg), \(bReg)")
+                    case .shlAssign: emitLine("lsl \(arithReg), \(aReg), \(bReg)")
+                    case .shrAssign:
+                        if elemType.isSigned { emitLine("asr \(arithReg), \(aReg), \(bReg)") }
+                        else { emitLine("lsr \(arithReg), \(aReg), \(bReg)") }
+                    default: emitLine("add \(arithReg), \(aReg), \(bReg)")
+                    }
+                    // Store result[i]
+                    emitLine("ldr x9, [sp, #0]")  // dst addr
+                    emitLine("\(stInstr) \(ldReg), [x9, #\(off)]")
+                }
+                emitLine("add sp, sp, #32")  // pop 2 saved slots
+                regAlloc.free(dstAddr)
+                return .x9
             }
             // Bitfield compound assignment: read the bitfield value (masked),
             // apply the operation, then write back via the bitfield read-modify-write
