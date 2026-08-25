@@ -33,6 +33,7 @@ public final class Codegen {
     private var functionParamTypes: [String: [CType]] = [:]  // function name → param types
     private var functionParamVLAExprs: [String: [[Expr]]] = [:]  // function name → VLA dim exprs per param
     private var typedefVLASizeExprs: [String: [Expr]] = [:]  // VLA typedef name → size expressions (outer first)
+    private var recordFieldVLAExprs: [String: [String: [Expr]]] = [:]  // record name → field name → VLA dim exprs
     private var globalFuncDecls: [String: FuncDecl] = [:]  // function name → FuncDecl
     private var staticLocalGlobals: [String: String] = [:]  // local name → mangled global name
     private var staticLocalInits: [(name: String, type: CType, init_: Expr, funcName: String)] = []  // pending static initializers
@@ -160,6 +161,10 @@ public final class Codegen {
         for d in decls {
             if case .structDecl(let sd) = d, sd.record.size != nil {
                 knownRecords[sd.name ?? ""] = sd.record
+                // Register VLA field dimension expressions for __builtin_offsetof
+                if !sd.fieldVLASizeExprs.isEmpty {
+                    recordFieldVLAExprs[sd.name ?? ""] = sd.fieldVLASizeExprs
+                }
             }
             if case .unionDecl(let ud) = d, ud.record.size != nil {
                 knownRecords[ud.name ?? ""] = ud.record
@@ -2678,6 +2683,11 @@ public final class Codegen {
                     // Always set (even to empty) so a non-VLA typedef with the same name
                     // as a previous VLA typedef overwrites the stale entry.
                     typedefVLASizeExprs[td.name] = td.vlaSizeExprs
+                } else if case .structDecl(let sd) = d {
+                    // Local struct declaration: register VLA field expressions
+                    if !sd.fieldVLASizeExprs.isEmpty {
+                        recordFieldVLAExprs[sd.name ?? ""] = sd.fieldVLASizeExprs
+                    }
                 }
             }
             regAlloc.reset()
@@ -7585,6 +7595,8 @@ public final class Codegen {
                     // Start with offset = 0
                     emitLine("mov \(reg.x), #0")
                     var currentType: CType = typeName
+                    var currentRecordName: String? = nil
+                    var currentFieldName: String? = nil
                     for op in ops {
                         if let memberName = op.member {
                             if case .structType(let rec) = currentType.unqualified {
@@ -7594,24 +7606,105 @@ public final class Codegen {
                                             emitLine("add \(reg.x), \(reg.x), #\(field.offset)")
                                         }
                                         currentType = field.type
+                                        currentRecordName = rec.name
+                                        currentFieldName = memberName
                                         break
                                     }
                                 }
                             }
                         } else if let idxExpr = op.index {
                             // Array subscript: offset += idx * elemSize
+                            // For VLA arrays, the element size may be runtime-dependent.
                             let elemType: CType
                             if case .array(let et, _) = currentType.unqualified { elemType = et }
                             else if case .incompleteArray(let et) = currentType.unqualified { elemType = et }
                             else { elemType = .int }
-                            let elemSize = elemType.unqualified.sizeInBytes ?? 1
+                            // Check if this is a VLA field with known dimensions
+                            var vlaDims: [Expr]? = nil
+                            if let recName = currentRecordName, let fName = currentFieldName,
+                               let fieldVLAs = recordFieldVLAExprs[recName],
+                               let dims = fieldVLAs[fName] {
+                                vlaDims = dims
+                            }
                             let idxReg = emitExpr(idxExpr)
                             if exprType(idxExpr).unqualified.isSigned32Bit {
                                 emitLine("sxtw \(idxReg.x), \(idxReg.w)")
                             }
-                            if elemSize > 1 {
-                                emitLoadImm("x16", Int64(elemSize))
-                                emitLine("mul \(idxReg.x), \(idxReg.x), x16")
+                            // For a multi-dimensional VLA, the element size for the
+                            // current subscript level = product of remaining VLA dims * leaf size.
+                            // Count subscripts processed so far for this field (including current).
+                            // We track this via the number of array layers peeled from currentType.
+                            // currentType was already updated to the element type after each
+                            // subscript by the `currentType = elemType` at the bottom of this loop.
+                            // So count how many incompleteArray layers we've peeled from the
+                            // field's original type.
+                            var peeledLayers = 0
+                            var checkType = typeName
+                            for prevOp in ops {
+                                if prevOp.member != nil {
+                                    peeledLayers = 0
+                                    if case .structType(let rec) = checkType.unqualified {
+                                        for field in rec.fields {
+                                            if field.name == prevOp.member! {
+                                                checkType = field.type
+                                                break
+                                            }
+                                        }
+                                    }
+                                } else if prevOp.index != nil {
+                                    peeledLayers += 1
+                                    if case .incompleteArray(let inner) = checkType.unqualified {
+                                        checkType = inner
+                                    } else if case .array(let et, _) = checkType.unqualified {
+                                        checkType = et
+                                    }
+                                    // Stop after processing the current op: check if
+                                    // we've reached the same number of subscripts as
+                                    // the number of subscripts processed before this op
+                                    // in the outer loop. We match by counting total
+                                    // subscripts processed in this inner loop vs
+                                    // the outer loop's position.
+                                }
+                            }
+                            // peeledLayers counts ALL subscripts, not just up to current.
+                            // We need to subtract the subscripts that come AFTER the current op.
+                            // Count subscripts after the current op in ops.
+                            var subscriptsAfter = 0
+                            var foundCurrent = false
+                            for prevOp in ops {
+                                if prevOp.index != nil {
+                                    if foundCurrent { subscriptsAfter += 1 }
+                                }
+                                // Match current op by checking if this is the same index expression
+                                // Since Expr is Equatable, we can compare directly
+                                if prevOp.index != nil && prevOp.index! == idxExpr {
+                                    foundCurrent = true
+                                }
+                            }
+                            let currentPeeled = peeledLayers - subscriptsAfter
+                            // Remaining VLA dims start at index `currentPeeled` (0-based, outer-first).
+                            if let dims = vlaDims, dims.count >= currentPeeled {
+                                let leafType = checkType.unqualified
+                                let leafSize = leafType.unqualified.sizeInBytes ?? 1
+                                if leafSize > 1 {
+                                    emitLoadImm("x16", Int64(leafSize))
+                                    emitLine("mul \(idxReg.x), \(idxReg.x), x16")
+                                }
+                                for d in currentPeeled..<dims.count {
+                                    let dimReg = emitExpr(dims[d])
+                                    if exprType(dims[d]).unqualified.isSigned32Bit {
+                                        emitLine("sxtw \(dimReg.x), \(dimReg.w)")
+                                    }
+                                    emitLine("mul \(idxReg.x), \(idxReg.x), \(dimReg.x)")
+                                    regAlloc.free(dimReg)
+                                }
+                            } else {
+                                // Fixed-size array: use compile-time element size
+                                let elemSize = elemType.unqualified.sizeInBytes ?? 1
+                                if elemSize > 1 {
+                                    emitLoadImm("x16", Int64(elemSize))
+                                    emitLine("mul \(idxReg.x), \(idxReg.x), x16")
+                                }
                             }
                             emitLine("add \(reg.x), \(reg.x), \(idxReg.x)")
                             regAlloc.free(idxReg)

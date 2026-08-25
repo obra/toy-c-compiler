@@ -142,11 +142,17 @@ public struct StructDecl: Equatable {
     public let name: String?
     public var record: RecordType
     public let loc: SourceLoc
+    public var fieldVLASizeExprs: [String: [Expr]]  // field name → VLA dim exprs (outer first)
 
-    public init(name: String?, record: RecordType, loc: SourceLoc) {
+    public init(name: String?, record: RecordType, loc: SourceLoc, fieldVLASizeExprs: [String: [Expr]] = [:]) {
         self.name = name
         self.record = record
         self.loc = loc
+        self.fieldVLASizeExprs = fieldVLASizeExprs
+    }
+
+    public static func == (lhs: StructDecl, rhs: StructDecl) -> Bool {
+        return lhs.name == rhs.name && lhs.record == rhs.record && lhs.loc == rhs.loc
     }
 }
 

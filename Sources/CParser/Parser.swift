@@ -30,6 +30,8 @@ public final class Parser {
     /// Used so that when a typedef name is used as a type specifier, we know
     /// the actual size/alignment for struct field offset computation.
     private var typedefTypes: [String: CType] = [:]
+    /// VLA dimension expressions per typedef name (for __builtin_offsetof with VLA struct fields).
+    private var typedefVLASize: [String: [Expr]] = [:]
 
     /// Last parsed function params (with names) — used by parseExternalDecl.
     private var lastFuncParams: [Param] = []
@@ -38,6 +40,9 @@ public final class Parser {
     /// For multi-dimensional VLAs, this contains inner dimension expressions in order.
     private var pendingVLASizeExprs: [Expr] = []
     private var pendingVLASizeExpr: Expr? { pendingVLASizeExprs.last }
+    /// VLA field dimension expressions from the last parseStructOrUnion call.
+    /// Maps field name → VLA dimension expressions (outer first).
+    private var pendingStructFieldVLAs: [String: [Expr]] = [:]
     private var lastFuncVariadic: Bool = false
     /// VLA dimension expressions for each parameter in the last parsed function.
     /// Each entry is the list of dimension expressions for that parameter.
@@ -530,7 +535,7 @@ public final class Parser {
             advance()
             // Return the struct/union/enum declaration if present
             if case .structType(let rec) = baseType {
-                return .structDecl(StructDecl(name: rec.name, record: rec, loc: SourceLoc.unknown))
+                return .structDecl(StructDecl(name: rec.name, record: rec, loc: SourceLoc.unknown, fieldVLASizeExprs: pendingStructFieldVLAs))
             }
             if case .unionType(let rec) = baseType {
                 return .unionDecl(UnionDecl(name: rec.name, record: rec, loc: SourceLoc.unknown))
@@ -751,6 +756,9 @@ public final class Parser {
             pendingVLASizeExprs = []
             typedefNames.insert(name)
             typedefTypes[name] = finalType
+            if !tdVLAExprs.isEmpty {
+                typedefVLASize[name] = tdVLAExprs
+            }
             let td = TypedefDecl(name: name, type: finalType, loc: declLoc, vlaSizeExprs: tdVLAExprs)
             if firstDecl == nil { firstDecl = .typedefDecl(td) }
         } while match(kind: .punct, spelling: ",")
@@ -1053,10 +1061,25 @@ public final class Parser {
             if isStruct {
                 // Struct: sequential layout with alignment padding and bitfield packing
                 var bitOffset = 0  // track position in bits for bitfield packing
+                pendingStructFieldVLAs = [:]  // reset VLA field tracking
                 while !isPunct("}") && !isAtEnd() {
                     let (baseType, _, _, _) = try parseDeclSpecifiers()
                     repeat {
                         let (fieldName, fieldType, _) = try parseDeclarator(baseType)
+                        // Capture VLA dimension expressions for this field (for __builtin_offsetof)
+                        // Include VLA dimensions from the base type (e.g., typedef int T[n])
+                        // plus dimensions from the declarator (e.g., b[n] in T b[n]).
+                        if !fieldName.isEmpty {
+                            var allVLADims = pendingVLASizeExprs
+                            // If the base type is a VLA typedef, prepend its dimensions
+                            if case .typedef(let tdName, _) = baseType,
+                               let tdVLAs = typedefVLASize[tdName], !tdVLAs.isEmpty {
+                                allVLADims = tdVLAs + allVLADims
+                            }
+                            if !allVLADims.isEmpty {
+                                pendingStructFieldVLAs[fieldName] = allVLADims
+                            }
+                        }
                         // Skip __attribute__ after the field declarator
                         skipAsmAndAttributes()
                         var bitWidth: Int? = nil
@@ -2050,6 +2073,17 @@ public final class Parser {
 
         let (baseType, storageClass, _, _) = try parseDeclSpecifiers()
         var decls: [Decl] = []
+
+        // Handle bare struct/union/enum declaration (e.g., struct S { ... };)
+        if isPunct(";") {
+            advance()
+            if case .structType(let rec) = baseType {
+                decls.append(.structDecl(StructDecl(name: rec.name, record: rec, loc: loc, fieldVLASizeExprs: pendingStructFieldVLAs)))
+            } else if case .unionType(let rec) = baseType {
+                decls.append(.unionDecl(UnionDecl(name: rec.name, record: rec, loc: loc)))
+            }
+            return DeclStmt(decls: decls, loc: loc)
+        }
 
         repeat {
             let (name, type, dloc) = try parseDeclarator(baseType)
