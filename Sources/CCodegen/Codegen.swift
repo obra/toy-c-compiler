@@ -2630,7 +2630,7 @@ public final class Codegen {
                     return
                 }
                 // Complex type return: treat as HFA (2 FP members)
-                if retType.isComplex {
+                if retType.isComplex && funcRet.isComplex {
                     if let hfaInfo = isHFA(retType) {
                         let srcAddr = emitAddr(v)
                         let fpPrefix = hfaInfo.isFloat ? "s" : "d"
@@ -6062,17 +6062,21 @@ public final class Codegen {
                     emitArith("mul", rhsImag, curImag, rhsImag)
                     emitArith("add", curReal, curReal, rhsImag)
                     emitDiv(curReal, curReal, denom)
-                    // imag = (bc-ad)/denom  — but we clobbered some regs. Reload.
+                    // Save real result before reloading curReal for imag calculation
+                    let realResultOff = ensureTempSpace(size: partSize)
+                    emitStoreFP(curReal, offset: realResultOff, isFP: isFP, partSize: partSize)
+                    // imag = (bc-ad)/denom — reload original values
                     emitLoadFP(rhsReal, offset: rhsTmpOff, isFP: isFP, partSize: partSize)
                     emitLoadFP(rhsImag, offset: rhsTmpOff + partSize, isFP: isFP, partSize: partSize)
-                    emitLoadFP(curImag, offset: curTmpOff + partSize, isFP: isFP, partSize: partSize)
-                    emitArith("mul", curImag, curImag, rhsReal)
-                    emitArith("mul", rhsReal, curReal, rhsImag)
-                    // curReal was already modified. Need original real.
                     emitLoadFP(curReal, offset: curTmpOff, isFP: isFP, partSize: partSize)
+                    emitLoadFP(curImag, offset: curTmpOff + partSize, isFP: isFP, partSize: partSize)
+                    // bc - ad
+                    emitArith("mul", curImag, curImag, rhsReal)
                     emitArith("mul", rhsReal, curReal, rhsImag)
                     emitArith("sub", curImag, curImag, rhsReal)
                     emitDiv(curImag, curImag, denom)
+                    // Restore real result
+                    emitLoadFP(curReal, offset: realResultOff, isFP: isFP, partSize: partSize)
                     regAlloc.free(denom)
                 default:
                     break
