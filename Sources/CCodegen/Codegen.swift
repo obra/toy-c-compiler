@@ -172,10 +172,11 @@ public final class Codegen {
             // Also collect from typedef declarations (e.g., typedef struct Foo { ... } bar;)
             if case .typedefDecl(let td) = d {
                 collectRecords(td.type)
-                // Register VLA typedef size expressions for runtime sizeof evaluation
-                if !td.vlaSizeExprs.isEmpty {
-                    typedefVLASizeExprs[td.name] = td.vlaSizeExprs
-                }
+                // Register VLA typedef size expressions for runtime sizeof evaluation.
+                // Always set (even to empty) so a non-VLA typedef with the same name
+                // as a previous VLA typedef overwrites the stale entry — otherwise
+                // sizeof would incorrectly evaluate using the wrong VLA dimension.
+                typedefVLASizeExprs[td.name] = td.vlaSizeExprs
             }
         }
 
@@ -2673,10 +2674,10 @@ public final class Codegen {
                         }  // end VLA else
                     }
                 } else if case .typedefDecl(let td) = d {
-                    // Local typedef: register VLA size expressions for runtime sizeof
-                    if !td.vlaSizeExprs.isEmpty {
-                        typedefVLASizeExprs[td.name] = td.vlaSizeExprs
-                    }
+                    // Local typedef: register VLA size expressions for runtime sizeof.
+                    // Always set (even to empty) so a non-VLA typedef with the same name
+                    // as a previous VLA typedef overwrites the stale entry.
+                    typedefVLASizeExprs[td.name] = td.vlaSizeExprs
                 }
             }
             regAlloc.reset()
@@ -3962,6 +3963,30 @@ public final class Codegen {
                     var elemType = typeName.unqualified
                     while case .incompleteArray(let inner) = elemType.unqualified {
                         elemType = inner
+                    }
+                    // For VLA typedefs wrapping a struct (e.g., typedef struct { int c[n]; } S;),
+                    // the leaf element type is inside the struct's VLA field. Find the
+                    // incompleteArray field and strip to its element type.
+                    if case .structType(let rec) = elemType.unqualified {
+                        for field in rec.fields {
+                            var ft = field.type.unqualified
+                            while case .incompleteArray(let inner) = ft {
+                                ft = inner.unqualified
+                            }
+                            // Check if this field is a VLA (incompleteArray in the type chain)
+                            var isVLA = false
+                            var checkType = field.type.unqualified
+                            while case .incompleteArray = checkType {
+                                isVLA = true
+                                if case .incompleteArray(let inner) = checkType {
+                                    checkType = inner.unqualified
+                                }
+                            }
+                            if isVLA {
+                                elemType = ft
+                                break
+                            }
+                        }
                     }
                     let leafSize = elemType.unqualified.sizeInBytes ?? 1
                     // Evaluate the first (outer) dimension
