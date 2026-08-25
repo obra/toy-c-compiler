@@ -80,3 +80,14 @@
 - What went bad: copy prop and constant folding used VReg (with isWord) as
   keys, not NormalizedReg → sub w9,w9,w10 didn't invalidate x9 copy map
   entry. Fixed by using NormalizedReg everywhere.
+
+### 7. Address folding (commit d3fef78, fix 3ed5c9b)
+- Folds addrr xN,x29,#N into load/store [x29,#N] when xN is used exactly once
+- What went bad: findSingleUse returned Int? but code accessed .idx member
+  → compile error. Fixed by using the Int directly.
+- Analysis: 10,025 foldable patterns in SQLite
+
+### 8. Zero store elimination (commit 33503cc)
+- Replaces mov reg,#0 + str reg,[addr] with str wzr,[addr]
+- 4,108 patterns found in SQLite
+- No issues encountered
