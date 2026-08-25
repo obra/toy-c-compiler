@@ -2447,7 +2447,8 @@ public final class Codegen {
                                         }
                                     }
                                 }
-                            } else if case .call = init_, case .vector = vd.type.unqualified {
+                            } else if case .call = init_, case .vector = vd.type.unqualified,
+                                      (vd.type.unqualified.sizeInBytes ?? 0) <= 16 {
                                 // Function call returning a vector: read from x0/x1
                                 let vecSize = vd.type.unqualified.sizeInBytes ?? 0
                                 if let offset = localVarOffsets[vd.name] {
@@ -7872,6 +7873,7 @@ public final class Codegen {
             "vsnprintf": 3,  // vsnprintf(char *buf, size_t size, const char *format, va_list)
         ]
         let namedParamCount = variadicNamedParams[funcName]
+        var indirectReturnOffset: Int? = nil
 
         // For variadic functions: named args in registers, variadic args on stack
         if let namedCount = namedParamCount, effectiveArgs.count > namedCount {
@@ -8048,7 +8050,7 @@ public final class Codegen {
             // all compound literals before the push loop, all args are pushed
             // contiguously and slot offsets remain correct.
             // Save each compound literal address in a callee-saved register.
-            let clSaveRegs: [ARM64Reg] = [.x18, .x20, .x21, .x22, .x23, .x24, .x25, .x26]
+            let clSaveRegs: [ARM64Reg] = [.x19, .x20, .x21, .x22, .x23, .x24, .x25, .x26]
             var compoundLiteralAddrs: [Int: ARM64Reg] = [:]
             var numPreEvaluated = 0
             for (i, arg) in effectiveArgs.enumerated() {
@@ -8206,7 +8208,7 @@ public final class Codegen {
                         emitLine("str \(addrReg.x), [sp, #-16]!")
                     }
                     // Load each 8-byte chunk and store to temp stack
-                    // Last-pushed slot is at sp+0, first-pushed is at sp+(numChunks-1)*16
+                    // Store chunk 0 at lowest offset, chunk N-1 at highest.
                     for j in 0..<numChunks {
                         let srcOffset = j * 8
                         if srcOffset <= 32760 {
@@ -8216,7 +8218,7 @@ public final class Codegen {
                             emitLoadImm("x17", Int64(srcOffset))
                             emitLine("ldr x16, [\(addrReg.x), x17]")
                         }
-                        let slotOffset = (numChunks - 1 - j) * 16
+                        let slotOffset = j * 16
                         emitStoreSP("x16", slotOffset)
                     }
                     evaluatedArgs.append(addrReg)
@@ -8237,7 +8239,7 @@ public final class Codegen {
                             emitLoadImm("x17", Int64(srcOffset))
                             emitLine("ldr x16, [\(addrReg.x), x17]")
                         }
-                        let slotOffset = (numChunks - 1 - j) * 16
+                        let slotOffset = j * 16
                         emitStoreSP("x16", slotOffset)
                     }
                     evaluatedArgs.append(addrReg)
@@ -8487,11 +8489,12 @@ public final class Codegen {
                         emitStoreSP("x9", stackOffset + 8)
                     } else if largeChunks > 0 {
                         // Temp stack has chunk 0 at highest offset, chunk N-1 at lowest.
-                        // Place chunk 0 at stackOffset (low), chunk N-1 at highest.
+                        // Place chunk N-1 at stackOffset (low), chunk 0 at highest.
+                        // This matches the callee's forward reading order.
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
                             emitLoadSP("x9", slotOff)
-                            emitStoreSP("x9", stackOffset + (largeChunks - 1 - j) * 8)
+                            emitStoreSP("x9", stackOffset + j * 8)
                         }
                     } else if isFloatArg {
                         emitLoadSP("d9", tempOffset)
@@ -8592,7 +8595,7 @@ public final class Codegen {
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
                             emitLoadSP("x9", slotOff)
-                            emitStoreSP("x9", (stackArgIdx + (largeChunks - 1 - j)) * 8)
+                            emitStoreSP("x9", (stackArgIdx + j) * 8)
                         }
                         stackArgIdx += largeChunks
                     } else {
@@ -8615,7 +8618,7 @@ public final class Codegen {
                         for j in 0..<largeChunks {
                             let slotOff = tempOffset + j * 16
                             emitLoadSP("x9", slotOff)
-                            emitStoreSP("x9", stackOffset + (largeChunks - 1 - j) * 8)
+                            emitStoreSP("x9", stackOffset + j * 8)
                         }
                         stackArgIdx += largeChunks
                     } else {
@@ -8639,6 +8642,39 @@ public final class Codegen {
 
             // Variadic args already placed on stack by the loop above.
             var variadicStackArgSize = 0
+
+            // Set up indirect return pointer (x8) for functions returning >16-byte
+            // non-HFA structs/vectors. Allocate a temp buffer in the local frame
+            // (so it persists after stack cleanup) and point x8 to it.
+            let callReturnType = exprType(.call(c)).unqualified
+            var resolvedReturnType = callReturnType
+            if case .structType(let rec) = callReturnType, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
+                resolvedReturnType = .structType(completed)
+            }
+            if case .vector = callReturnType {
+                resolvedReturnType = callReturnType
+            }
+            let retSize = resolvedReturnType.sizeInBytes ?? 0
+            let isHFAReturn = isHFA(resolvedReturnType) != nil
+            var needsIndirectReturn = false
+            if case .structType = resolvedReturnType, retSize > 16, !isHFAReturn {
+                needsIndirectReturn = true
+            }
+            if case .vector = resolvedReturnType, retSize > 16 {
+                needsIndirectReturn = true
+            }
+            if needsIndirectReturn {
+                let alignedSize = (retSize + 15) & ~15
+                ensureLocalSpace(size: alignedSize)
+                let off = -localOffset
+                indirectReturnOffset = off
+                if off >= -4095 && off <= 4095 {
+                    emitLine("add x8, x29, #\(off)")
+                } else {
+                    emitLoadImm("x16", Int64(off))
+                    emitLine("add x8, x29, x16")
+                }
+            }
 
             // Make the call
             let tempStackSize = cumulative  // total bytes pushed to temp stack
@@ -8679,6 +8715,19 @@ public final class Codegen {
             if funcPtrReg != nil {
                 emitLine("add sp, sp, #16")
             }
+        }
+
+        // For indirect returns (>16-byte struct/vector), the result is at the
+        // x8 buffer address in the local frame. Return that address.
+        if let off = indirectReturnOffset {
+            let resultReg = regAlloc.alloc() ?? .x9
+            if off >= -4095 && off <= 4095 {
+                emitLine("add \(resultReg.x), x29, #\(off)")
+            } else {
+                emitLoadImm("x16", Int64(off))
+                emitLine("add \(resultReg.x), x29, x16")
+            }
+            return resultReg
         }
 
         // Result is in x0 (int), s0 (float), or d0 (double)
@@ -9605,6 +9654,12 @@ public final class Codegen {
                 resolvedType = .unionType(completed)
             }
             let structSize = resolvedType.sizeInBytes ?? 0
+            let isHFAReturn = isHFA(resolvedType) != nil
+            // For large indirect returns (>16 bytes, non-HFA), emitCallExpr already
+            // sets up x8 and returns the buffer address. Just call emitExpr.
+            if structSize > 16 && !isHFAReturn {
+                return emitExpr(.call(c))
+            }
             let alignedSize = max((structSize + 15) & ~15, 16)
             // Allocate temp on stack + 16 bytes to save x19
             emitLine("sub sp, sp, #\(alignedSize + 16)")
