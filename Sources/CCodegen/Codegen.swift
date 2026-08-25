@@ -4756,14 +4756,17 @@ public final class Codegen {
         emitLine("str \(leftAddr.x), [sp, #-16]!")
         emitLine("str \(rightAddr.x), [sp, #-16]!")
         // Stack: sp+0=right, sp+16=left
-        let ldStReg: String = elemSize <= 4 ? "w16" : "x16"
-        let ldStReg17: String = elemSize <= 4 ? "w17" : "x17"
-        let arithReg: String = elemSize <= 4 ? "w16" : "x16"
-        // Load instruction: ldrsh for 2-byte signed, ldrsb for 1-byte signed, ldrsw for 4-byte signed
-        // For unsigned: ldrh, ldrb, ldr (zero-extend to 32-bit)
+        let isFP = elemType.isFloating
+        let fpPrefix = elemType == .float ? "s" : "d"
+        let ldStReg: String = isFP ? "\(fpPrefix)16" : (elemSize <= 4 ? "w16" : "x16")
+        let ldStReg17: String = isFP ? "\(fpPrefix)17" : (elemSize <= 4 ? "w17" : "x17")
+        let arithReg: String = isFP ? "\(fpPrefix)16" : (elemSize <= 4 ? "w16" : "x16")
         let loadInstr: String
         let storeInstr: String
-        if elemSize <= 4 {
+        if isFP {
+            loadInstr = "ldr"
+            storeInstr = "str"
+        } else if elemSize <= 4 {
             if elemType.isSigned {
                 switch elemSize {
                 case 1: loadInstr = "ldrsb"; storeInstr = "strb"
@@ -4789,7 +4792,7 @@ public final class Codegen {
             emitLine("ldr x9, [sp, #32]")
             if offset > 0 { emitLine("\(loadInstr) \(ldStReg), [x9, #\(offset)]") }
             else { emitLine("\(loadInstr) \(ldStReg), [x9]") }
-            emitLine("str x16, [sp, #-16]!")  // push left[i]
+            emitLine("str \(ldStReg), [sp, #-16]!")  // push left[i]
             // After push: sp+0=left[i], sp+16=result, sp+32=right, sp+48=left
             // Load right[i]: right addr at [sp+32]
             emitLine("ldr x9, [sp, #32]")
@@ -4797,11 +4800,18 @@ public final class Codegen {
             else { emitLine("\(loadInstr) \(ldStReg), [x9]") }
             emitLine("\(loadInstr) \(ldStReg17), [sp, #0]")  // left[i]
             switch b.op {
-            case .add: emitLine("add \(arithReg), \(ldStReg17), \(ldStReg)")
-            case .sub: emitLine("sub \(arithReg), \(ldStReg17), \(ldStReg)")
-            case .mul: emitLine("mul \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .add:
+                if isFP { emitLine("fadd \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else { emitLine("add \(arithReg), \(ldStReg17), \(ldStReg)") }
+            case .sub:
+                if isFP { emitLine("fsub \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else { emitLine("sub \(arithReg), \(ldStReg17), \(ldStReg)") }
+            case .mul:
+                if isFP { emitLine("fmul \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else { emitLine("mul \(arithReg), \(ldStReg17), \(ldStReg)") }
             case .div:
-                if elemType.isSigned { emitLine("sdiv \(arithReg), \(ldStReg17), \(ldStReg)") }
+                if isFP { emitLine("fdiv \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else if elemType.isSigned { emitLine("sdiv \(arithReg), \(ldStReg17), \(ldStReg)") }
                 else { emitLine("udiv \(arithReg), \(ldStReg17), \(ldStReg)") }
             case .mod:
                 if elemType.isSigned { emitLine("sdiv x9, \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), x9, \(ldStReg), \(ldStReg17)") }
@@ -4814,23 +4824,20 @@ public final class Codegen {
                 if elemType.isSigned { emitLine("asr \(arithReg), \(ldStReg17), \(ldStReg)") }
                 else { emitLine("lsr \(arithReg), \(ldStReg17), \(ldStReg)") }
             case .eq:
-                emitLine("cmp \(ldStReg17), \(ldStReg)")
-                emitLine("csetm \(arithReg), eq")
+                if isFP { emitLine("fcmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), eq") }
+                else { emitLine("cmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), eq") }
             case .ne:
-                emitLine("cmp \(ldStReg17), \(ldStReg)")
-                emitLine("csetm \(arithReg), ne")
+                if isFP { emitLine("fcmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), ne") }
+                else { emitLine("cmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), ne") }
             case .lt:
-                emitLine("cmp \(ldStReg17), \(ldStReg)")
-                if elemType.isSigned { emitLine("csetm \(arithReg), lt") }
-                else { emitLine("csetm \(arithReg), lo") }
+                if isFP { emitLine("fcmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), mi") }
+                else { emitLine("cmp \(ldStReg17), \(ldStReg)"); if elemType.isSigned { emitLine("csetm \(arithReg), lt") } else { emitLine("csetm \(arithReg), lo") } }
             case .le:
-                emitLine("cmp \(ldStReg17), \(ldStReg)")
-                if elemType.isSigned { emitLine("csetm \(arithReg), le") }
-                else { emitLine("csetm \(arithReg), ls") }
+                if isFP { emitLine("fcmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), ls") }
+                else { emitLine("cmp \(ldStReg17), \(ldStReg)"); if elemType.isSigned { emitLine("csetm \(arithReg), le") } else { emitLine("csetm \(arithReg), ls") } }
             case .gt:
-                emitLine("cmp \(ldStReg17), \(ldStReg)")
-                if elemType.isSigned { emitLine("csetm \(arithReg), gt") }
-                else { emitLine("csetm \(arithReg), hi") }
+                if isFP { emitLine("fcmp \(ldStReg17), \(ldStReg)"); emitLine("csetm \(arithReg), gt") }
+                else { emitLine("cmp \(ldStReg17), \(ldStReg)"); if elemType.isSigned { emitLine("csetm \(arithReg), gt") } else { emitLine("csetm \(arithReg), hi") } }
             case .ge:
                 emitLine("cmp \(ldStReg17), \(ldStReg)")
                 if elemType.isSigned { emitLine("csetm \(arithReg), ge") }
