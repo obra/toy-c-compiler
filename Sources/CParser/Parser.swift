@@ -152,6 +152,8 @@ public final class Parser {
     /// Pending __attribute__((vector_size(N))) extracted from parseDeclSpecifiers.
     /// When set, the base type should be wrapped in an array of (N / sizeof(base)) elements.
     private var pendingVectorSize: Int? = nil
+    /// Pending function alignment from __attribute__((aligned(N))) extracted by extractAlignment.
+    private var pendingFuncAlignment: Int? = nil
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
     private var pendingExternalDecls: [Decl] = []
     /// Nested function definitions discovered during function body parsing.
@@ -410,7 +412,7 @@ public final class Parser {
                                     // Parse the alignment expression
                                     if let alignExpr = try? parseAssignmentExpr() {
                                         let v = evalIntConst(alignExpr)
-                                        if v > 0 { result = Int(v) }
+                                        if v > 0 { result = Int(v); pendingFuncAlignment = Int(v) }
                                     }
                                     if isPunct(")") { advance() }
                                 } else {
@@ -537,6 +539,8 @@ public final class Parser {
         var additionalDecls: [Decl] = []
         repeat {
             let (name, type, loc) = try parseDeclarator(baseType)
+            let funcAlignment = pendingFuncAlignment
+            pendingFuncAlignment = nil
             skipAsmAndAttributes()
 
             if type.isFunction && (isPunct("{") || isKAndRParamDeclStart()) {
@@ -594,7 +598,8 @@ public final class Parser {
                                         params: savedParams,
                                         variadic: savedVariadic,
                                         body: body, storageClass: storageClass, isInline: isInline, loc: loc,
-                                        localLabels: labels, paramVLAExprs: savedParamVLAExprs)
+                                        localLabels: labels, paramVLAExprs: savedParamVLAExprs,
+                                        alignment: funcAlignment)
                 return .funcDecl(funcDecl)
             }
 
@@ -651,7 +656,8 @@ public final class Parser {
                                   params: lastFuncParams,
                                   variadic: lastFuncVariadic,
                                   body: nil, storageClass: storageClass, isInline: isInline, loc: loc,
-                                  paramVLAExprs: lastFuncParamVLAExprs)
+                                  paramVLAExprs: lastFuncParamVLAExprs,
+                                  alignment: funcAlignment)
                 if firstDecl == nil {
                     firstDecl = .funcDecl(fd)
                 }

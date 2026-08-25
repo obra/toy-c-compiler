@@ -27,6 +27,7 @@ public final class Codegen {
     private var functionNames: Set<String> = []   // names of all declared functions
     private var definedFunctions: Set<String> = []  // functions with bodies (locally defined)
     private var functionReturnTypes: [String: CType] = [:]  // function name → return type
+    private var functionAlignments: [String: Int] = [:]  // function name → alignment from __attribute__((aligned(N)))
     private var variadicFunctions: Set<String> = []  // functions with variadic params (...)
     private var functionParamCounts: [String: Int] = [:]  // function name → number of named params
     private var functionParamTypes: [String: [CType]] = [:]  // function name → param types
@@ -134,6 +135,7 @@ public final class Codegen {
                 // Collect all function declarations (with or without bodies)
                 functionNames.insert(fd.name)
                 functionReturnTypes[fd.name] = fd.returnType
+                if let align = fd.alignment { functionAlignments[fd.name] = align }
                 if fd.body != nil {
                     definedFunctions.insert(fd.name)
                 }
@@ -3456,7 +3458,7 @@ public final class Codegen {
             let reg = regAlloc.alloc() ?? .x9
             if s.isAlignof {
                 // __alignof__/_Alignof: return alignment of the type or expression
-                let align: Int
+                var align: Int
                 if let typeName = s.typeName {
                     var t = typeName.unqualified
                     if case .structType(let rec) = t, rec.fields.isEmpty, let completed = knownRecords[rec.name] {
@@ -3467,7 +3469,14 @@ public final class Codegen {
                     }
                     align = t.alignOf ?? 0
                 } else if let e = s.expr {
-                    align = exprType(e).alignOf ?? 0
+                    let et = exprType(e)
+                    // For functions with __attribute__((aligned(N))), use the custom alignment
+                    if case .function = et.unqualified, case .identifier(let id) = e,
+                       let funcAlign = functionAlignments[id.name] {
+                        align = funcAlign
+                    } else {
+                        align = et.alignOf ?? 0
+                    }
                 } else {
                     align = 0
                 }

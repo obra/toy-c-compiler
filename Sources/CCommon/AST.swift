@@ -82,12 +82,15 @@ public struct FuncDecl: Equatable {
     /// Each entry is the list of dimension expressions for that parameter,
     /// in parameter order. These must be evaluated at the call site for side effects.
     public var paramVLAExprs: [[Expr]]
+    /// Alignment from __attribute__((aligned(N))) on this function.
+    public var alignment: Int?
 
     public init(name: String, returnType: CType, params: [Param], variadic: Bool,
                 body: CompoundStmt? = nil, storageClass: StorageClass = .none,
                 isInline: Bool = false, loc: SourceLoc,
                 parentFuncName: String? = nil, capturedLocals: [String] = [],
-                localLabels: [String] = [], paramVLAExprs: [[Expr]] = []) {
+                localLabels: [String] = [], paramVLAExprs: [[Expr]] = [],
+                alignment: Int? = nil) {
         self.name = name
         self.returnType = returnType
         self.params = params
@@ -100,6 +103,7 @@ public struct FuncDecl: Equatable {
         self.capturedLocals = capturedLocals
         self.localLabels = localLabels
         self.paramVLAExprs = paramVLAExprs
+        self.alignment = alignment
     }
 }
 
