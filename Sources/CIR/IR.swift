@@ -7,6 +7,9 @@ import CCommon
 public struct VReg: Equatable, Hashable {
     public let id: Int
     public let kind: RegKind
+    /// True if this register reference used the 32-bit (w) form in the original
+    /// assembly. The lowering pass uses this to choose between w and x prefixes.
+    public let isWord: Bool
 
     public enum RegKind: Equatable, Hashable {
         case gp       // General-purpose (x0-x30, w0-w30)
@@ -14,14 +17,15 @@ public struct VReg: Equatable, Hashable {
         case pflag    // Condition flags (result of cmp/cset)
     }
 
-    public init(id: Int, kind: RegKind = .gp) {
+    public init(id: Int, kind: RegKind = .gp, isWord: Bool = false) {
         self.id = id
         self.kind = kind
+        self.isWord = isWord
     }
 
     public var description: String {
         switch kind {
-        case .gp: return "%v\(id)"
+        case .gp: return isWord ? "%w\(id)" : "%v\(id)"
         case .fp: return "%f\(id)"
         case .pflag: return "%cc\(id)"
         }
@@ -117,6 +121,7 @@ public enum Cond: Equatable {
 public enum IRInst: Equatable {
     // --- Arithmetic (integer) ---
     case add(dst: VReg, src1: Operand, src2: Operand)           // add
+    case addShifted(dst: VReg, src1: Operand, src2: Operand, shift: String, amount: Int) // add with shifted reg (lsl/lsr/asr #N)
     case sub(dst: VReg, src1: Operand, src2: Operand)           // sub
     case mul(dst: VReg, src1: Operand, src2: Operand)           // mul
     case sdiv(dst: VReg, src1: Operand, src2: Operand)          // sdiv
@@ -168,6 +173,10 @@ public enum IRInst: Equatable {
     // Load/store pair (for register save/restore)
     case ldp(dst1: VReg, dst2: VReg, addr: Operand, offset: Int)
     case stp(src1: Operand, src2: Operand, addr: Operand, offset: Int)
+    case ldpPre(dst1: VReg, dst2: VReg, addr: Operand, offset: Int)  // ldp with writeback: [addr, #offset]!
+    case stpPre(src1: Operand, src2: Operand, addr: Operand, offset: Int)  // stp with writeback: [addr, #offset]!
+    case ldpPost(dst1: VReg, dst2: VReg, addr: Operand, offset: Int) // ldp post-index: [addr], #offset
+    case stpPost(src1: Operand, src2: Operand, addr: Operand, offset: Int) // stp post-index: [addr], #offset
 
     // --- Address computation ---
     case addrr(dst: VReg, base: Operand, offset: Int)           // add reg, reg, #imm
@@ -238,6 +247,9 @@ public enum IRInst: Equatable {
 
     // --- Pseudo: comment (not emitted to assembly) ---
     case comment(String)
+
+    // --- Pseudo: raw assembly line (pass-through, e.g. directives) ---
+    case raw(String)
 }
 
 // MARK: - Basic Block

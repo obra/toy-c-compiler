@@ -47,7 +47,7 @@ fileprivate struct Lowerer {
     func operand(_ op: Operand) -> String {
         switch op {
         case .vreg(let v):
-            return reg(v)
+            return regForm(v)
         case .imm(let i):
             return "#\(i)"
         case .immF(let d):
@@ -70,6 +70,23 @@ fileprivate struct Lowerer {
     /// the stack offset.
     func reg(_ v: VReg) -> String {
         if let s = regMap[v] {
+            return s
+        }
+        // Spilled: reference as a frame slot.
+        return "[x29, #\(v.id * 8)]"
+    }
+
+    /// Resolve a GP vreg to its physical register string, choosing w/x form
+    /// based on the vreg's isWord flag. For FP registers, use d/s form.
+    func regForm(_ v: VReg) -> String {
+        if let s = regMap[v] {
+            // Override the map's register form based on isWord
+            if v.kind == .gp {
+                let num = v.id
+                if v.id == 31 { return "sp" }
+                if v.id == 32 { return v.isWord ? "wzr" : "xzr" }
+                return v.isWord ? "w\(num)" : "x\(num)"
+            }
             return s
         }
         // Spilled: reference as a frame slot.
@@ -177,49 +194,51 @@ fileprivate struct Lowerer {
         switch inst {
         // --- Arithmetic (integer) ---
         case .add(let dst, let s1, let s2):
-            emit("add \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("add \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+        case .addShifted(let dst, let s1, let s2, let shift, let amount):
+            emit("add \(regForm(dst)), \(operand(s1)), \(operand(s2)), \(shift) #\(amount)", into: &out)
         case .sub(let dst, let s1, let s2):
-            emit("sub \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("sub \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .mul(let dst, let s1, let s2):
-            emit("mul \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("mul \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .sdiv(let dst, let s1, let s2):
-            emit("sdiv \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("sdiv \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .udiv(let dst, let s1, let s2):
-            emit("udiv \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("udiv \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .madd(let dst, let s1, let s2, let s3):
-            emit("madd \(reg(dst)), \(operand(s1)), \(operand(s2)), \(operand(s3))", into: &out)
+            emit("madd \(regForm(dst)), \(operand(s1)), \(operand(s2)), \(operand(s3))", into: &out)
         case .msub(let dst, let s1, let s2, let s3):
-            emit("msub \(reg(dst)), \(operand(s1)), \(operand(s2)), \(operand(s3))", into: &out)
+            emit("msub \(regForm(dst)), \(operand(s1)), \(operand(s2)), \(operand(s3))", into: &out)
 
         // --- Arithmetic (floating-point) ---
         case .fadd(let dst, let s1, let s2):
-            emit("fadd \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("fadd \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .fsub(let dst, let s1, let s2):
-            emit("fsub \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("fsub \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .fmul(let dst, let s1, let s2):
-            emit("fmul \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("fmul \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .fdiv(let dst, let s1, let s2):
-            emit("fdiv \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("fdiv \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .fneg(let dst, let src):
-            emit("fneg \(reg(dst)), \(operand(src))", into: &out)
+            emit("fneg \(regForm(dst)), \(operand(src))", into: &out)
 
         // --- Logical ---
         case .and(let dst, let s1, let s2):
-            emit("and \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("and \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .orr(let dst, let s1, let s2):
-            emit("orr \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("orr \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .eor(let dst, let s1, let s2):
-            emit("eor \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("eor \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .mvn(let dst, let src):
-            emit("mvn \(reg(dst)), \(operand(src))", into: &out)
+            emit("mvn \(regForm(dst)), \(operand(src))", into: &out)
 
         // --- Shifts ---
         case .lsl(let dst, let s1, let s2):
-            emit("lsl \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("lsl \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .lsr(let dst, let s1, let s2):
-            emit("lsr \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("lsr \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .asr(let dst, let s1, let s2):
-            emit("asr \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("asr \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
 
         // --- Comparison ---
         case .cmp(let s1, let s2):
@@ -229,58 +248,66 @@ fileprivate struct Lowerer {
 
         // --- Conditional set ---
         case .cset(let dst, let cond):
-            emit("cset \(reg(dst)), \(condString(cond))", into: &out)
+            emit("cset \(regForm(dst)), \(condString(cond))", into: &out)
         case .csetm(let dst, let cond):
-            emit("csetm \(reg(dst)), \(condString(cond))", into: &out)
+            emit("csetm \(regForm(dst)), \(condString(cond))", into: &out)
 
         // --- Data movement ---
         case .mov(let dst, let src):
-            emit("mov \(reg(dst)), \(operand(src))", into: &out)
+            emit("mov \(regForm(dst)), \(operand(src))", into: &out)
         case .fmov(let dst, let src):
-            emit("fmov \(reg(dst)), \(operand(src))", into: &out)
+            emit("fmov \(regForm(dst)), \(operand(src))", into: &out)
 
         // --- Sign/zero extension ---
         case .sxtb(let dst, let src):
-            emit("sxtb \(reg(dst)), \(operand(src))", into: &out)
+            emit("sxtb \(regForm(dst)), \(operand(src))", into: &out)
         case .sxth(let dst, let src):
-            emit("sxth \(reg(dst)), \(operand(src))", into: &out)
+            emit("sxth \(regForm(dst)), \(operand(src))", into: &out)
         case .sxtw(let dst, let src):
-            emit("sxtw \(reg(dst)), \(operand(src))", into: &out)
+            emit("sxtw \(regForm(dst)), \(operand(src))", into: &out)
         case .uxtb(let dst, let src):
-            emit("uxtb \(reg(dst)), \(operand(src))", into: &out)
+            emit("uxtb \(regForm(dst)), \(operand(src))", into: &out)
         case .uxth(let dst, let src):
-            emit("uxth \(reg(dst)), \(operand(src))", into: &out)
+            emit("uxth \(regForm(dst)), \(operand(src))", into: &out)
 
         // --- Memory: load/store ---
         case .load(let dst, let addr, let offset, let width, let signed):
             let mnem = signed ? width.loadSignedMnemonic : width.loadMnemonic
-            emit("\(mnem) \(reg(dst)), [\(operand(addr)), #\(offset)]", into: &out)
+            emit("\(mnem) \(regForm(dst)), [\(operand(addr)), #\(offset)]", into: &out)
         case .store(let src, let addr, let offset, let width):
             emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), #\(offset)]", into: &out)
 
         // --- Load/store pair ---
         case .ldp(let d1, let d2, let addr, let offset):
-            emit("ldp \(reg(d1)), \(reg(d2)), [\(operand(addr)), #\(offset)]", into: &out)
+            emit("ldp \(regForm(d1)), \(regForm(d2)), [\(operand(addr)), #\(offset)]", into: &out)
         case .stp(let s1, let s2, let addr, let offset):
             emit("stp \(operand(s1)), \(operand(s2)), [\(operand(addr)), #\(offset)]", into: &out)
+        case .ldpPre(let d1, let d2, let addr, let offset):
+            emit("ldp \(regForm(d1)), \(regForm(d2)), [\(operand(addr)), #\(offset)]!", into: &out)
+        case .stpPre(let s1, let s2, let addr, let offset):
+            emit("stp \(operand(s1)), \(operand(s2)), [\(operand(addr)), #\(offset)]!", into: &out)
+        case .ldpPost(let d1, let d2, let addr, let offset):
+            emit("ldp \(regForm(d1)), \(regForm(d2)), [\(operand(addr))], #\(offset)", into: &out)
+        case .stpPost(let s1, let s2, let addr, let offset):
+            emit("stp \(operand(s1)), \(operand(s2)), [\(operand(addr))], #\(offset)", into: &out)
 
         // --- Address computation ---
         case .addrr(let dst, let base, let offset):
-            emit("add \(reg(dst)), \(operand(base)), #\(offset)", into: &out)
+            emit("add \(regForm(dst)), \(operand(base)), #\(offset)", into: &out)
         case .adr(let dst, let symbol):
-            emit("adr \(reg(dst)), \(symbol)", into: &out)
+            emit("adr \(regForm(dst)), \(symbol)", into: &out)
         case .adrp(let dst, let symbol):
-            emit("adrp \(reg(dst)), \(symbol)@PAGE", into: &out)
+            emit("adrp \(regForm(dst)), \(symbol)@PAGE", into: &out)
         case .addSymbol(let dst, let base, let symbol):
-            emit("add \(reg(dst)), \(operand(base)), \(symbol)@PAGEOFF", into: &out)
+            emit("add \(regForm(dst)), \(operand(base)), \(symbol)@PAGEOFF", into: &out)
 
         // --- Immediate load ---
         case .loadImm(let dst, let value):
-            emitLoadImm(reg(dst), value, into: &out)
+            emitLoadImm(regForm(dst), value, into: &out)
 
         // --- FP immediate load ---
         case .loadFImm(let dst, let value, let isFloat):
-            emitLoadFImm(reg(dst), value, isFloat: isFloat, into: &out)
+            emitLoadFImm(regForm(dst), value, isFloat: isFloat, into: &out)
 
         // --- Branch ---
         case .b(let label):
@@ -309,31 +336,31 @@ fileprivate struct Lowerer {
 
         // --- Miscellaneous ---
         case .clz(let dst, let src):
-            emit("clz \(reg(dst)), \(operand(src))", into: &out)
+            emit("clz \(regForm(dst)), \(operand(src))", into: &out)
         case .rbit(let dst, let src):
-            emit("rbit \(reg(dst)), \(operand(src))", into: &out)
+            emit("rbit \(regForm(dst)), \(operand(src))", into: &out)
         case .rev(let dst, let src):
-            emit("rev \(reg(dst)), \(operand(src))", into: &out)
+            emit("rev \(regForm(dst)), \(operand(src))", into: &out)
         case .rev16(let dst, let src):
-            emit("rev16 \(reg(dst)), \(operand(src))", into: &out)
+            emit("rev16 \(regForm(dst)), \(operand(src))", into: &out)
         case .sbfx(let dst, let src, let lsb, let width):
-            emit("sbfx \(reg(dst)), \(operand(src)), #\(lsb), #\(width)", into: &out)
+            emit("sbfx \(regForm(dst)), \(operand(src)), #\(lsb), #\(width)", into: &out)
         case .fcvt(let dst, let src, let fromDouble):
             if fromDouble {
                 // double → float: fcvt sN, dN
-                emit("fcvt \(sForm(reg(dst))), \(operand(src))", into: &out)
+                emit("fcvt \(sForm(regForm(dst))), \(operand(src))", into: &out)
             } else {
                 // float → double: fcvt dN, sN
-                emit("fcvt \(dForm(reg(dst))), \(operand(src))", into: &out)
+                emit("fcvt \(dForm(regForm(dst))), \(operand(src))", into: &out)
             }
         case .dmb:
             emit("dmb ish", into: &out)
         case .mrs(let dst, let regName):
-            emit("mrs \(reg(dst)), \(regName)", into: &out)
+            emit("mrs \(regForm(dst)), \(regName)", into: &out)
 
         // --- Type conversions ---
         case .neg(let dst, let src):
-            emit("neg \(reg(dst)), \(operand(src))", into: &out)
+            emit("neg \(regForm(dst)), \(operand(src))", into: &out)
         case .scvtf(let dst, let src, let toFloat):
             let form = toFloat ? "s" : "d"
             emit("scvtf \(form)\(dst.id), \(operand(src))", into: &out)
@@ -361,45 +388,45 @@ fileprivate struct Lowerer {
             emit("fmov \(form)\(dst.id), \(operand(src))", into: &out)
         case .fmovToInt(let dst, let src, let isFloat):
             let srcForm = isFloat ? "s" : "d"
-            emit("fmov \(reg(dst)), \(srcForm)\(src.asVReg?.id ?? 0)", into: &out)
+            emit("fmov \(regForm(dst)), \(srcForm)\(src.asVReg?.id ?? 0)", into: &out)
 
         // --- Multi-word arithmetic (for __int128) ---
         case .adds(let dst, let s1, let s2):
-            emit("adds \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("adds \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .subs(let dst, let s1, let s2):
-            emit("subs \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("subs \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .adc(let dst, let s1, let s2):
-            emit("adc \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("adc \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .sbc(let dst, let s1, let s2):
-            emit("sbc \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("sbc \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .umulh(let dst, let s1, let s2):
-            emit("umulh \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("umulh \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
         case .smulh(let dst, let s1, let s2):
-            emit("smulh \(reg(dst)), \(operand(s1)), \(operand(s2))", into: &out)
+            emit("smulh \(regForm(dst)), \(operand(s1)), \(operand(s2))", into: &out)
 
         // --- Stack pointer operations ---
         case .addSP(let dst, let value):
             if value >= -4095 && value <= 4095 {
-                emit("add \(reg(dst)), sp, #\(value)", into: &out)
+                emit("add \(regForm(dst)), sp, #\(value)", into: &out)
             } else {
                 emitLoadImm("x16", Int64(value), into: &out)
-                emit("add \(reg(dst)), sp, x16", into: &out)
+                emit("add \(regForm(dst)), sp, x16", into: &out)
             }
         case .subSP(let dst, let value):
             if value >= -4095 && value <= 4095 {
-                emit("sub \(reg(dst)), sp, #\(value)", into: &out)
+                emit("sub \(regForm(dst)), sp, #\(value)", into: &out)
             } else {
                 emitLoadImm("x16", Int64(value), into: &out)
-                emit("sub \(reg(dst)), sp, x16", into: &out)
+                emit("sub \(regForm(dst)), sp, x16", into: &out)
             }
 
         // --- Pre/post-indexed load/store ---
         case .loadPre(let dst, let addr, let offset, let width):
-            emit("\(width.loadMnemonic) \(reg(dst)), [\(operand(addr)), #\(offset)]!", into: &out)
+            emit("\(width.loadMnemonic) \(regForm(dst)), [\(operand(addr)), #\(offset)]!", into: &out)
         case .storePre(let src, let addr, let offset, let width):
             emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), #\(offset)]!", into: &out)
         case .loadPost(let dst, let addr, let offset, let width):
-            emit("\(width.loadMnemonic) \(reg(dst)), [\(operand(addr))], #\(offset)", into: &out)
+            emit("\(width.loadMnemonic) \(regForm(dst)), [\(operand(addr))], #\(offset)", into: &out)
         case .storePost(let src, let addr, let offset, let width):
             emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr))], #\(offset)", into: &out)
 
@@ -410,6 +437,10 @@ fileprivate struct Lowerer {
         // --- Comment ---
         case .comment(let text):
             emit("// \(text)", into: &out)
+
+        // --- Raw pass-through (directives, etc.) ---
+        case .raw(let text):
+            emit(text, into: &out)
         }
     }
 

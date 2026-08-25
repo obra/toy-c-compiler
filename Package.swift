@@ -11,6 +11,6 @@ let package = Package(
         .target(name: "CIR", dependencies: ["CCommon"], exclude: ["conversion-guide.md"]),
         .target(name: "CCodegen", dependencies: ["CCommon", "CSema", "CIR"]),
         .target(name: "CDriver", dependencies: ["CCommon", "CPreproc", "CParser", "CSema", "CCodegen", "CIR"]),
-        .testTarget(name: "CCompilerTests", dependencies: ["CCommon", "CPreproc", "CParser", "CSema", "CCodegen", "CDriver"]),
+        .testTarget(name: "CCompilerTests", dependencies: ["CCommon", "CPreproc", "CParser", "CSema", "CCodegen", "CIR", "CDriver"]),
     ]
 )
