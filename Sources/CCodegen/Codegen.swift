@@ -3360,6 +3360,17 @@ public final class Codegen {
                 }
                 return reg
             }
+            // Vector-to-scalar cast: reinterpret vector bits as integer
+            if case .vector = fromType, toType.isInteger {
+                let addrReg = emitAddr(c.expr)
+                let toSize = toType.sizeInBytes ?? 8
+                if toSize <= 4 {
+                    emitLine("ldr \(addrReg.w), [\(addrReg.x)]")
+                } else {
+                    emitLine("ldr \(addrReg.x), [\(addrReg.x)]")
+                }
+                return addrReg
+            }
             // Integer-to-integer cast: may need sign/zero extension
             if fromType.isInteger && toType.isInteger {
                 let reg = emitExpr(c.expr)
