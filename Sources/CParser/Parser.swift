@@ -970,6 +970,7 @@ public final class Parser {
             if hasDouble { return .complexDouble }
             return .complexDouble
         }
+        if hasChar { return isUnsigned ? .uchar : .char }
         if hasDouble {
             if longCount > 0 { return .longDouble }
             return .double
