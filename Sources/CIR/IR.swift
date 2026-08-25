@@ -169,6 +169,8 @@ public enum IRInst: Equatable {
     // --- Memory: load/store ---
     case load(dst: VReg, addr: Operand, offset: Int, width: Width, signed: Bool)
     case store(src: Operand, addr: Operand, offset: Int, width: Width)
+    case loadReg(dst: VReg, addr: Operand, index: Operand, width: Width, signed: Bool) // load with register offset: [base, index]
+    case storeReg(src: Operand, addr: Operand, index: Operand, width: Width) // store with register offset: [base, index]
 
     // Load/store pair (for register save/restore)
     case ldp(dst1: VReg, dst2: VReg, addr: Operand, offset: Int)

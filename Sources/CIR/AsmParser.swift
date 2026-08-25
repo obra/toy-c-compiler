@@ -465,9 +465,7 @@ func parseInstruction(
             let dst = parseReg(args[0], counter: &counter)!
             let (width, signed) = loadWidth(m)
             // Check for post-indexed: "ldr x9, [sp], #16"
-            // Tokenized as: ["x9", "[sp]", "#16"] or ["x9", "[sp, #-16]"]
             if args.count >= 3 && args[1].hasPrefix("[") && args[1].hasSuffix("]") && args[2].hasPrefix("#") {
-                // Post-indexed: [reg], #offset
                 let base = parseOperand(args[1].trimmingCharacters(in: CharacterSet(charactersIn: "[]")), counter: &counter)
                 let offStr = args[2].dropFirst()
                 let offset = Int(offStr) ?? 0
@@ -477,6 +475,10 @@ func parseInstruction(
             if let mem = parseMemOperand(memStr, counter: &counter) {
                 if mem.preIndexed {
                     return .loadPre(src: dst, addr: mem.base, offset: mem.offset, width: width)
+                }
+                if let regOff = mem.regOffset {
+                    // Register offset: [base, index]
+                    return .loadReg(dst: dst, addr: mem.base, index: regOff, width: width, signed: signed)
                 }
                 return .load(dst: dst, addr: mem.base, offset: mem.offset, width: width, signed: signed)
             }
@@ -498,6 +500,9 @@ func parseInstruction(
             if let mem = parseMemOperand(memStr, counter: &counter) {
                 if mem.preIndexed {
                     return .storePre(src: src, addr: mem.base, offset: mem.offset, width: width)
+                }
+                if let regOff = mem.regOffset {
+                    return .storeReg(src: src, addr: mem.base, index: regOff, width: width)
                 }
                 return .store(src: src, addr: mem.base, offset: mem.offset, width: width)
             }

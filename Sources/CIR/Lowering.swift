@@ -276,6 +276,11 @@ fileprivate struct Lowerer {
             emit("\(mnem) \(regForm(dst)), [\(operand(addr)), #\(offset)]", into: &out)
         case .store(let src, let addr, let offset, let width):
             emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), #\(offset)]", into: &out)
+        case .loadReg(let dst, let addr, let index, let width, let signed):
+            let mnem = signed ? width.loadSignedMnemonic : width.loadMnemonic
+            emit("\(mnem) \(regForm(dst)), [\(operand(addr)), \(operand(index))]", into: &out)
+        case .storeReg(let src, let addr, let index, let width):
+            emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), \(operand(index))]", into: &out)
 
         // --- Load/store pair ---
         case .ldp(let d1, let d2, let addr, let offset):

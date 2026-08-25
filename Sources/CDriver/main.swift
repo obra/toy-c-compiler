@@ -62,7 +62,9 @@ private func allVRegs(in inst: IRInst) -> [VReg] {
     case .uxtb(let d, let s): return [d] + vregsIn(s)
     case .uxth(let d, let s): return [d] + vregsIn(s)
     case .load(let d, let a, _, _, _): return [d] + vregsIn(a)
+    case .loadReg(let d, let a, let i, _, _): return [d] + vregsIn(a) + vregsIn(i)
     case .store(let s, let a, _, _): return vregsIn(s) + vregsIn(a)
+    case .storeReg(let s, let a, let i, _): return vregsIn(s) + vregsIn(a) + vregsIn(i)
     case .ldp(let d1, let d2, let a, _): return [d1, d2] + vregsIn(a)
     case .stp(let s1, let s2, let a, _): return vregsIn(s1) + vregsIn(s2) + vregsIn(a)
     case .ldpPre(let d1, let d2, let a, _): return [d1, d2] + vregsIn(a)
@@ -211,8 +213,9 @@ struct CompilerMain {
             if useIR {
                 let asmLines = asm.split(separator: "\n").map { String($0) }
                 let ir = parseAssembly(asmLines)
-                let regMap = identityRegMap(ir)
-                let lowered = lowerIR(ir, regMap: regMap)
+                let optimized = optimizeIR(ir)
+                let regMap = identityRegMap(optimized)
+                let lowered = lowerIR(optimized, regMap: regMap)
                 asm = lowered.joined(separator: "\n") + "\n"
             }
 
