@@ -858,10 +858,17 @@ public final class Codegen {
                             emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
                         }
                     }
-                } else if case .vector(let elemType, _) = t {
-                    // Vector initializer: emit each element with correct size
+                } else if case .vector(let elemType, let count) = t {
+                    // Vector initializer: emit each element with correct size,
+                    // then zero-fill remaining elements.
+                    let elemSize = elemType.sizeInBytes ?? 8
+                    var emitted = 0
                     for v in il.values {
-                        emitInitializer(v, size: elemType.sizeInBytes ?? 8, type: elemType)
+                        emitInitializer(v, size: elemSize, type: elemType)
+                        emitted += 1
+                    }
+                    if emitted < count {
+                        emitLine(".zero \((count - emitted) * elemSize)")
                     }
                 } else {
                     // Scalar type with brace-enclosed initializer: emit first value
