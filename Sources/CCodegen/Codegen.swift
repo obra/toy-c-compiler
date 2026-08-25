@@ -11766,7 +11766,7 @@ public final class Codegen {
             emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
             emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
             regAlloc.free(src); regAlloc.free(dst)
-        case .subscript_, .member, .unary:
+        case .subscript_, .member:
             // These return an address for __int128 — copy 16 bytes
             let src = emitExpr(expr)
             let dst = regAlloc.alloc() ?? .x9
@@ -11775,6 +11775,28 @@ public final class Codegen {
             emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
             emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
             regAlloc.free(src); regAlloc.free(dst)
+        case .unary:
+            // Only treat as address-returning if the result type is __int128.
+            // Non-int128 unary expressions (e.g. -1 where -1 is int) return
+            // scalar values, not addresses — loading 16 bytes from a scalar
+            // causes a segfault.
+            if isInt128(exprType(expr).unqualified) {
+                let src = emitExpr(expr)
+                let dst = regAlloc.alloc() ?? .x9
+                if offset >= -256 && offset <= 255 { emitLine("add \(dst.x), x29, #\(offset)") }
+                else { emitLoadImm("x17", Int64(offset)); emitLine("add \(dst.x), x29, x17") }
+                emitLine("ldr x16, [\(src.x)]"); emitStoreFP("x16", offset)
+                emitLine("ldr x16, [\(src.x), #8]"); emitStoreFP("x16", offset + 8)
+                regAlloc.free(src); regAlloc.free(dst)
+            } else {
+                // Non-int128 unary: emitExpr returns scalar, sign-extend to 128 bits
+                let lo = emitExpr(expr)
+                emitStoreFP(lo.x, offset)
+                let h = offset + 8
+                emitLine("asr \(lo.x), \(lo.x), #63")
+                emitStoreFP(lo.x, h)
+                regAlloc.free(lo)
+            }
         default:
             // Fallback: emitExpr returns lo value. Sign-extend to 128 bits.
             let lo = emitExpr(expr)
