@@ -27,7 +27,14 @@ public func optimizeIR(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
-        // Pass 3: Dead code elimination (conservative — only removes pure insts
+        // Pass 3: Redundant branch elimination
+        let (branchResult, branchChanged) = redundantBranchElimination(result)
+        if branchChanged {
+            result = branchResult
+            changed = true
+        }
+
+        // Pass 4: Dead code elimination (conservative — only removes pure insts
         // whose results are never used, accounting for ABI implicit uses)
         let (dceResult, dceChanged) = deadCodeElimination(result)
         if dceChanged {
@@ -39,6 +46,62 @@ public func optimizeIR(_ insts: [IRInst]) -> [IRInst] {
     }
 
     return result
+}
+
+// MARK: - Redundant Branch Elimination
+
+/// Remove unconditional branches (`b label`) where the next non-empty
+/// instruction is `label:`. The branch falls through naturally.
+/// Also removes conditional branches that branch to the immediately
+/// following label (the condition doesn't matter — both paths go to the
+/// same place, so the branch is redundant and can be removed).
+public func redundantBranchElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
+    var result: [IRInst] = []
+    var changed = false
+
+    for i in 0..<insts.count {
+        let inst = insts[i]
+
+        switch inst {
+        case .b(let label):
+            // Check if next non-comment instruction is this label
+            if let next = nextRealInstruction(insts, after: i), case .label(let nextLabel) = next, nextLabel == label {
+                // Branch to immediately following label — remove it
+                changed = true
+                continue
+            }
+            result.append(inst)
+
+        case .bcond(let cond, let label):
+            // Conditional branch to immediately following label — remove it
+            // (both taken and not-taken go to the same place)
+            if let next = nextRealInstruction(insts, after: i), case .label(let nextLabel) = next, nextLabel == label {
+                _ = cond
+                changed = true
+                continue
+            }
+            result.append(inst)
+
+        default:
+            result.append(inst)
+        }
+    }
+
+    return (result, changed)
+}
+
+/// Find the next non-comment instruction after index i.
+func nextRealInstruction(_ insts: [IRInst], after i: Int) -> IRInst? {
+    var j = i + 1
+    while j < insts.count {
+        switch insts[j] {
+        case .comment, .raw:
+            j += 1
+        default:
+            return insts[j]
+        }
+    }
+    return nil
 }
 
 // MARK: - Dead Code Elimination

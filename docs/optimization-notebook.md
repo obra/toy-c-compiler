@@ -1,0 +1,56 @@
+# Optimization Engineering Notebook
+
+## Baseline (before IR optimizations)
+- Original assembly: 562,433 instructions
+- Target: beat clang -O3 (currently ~2.93x of clang -O0)
+
+## Instruction breakdown (SQLite, original)
+```
+141601 ldr      ← biggest target: redundant reloads
+ 87220 str      ← dead stores
+ 81331 add      ← address computations
+ 75406 mov      ← register copies
+ 29980 b        ← branches (hard to reduce)
+ 18115 sxtw     ← sign extensions (many dead)
+ 13099 bl       ← calls
+ 12724 cmp
+  7416 cbz
+  5685 sub
+  5347 movn
+  5137 ret
+  5137 ldp
+  4932 and
+  4649 ldrb
+```
+
+## Optimization Log
+
+### 1. Simple DCE + copy prop + constant folding (commit 7d7e891)
+- Result: 562,433 → 560,985 (1,448 removed, 0.26%)
+- What went well: removed 2,576 dead stp (callee-saved saves for unused registers)
+- What went bad: copy propagation created self-references (mov x, x) — fixed by checking
+- What went bad: movk instructions left as comments — fixed by DCE removing them
+- What went bad: VReg isWord caused x9/w9 to be treated as different registers — fixed with NormalizedReg
+
+### 2. Cross-block DCE with liveness analysis (commit c2b5139)
+- Result: 562,433 → 538,494 (23,939 removed, 4.3%)
+- What went well: liveness analysis found 5,810 dead sxtw, 4,339 dead mov, 3,460 dead add
+- What went bad: labels dropped from empty blocks — fixed by preserving empty label-only blocks
+- What went bad: initial simple DCE didn't account for ABI implicit uses (x0-x7 for calls, x0 for ret) — fixed
+- 16x more effective than simple DCE
+
+### Next: Analyze most common reducible patterns
+
+### 3. Load forwarding (commit 4406fe0)
+- Result: 538,494 → 537,624 (870 net removed, but 4,981 ldr→mov conversions)
+- What went well: 4,981 fewer memory loads (ldr → register mov)
+- What went bad: net instruction count barely changed because movs replace ldrs
+- But the movs are cheaper than ldrs at runtime (register vs memory)
+- Cache invalidated at calls, branches, labels, pre/post-indexed ops
+
+### Analysis of remaining opportunities (after load forwarding)
+- 66 unconditional branches to immediately following label (redundant)
+- 434 ldr w + sxtw pairs (could use ldrsw — needs type info)
+- 0 dead stores (single-pass codegen doesn't produce them)
+- 0 mov x0 before ret (peephole already handles)
+- 0 mov swap patterns (peephole already handles)
