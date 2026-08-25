@@ -26,6 +26,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
     case pointer(to: CType)
     case array(of: CType, count: Int)
     case incompleteArray(of: CType)
+    case vector(of: CType, count: Int)  // GCC __attribute__((vector_size(N))) — like array but with vector semantics
     case function(params: [CType], returnType: CType, variadic: Bool)
     case structType(RecordType)
     case unionType(RecordType)
@@ -169,6 +170,7 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         switch self {
         case .array: return true
         case .incompleteArray: return true
+        case .vector: return true  // vector is array-like
         case .qualified(let base, _, _, _): return base.isArray
         case .typedef(_, let base): return base.isArray
         default: return false
@@ -251,6 +253,9 @@ public indirect enum CType: Equatable, Hashable, Sendable {
             // (e.g., 991014-1 has short[~4.6e18] which overflows Int64)
             let (result, overflow) = elemSize.multipliedReportingOverflow(by: count)
             return overflow ? Int.max : result
+        case .vector(let elem, let count):
+            guard let elemSize = elem.sizeInBytes else { return nil }
+            return elemSize * count
         case .incompleteArray:
             return nil
         case .structType(let rec), .unionType(let rec):
@@ -284,6 +289,8 @@ public indirect enum CType: Equatable, Hashable, Sendable {
         case .pointer, .function:
             return 8
         case .array(let elem, _):
+            return elem.alignOf
+        case .vector(let elem, _):
             return elem.alignOf
         case .incompleteArray(let elem):
             return elem.alignOf

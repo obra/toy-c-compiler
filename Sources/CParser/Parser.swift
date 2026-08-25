@@ -707,7 +707,9 @@ public final class Parser {
 
         repeat {
             let (name, type, declLoc) = try parseDeclarator(baseType)
-            // Skip __attribute__ after the typedef declarator
+            // Extract vector_size from trailing __attribute__((vector_size(N)))
+            // before skipping the rest of the attributes.
+            _ = extractAlignment()
             skipAsmAndAttributes()
             // Apply vector_size attribute from trailing __attribute__((vector_size(N)))
             var finalType = type
@@ -715,7 +717,7 @@ public final class Parser {
                 let elemSize = type.sizeInBytes ?? 4
                 let count = vs / elemSize
                 if count > 0 {
-                    finalType = .array(of: type, count: count)
+                    finalType = .vector(of: type, count: count)
                 }
                 pendingVectorSize = nil
             }
@@ -910,12 +912,12 @@ public final class Parser {
             baseType = .qualified(base: baseType, const: isConst, volatile: isVolatile, restrict: isRestrict)
         }
 
-        // Apply vector_size: wrap base type in an array of (vectorSize / sizeof(base)) elements
+        // Apply vector_size: wrap base type in a vector of (vectorSize / sizeof(base)) elements
         if let vs = pendingVectorSize {
             let elemSize = baseType.sizeInBytes ?? 4
             let count = vs / elemSize
             if count > 0 {
-                baseType = .array(of: baseType, count: count)
+                baseType = .vector(of: baseType, count: count)
             }
             pendingVectorSize = nil
         }
@@ -1533,6 +1535,8 @@ public final class Parser {
             }
         }
 
+        // Extract vector_size from postfix __attribute__ before skipping.
+        _ = extractAlignment()
         // Skip postfix __attribute__ after declarator (e.g., int a[4] __attribute__((aligned(16))))
         skipAsmAndAttributes()
 

@@ -3086,8 +3086,17 @@ public final class Codegen {
             }
             if let offset = localVarOffsets[id.name] {
                 let reg = regAlloc.alloc() ?? .x9
-                // If the local is an array, return the address (array decays to pointer)
+                // If the local is an array or vector, return the address (array decays to pointer)
                 if let t = localVarTypes[id.name], case .array = t.unqualified {
+                    if offset >= -256 && offset <= 255 {
+                        emitLine("add \(reg.x), x29, #\(offset)")
+                    } else {
+                        emitLoadImm("x16", Int64(offset))
+                        emitLine("add \(reg.x), x29, x16")
+                    }
+                    return reg
+                }
+                if let t = localVarTypes[id.name], case .vector = t.unqualified {
                     if offset >= -256 && offset <= 255 {
                         emitLine("add \(reg.x), x29, #\(offset)")
                     } else {
@@ -3178,8 +3187,11 @@ public final class Codegen {
                     // External global (e.g., __stderrp) — load address through GOT, then load value
                     emitLine("adrp \(reg.x), _\(id.name)@GOTPAGE")
                     emitLine("ldr \(reg.x), [\(reg.x), _\(id.name)@GOTPAGEOFF]")
-                    // If the global is an array, return the address (array decays to pointer)
+                    // If the global is an array or vector, return the address (array decays to pointer)
                     if let gt = globalVarTypes[id.name], case .array = gt.unqualified {
+                        return reg
+                    }
+                    if let gt = globalVarTypes[id.name], case .vector = gt.unqualified {
                         return reg
                     }
                     // If the global is a complex type, return the address (for complex copy)
@@ -3195,8 +3207,11 @@ public final class Codegen {
                 } else {
                     emitLine("adrp \(reg.x), _\(id.name)@PAGE")
                     emitLine("add \(reg.x), \(reg.x), _\(id.name)@PAGEOFF")
-                    // If the global is an array, return the address (array decays to pointer)
+                    // If the global is an array or vector, return the address (array decays to pointer)
                     if let gt = globalVarTypes[id.name], case .array = gt.unqualified {
+                        return reg
+                    }
+                    if let gt = globalVarTypes[id.name], case .vector = gt.unqualified {
                         return reg
                     }
                     // If the global is a complex type, return the address (for complex copy)
@@ -4160,26 +4175,21 @@ public final class Codegen {
         if leftType.isComplex || rightType.isComplex {
             return emitComplexBinary(b, leftType: leftType, rightType: rightType)
         }
-        // Check for vector (array) type operations — element-wise arithmetic
+        // Check for vector type operations — element-wise arithmetic
         let leftType2 = exprType(b.left).unqualified
         let rightType2 = exprType(b.right).unqualified
-        if case .array(let elemType, let count) = leftType2,
-           case .array(_, let rcount) = rightType2, count == rcount,
+        // Vector op Vector: element-wise
+        if case .vector(let elemType, let count) = leftType2,
+           case .vector(_, let rcount) = rightType2, count == rcount,
            b.op != .logicAnd && b.op != .logicOr && b.op != .comma {
             return emitVectorBinary(b, elemType: elemType, count: count)
         }
-        // Also handle scalar * vector and vector * scalar
-        // BUT: array + int is pointer arithmetic in C, not vector-scalar.
-        // Only dispatch to vector-scalar for *, not + or - (which are pointer arith
-        // for regular arrays). The vector_size extension uses + and - too, but
-        // without distinguishing vector arrays from regular arrays, we must
-        // prioritize standard C pointer arithmetic.
-        if case .array(let elemType, let count) = leftType2, rightType2 == elemType.unqualified,
-           b.op == .mul || b.op == .div {
+        // Vector op Scalar: broadcast scalar to all elements
+        if case .vector(let elemType, let count) = leftType2, !rightType2.isArray {
             return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: true)
         }
-        if case .array(let elemType, let count) = rightType2, leftType2 == elemType.unqualified,
-           b.op == .mul || b.op == .div {
+        // Scalar op Vector: broadcast scalar to all elements
+        if case .vector(let elemType, let count) = rightType2, !leftType2.isArray {
             return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: false)
         }
 
@@ -4771,6 +4781,28 @@ public final class Codegen {
             case .shr:
                 if elemType.isSigned { emitLine("asr \(arithReg), \(ldStReg17), \(ldStReg)") }
                 else { emitLine("lsr \(arithReg), \(ldStReg17), \(ldStReg)") }
+            case .eq:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                emitLine("csetm \(arithReg), eq")
+            case .ne:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                emitLine("csetm \(arithReg), ne")
+            case .lt:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), lt") }
+                else { emitLine("csetm \(arithReg), lo") }
+            case .le:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), le") }
+                else { emitLine("csetm \(arithReg), ls") }
+            case .gt:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), gt") }
+                else { emitLine("csetm \(arithReg), hi") }
+            case .ge:
+                emitLine("cmp \(ldStReg17), \(ldStReg)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), ge") }
+                else { emitLine("csetm \(arithReg), hs") }
             default: emitLine("add \(arithReg), \(ldStReg17), \(ldStReg)")
             }
             // Store result[i]: result addr at [sp+16]
@@ -4794,40 +4826,146 @@ public final class Codegen {
         let scalarReg = emitExpr(scalarExpr)
         let elemSize = elemType.sizeInBytes ?? 4
         let totalSize = (count * elemSize + 15) & ~15
-        emitLine("sub sp, sp, #\(totalSize)")
+        ensureLocalSpace(size: totalSize)
+        let resultOffset = -localOffset
         let resultReg = regAlloc.alloc() ?? .x9
-        emitLine("mov \(resultReg.x), sp")
-        // Save: [sp+0]=result, [sp+8]=vecAddr, [sp+16]=scalar
-        emitLine("str \(scalarReg.x), [sp, #-16]!")
+        if resultOffset >= -256 && resultOffset <= 255 {
+            emitLine("add \(resultReg.x), x29, #\(resultOffset)")
+        } else {
+            emitLoadImm("x16", Int64(resultOffset))
+            emitLine("add \(resultReg.x), x29, x16")
+        }
+        // Convert scalar to element type if needed
+        let scalarType = exprType(scalarExpr).unqualified
+        if scalarType.isFloating && !elemType.isFloating {
+            // float/double → int: fcvtzs/fcvtzu
+            let srcReg = scalarType == .float ? "s\(scalarReg.regNum)" : "d\(scalarReg.regNum)"
+            let cvt = elemType.isUnsigned ? "fcvtzu" : "fcvtzs"
+            if elemSize <= 4 { emitLine("\(cvt) w\(scalarReg.regNum), \(srcReg)") }
+            else { emitLine("\(cvt) x\(scalarReg.regNum), \(srcReg)") }
+        } else if !scalarType.isFloating && elemType.isFloating {
+            // int → float/double: scvtf/ucvtf
+            if scalarType.isSigned32Bit { emitLine("sxtw \(scalarReg.x), \(scalarReg.w)") }
+            let cvtf = scalarType.isUnsigned ? "ucvtf" : "scvtf"
+            if elemType == .float { emitLine("\(cvtf) s\(scalarReg.regNum), \(scalarReg.x)") }
+            else { emitLine("\(cvtf) d\(scalarReg.regNum), \(scalarReg.x)") }
+        } else if scalarType.isFloating && elemType.isFloating {
+            // float ↔ double conversion
+            if scalarType == .float && elemType != .float {
+                emitLine("fcvt d\(scalarReg.regNum), s\(scalarReg.regNum)")
+            } else if scalarType != .float && elemType == .float {
+                emitLine("fcvt s\(scalarReg.regNum), d\(scalarReg.regNum)")
+            }
+        } else if !scalarType.isFloating && !elemType.isFloating {
+            // Integer: sign-extend or truncate to element width
+            if elemSize <= 4 && scalarType.isSigned && (scalarType.sizeInBytes ?? 4) > 4 {
+                emitLine("sxtw \(scalarReg.w), \(scalarReg.w)")
+            } else if elemSize <= 4 && (scalarType.sizeInBytes ?? 4) > 4 {
+                // unsigned, truncate to 32-bit
+            }
+        }
+        // Save: scalarReg and vecAddr on stack
+        let fpPrefix = elemType.isFloating ? (elemType == .float ? "s" : "d") : ""
+        let scalarFpReg = elemType.isFloating ? "\(fpPrefix)\(scalarReg.regNum)" : "\(scalarReg.x)"
+        emitLine("str \(scalarFpReg), [sp, #-16]!")
         emitLine("str \(vecAddr.x), [sp, #-16]!")
         emitLine("str \(resultReg.x), [sp, #-16]!")
+        // Stack: sp+0=result, sp+16=vecAddr, sp+32=scalar
+
+        // Load/store instructions for element size
+        let loadInstr: String
+        let storeInstr: String
+        if elemType.isFloating {
+            loadInstr = "ldr"
+            storeInstr = "str"
+        } else if elemSize <= 4 {
+            if elemType.isSigned {
+                switch elemSize {
+                case 1: loadInstr = "ldrsb"; storeInstr = "strb"
+                case 2: loadInstr = "ldrsh"; storeInstr = "strh"
+                default: loadInstr = "ldr"; storeInstr = "str"
+                }
+            } else {
+                switch elemSize {
+                case 1: loadInstr = "ldrb"; storeInstr = "strb"
+                case 2: loadInstr = "ldrh"; storeInstr = "strh"
+                default: loadInstr = "ldr"; storeInstr = "str"
+                }
+            }
+        } else {
+            loadInstr = "ldr"; storeInstr = "str"
+        }
+        let ldReg = elemType.isFloating ? (elemType == .float ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+        let scReg = elemType.isFloating ? (elemType == .float ? "s17" : "d17") : (elemSize <= 4 ? "w17" : "x17")
+
         for i in 0..<count {
             let offset = i * elemSize
-            // Load vector element via saved pointer at [sp+8]
-            emitLine("ldr x9, [sp, #8]")
-            if offset > 0 { emitLine("ldr x16, [x9, #\(offset)]") }
-            else { emitLine("ldr x16, [x9]") }
-            emitLine("str x16, [sp, #-16]!")  // push vec[i]
-            // Load scalar from [sp+32] (offset by 16 from push)
-            emitLine("ldr x17, [sp, #32]")
-            // vec[i] is at [sp, #0] (just pushed)
-            emitLine("ldr x16, [sp, #0]")
-            // Apply op: for scalarOnRight, left=vec, right=scalar
-            let (a, c) = scalarOnRight ? ("x16", "x17") : ("x17", "x16")
-            switch b.op {
-            case .add: emitLine("add x16, \(a), \(c)")
-            case .sub: emitLine("sub x16, \(a), \(c)")
-            case .mul: emitLine("mul x16, \(a), \(c)")
-            case .div:
-                if elemType.isSigned { emitLine("sdiv x16, \(a), \(c)") }
-                else { emitLine("udiv x16, \(a), \(c)") }
-            default: emitLine("add x16, \(a), \(c)")
-            }
-            // Store result[i] via saved pointer at [sp+16] (offset by 16 from push)
+            // Load vector element via saved pointer at [sp+16]
             emitLine("ldr x9, [sp, #16]")
-            if offset > 0 { emitLine("str x16, [x9, #\(offset)]") }
-            else { emitLine("str x16, [x9]") }
-            emitLine("add sp, sp, #16")  // pop vec[i]
+            if offset > 0 { emitLine("\(loadInstr) \(ldReg), [x9, #\(offset)]") }
+            else { emitLine("\(loadInstr) \(ldReg), [x9]") }
+            // Load scalar from [sp+32]
+            if elemType.isFloating {
+                emitLine("\(loadInstr) \(scReg), [sp, #32]")
+            } else if elemSize <= 4 {
+                emitLine("ldr \(scReg), [sp, #32]")
+            } else {
+                emitLine("ldr \(scReg), [sp, #32]")
+            }
+            // Apply op: for scalarOnRight, left=vec, right=scalar
+            let (a, c) = scalarOnRight ? (ldReg, scReg) : (scReg, ldReg)
+            let arithReg = elemType.isFloating ? (elemType == .float ? "s16" : "d16") : (elemSize <= 4 ? "w16" : "x16")
+            switch b.op {
+            case .add:
+                if elemType.isFloating { emitLine("fadd \(arithReg), \(a), \(c)") }
+                else { emitLine("add \(arithReg), \(a), \(c)") }
+            case .sub:
+                if elemType.isFloating { emitLine("fsub \(arithReg), \(a), \(c)") }
+                else { emitLine("sub \(arithReg), \(a), \(c)") }
+            case .mul:
+                if elemType.isFloating { emitLine("fmul \(arithReg), \(a), \(c)") }
+                else { emitLine("mul \(arithReg), \(a), \(c)") }
+            case .div:
+                if elemType.isFloating { emitLine("fdiv \(arithReg), \(a), \(c)") }
+                else if elemType.isSigned { emitLine("sdiv \(arithReg), \(a), \(c)") }
+                else { emitLine("udiv \(arithReg), \(a), \(c)") }
+            case .mod:
+                let divReg = elemSize <= 4 ? "w9" : "x9"
+                if elemType.isSigned { emitLine("sdiv \(divReg), \(a), \(c)"); emitLine("msub \(arithReg), \(divReg), \(c), \(a)") }
+                else { emitLine("udiv \(divReg), \(a), \(c)"); emitLine("msub \(arithReg), \(divReg), \(c), \(a)") }
+            case .bitAnd: emitLine("and \(arithReg), \(a), \(c)")
+            case .bitOr: emitLine("orr \(arithReg), \(a), \(c)")
+            case .bitXor: emitLine("eor \(arithReg), \(a), \(c)")
+            case .shl: emitLine("lsl \(arithReg), \(a), \(c)")
+            case .shr:
+                if elemType.isSigned { emitLine("asr \(arithReg), \(a), \(c)") }
+                else { emitLine("lsr \(arithReg), \(a), \(c)") }
+            case .eq:
+                emitLine("cmp \(a), \(c)"); emitLine("csetm \(arithReg), eq")
+            case .ne:
+                emitLine("cmp \(a), \(c)"); emitLine("csetm \(arithReg), ne")
+            case .lt:
+                emitLine("cmp \(a), \(c)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), lt") }
+                else { emitLine("csetm \(arithReg), lo") }
+            case .le:
+                emitLine("cmp \(a), \(c)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), le") }
+                else { emitLine("csetm \(arithReg), ls") }
+            case .gt:
+                emitLine("cmp \(a), \(c)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), gt") }
+                else { emitLine("csetm \(arithReg), hi") }
+            case .ge:
+                emitLine("cmp \(a), \(c)")
+                if elemType.isSigned { emitLine("csetm \(arithReg), ge") }
+                else { emitLine("csetm \(arithReg), hs") }
+            default: emitLine("add \(arithReg), \(a), \(c)")
+            }
+            // Store result[i] via saved pointer at [sp+0]
+            emitLine("ldr x9, [sp, #0]")
+            if offset > 0 { emitLine("\(storeInstr) \(arithReg), [x9, #\(offset)]") }
+            else { emitLine("\(storeInstr) \(arithReg), [x9]") }
         }
         emitLine("add sp, sp, #48")  // 3 saved values
         regAlloc.free(vecAddr)
@@ -5033,6 +5171,7 @@ public final class Codegen {
             let pointedType: CType
             if case .pointer(let to) = operandType { pointedType = to }
             else if case .array(let elem, _) = operandType { pointedType = elem }
+            else if case .vector(let elem, _) = operandType { pointedType = elem }
             else { pointedType = .int }
             // If pointed type is an array, return address (array decays to pointer)
             if case .array = pointedType.unqualified {
@@ -7751,11 +7890,18 @@ public final class Codegen {
             // For pointer arithmetic, result type is the pointer type
             var lt = exprType(b.left)
             var rt = exprType(b.right)
-            // Array-to-pointer decay in expressions
+            // Array-to-pointer decay in expressions (NOT for vector types)
             if case .array(let e, _) = lt.unqualified { lt = .pointer(to: e) }
             else if case .incompleteArray(let e) = lt.unqualified { lt = .pointer(to: e) }
             if case .array(let e, _) = rt.unqualified { rt = .pointer(to: e) }
             else if case .incompleteArray(let e) = rt.unqualified { rt = .pointer(to: e) }
+            // Vector op Vector → result is the vector type (left)
+            if case .vector = lt.unqualified, case .vector = rt.unqualified {
+                return lt
+            }
+            // Vector op Scalar or Scalar op Vector → result is the vector type
+            if case .vector = lt.unqualified { return lt }
+            if case .vector = rt.unqualified { return rt }
             if lt.isPointer && rt.isInteger { return lt }
             if lt.isInteger && rt.isPointer { return rt }
             // Shift operators: result type is the promoted left operand
@@ -7935,6 +8081,7 @@ public final class Codegen {
             let bt = exprType(s.base)
             if case .pointer(let to) = bt.unqualified { return to }
             if case .array(let elem, _) = bt.unqualified { return elem }
+            if case .vector(let elem, _) = bt.unqualified { return elem }
             if case .incompleteArray(let elem) = bt.unqualified { return elem }
             return .int
         case .member(let m):
@@ -8443,6 +8590,7 @@ public final class Codegen {
             // Determine the element type (what the base points to or contains)
             let elemType: CType
             if case .array(let e, _) = baseTypeFull { elemType = e }
+            else if case .vector(let e, _) = baseTypeFull { elemType = e }
             else if case .incompleteArray(let e) = baseTypeFull { elemType = e }
             else if case .pointer(let e) = baseTypeFull { elemType = e }
             else { elemType = .int }
@@ -8639,6 +8787,7 @@ public final class Codegen {
         let bt = exprType(s.base).unqualified
         let elemType: CType
         if case .array(let e, _) = bt { elemType = e }
+        else if case .vector(let e, _) = bt { elemType = e }
         else if case .incompleteArray(let e) = bt { elemType = e }
         else if case .pointer(let e) = bt { elemType = e }
         else { elemType = .int }
@@ -8792,7 +8941,7 @@ public final class Codegen {
     /// Check if a type is an aggregate (struct or union) that needs byte-wise copy.
     private func isAggregateType(_ t: CType) -> Bool {
         switch t.unqualified {
-        case .structType, .unionType, .array: return true
+        case .structType, .unionType, .array, .vector: return true
         default: return false
         }
     }
@@ -9568,7 +9717,7 @@ public final class Codegen {
             // Restore the base address for the caller
             emitLine("ldr x9, [sp, #8]")
             emitLine("str x9, [sp, #0]")
-        } else if case .array(let elemType, _) = t {
+        } else if let elemType = { if case .array(let e, _) = t { return e }; if case .vector(let e, _) = t { return e }; return nil }() {
             let elemSize = elemType.sizeInBytes ?? 8
             if case .structType(let subRec) = elemType.unqualified {
                 // Array of structs: consume values per struct element
