@@ -2615,9 +2615,20 @@ public final class Codegen {
                                     regAlloc.free(dstAddr)
                                     regAlloc.free(srcAddr)
                                 } else {
-                                    let reg = emitExpr(init_)
-                                    // Convert type if needed (e.g., double→float, int→float)
+                                    let reg: ARM64Reg
                                     let initType = exprType(init_).unqualified
+                                    // If init returns __int128 but var is smaller, extract lo value
+                                    if isInt128(initType) && !isInt128(vd.type) {
+                                        let addr = emitExpr(init_)
+                                        reg = regAlloc.alloc() ?? .x9
+                                        emitLine("ldr \(reg.x), [\(addr.x)]")
+                                        regAlloc.free(addr)
+                                        truncateReg(reg, type: vd.type.unqualified)
+                                        storeLocal(vd.name, reg, type: vd.type)
+                                        regAlloc.free(reg)
+                                        continue
+                                    }
+                                    reg = emitExpr(init_)
                                     if initType.isFloating && varType.isFloating {
                                         convertFloat(reg, from: initType, to: vd.type)
                                     } else if initType.isInteger && varType.isFloating {
