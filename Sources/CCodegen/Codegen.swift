@@ -2312,6 +2312,20 @@ public final class Codegen {
                                     // _Complex variable initialization
                                     let isFloat = (varType == .complexFloat)
                                     emitComplexExpr(init_, storeAtOffset: offset, isFloat: isFloat)
+                                } else if case .array = varType, let arrSize = varType.sizeInBytes, arrSize > 0,
+                                          let offset = localVarOffsets[vd.name] {
+                                    // Array (vector) initialization from expression: copy data
+                                    let srcAddr = emitExpr(init_)  // returns address of data
+                                    let dstAddr = regAlloc.alloc() ?? .x9
+                                    if offset >= -256 && offset <= 255 {
+                                        emitLine("add \(dstAddr.x), x29, #\(offset)")
+                                    } else {
+                                        emitLoadImm("x16", Int64(offset))
+                                        emitLine("add \(dstAddr.x), x29, x16")
+                                    }
+                                    emitStructCopyToField(dstAddr.x, srcAddr, arrSize)
+                                    regAlloc.free(dstAddr)
+                                    regAlloc.free(srcAddr)
                                 } else {
                                     let reg = emitExpr(init_)
                                     // Convert type if needed (e.g., double→float, int→float)
@@ -3695,6 +3709,24 @@ public final class Codegen {
     }
 
     private func emitBinaryExpr(_ b: BinaryExpr) -> ARM64Reg {
+        // Check for vector (array) type operations — element-wise arithmetic
+        let leftType = exprType(b.left).unqualified
+        let rightType = exprType(b.right).unqualified
+        if case .array(let elemType, let count) = leftType,
+           case .array(_, let rcount) = rightType, count == rcount,
+           b.op != .logicAnd && b.op != .logicOr && b.op != .comma {
+            return emitVectorBinary(b, elemType: elemType, count: count)
+        }
+        // Also handle scalar * vector and vector * scalar
+        if case .array(let elemType, let count) = leftType, rightType == elemType.unqualified,
+           b.op == .mul || b.op == .add || b.op == .sub || b.op == .div {
+            return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: true)
+        }
+        if case .array(let elemType, let count) = rightType, leftType == elemType.unqualified,
+           b.op == .mul || b.op == .add || b.op == .sub || b.op == .div {
+            return emitVectorScalarBinary(b, elemType: elemType, count: count, scalarOnRight: false)
+        }
+
         switch b.op {
         case .logicAnd:
             let leftReg = emitExpr(b.left)
@@ -4204,10 +4236,215 @@ public final class Codegen {
         }
     }
 
+    /// Emit element-wise binary operation on two vector (array) operands.
+    /// Both operands must be arrays of the same element type and count.
+    private func emitVectorBinary(_ b: BinaryExpr, elemType: CType, count: Int) -> ARM64Reg {
+        let leftAddr = emitAddr(b.left)
+        let rightAddr = emitAddr(b.right)
+        let elemSize = elemType.sizeInBytes ?? 4
+        let totalSize = (count * elemSize + 15) & ~15
+        // Allocate result in the local frame (not dynamic sub sp) so it persists
+        // and is properly cleaned up by the function epilogue.
+        ensureLocalSpace(size: totalSize)
+        let resultOffset = -localOffset
+        let resultReg = regAlloc.alloc() ?? .x9
+        if resultOffset >= -256 && resultOffset <= 255 {
+            emitLine("add \(resultReg.x), x29, #\(resultOffset)")
+        } else {
+            emitLoadImm("x16", Int64(resultOffset))
+            emitLine("add \(resultReg.x), x29, x16")
+        }
+        // Save addresses on stack: left, right (result is in the frame, no need to save)
+        emitLine("str \(leftAddr.x), [sp, #-16]!")
+        emitLine("str \(rightAddr.x), [sp, #-16]!")
+        // Stack: sp+0=right, sp+16=left
+        let ldStReg: String = elemSize <= 4 ? "w16" : "x16"
+        let ldStReg17: String = elemSize <= 4 ? "w17" : "x17"
+        let arithReg: String = elemSize <= 4 ? "w16" : "x16"
+        // Load instruction: ldrsh for 2-byte signed, ldrsb for 1-byte signed, ldrsw for 4-byte signed
+        // For unsigned: ldrh, ldrb, ldr (zero-extend to 32-bit)
+        let loadInstr: String
+        let storeInstr: String
+        if elemSize <= 4 {
+            if elemType.isSigned {
+                switch elemSize {
+                case 1: loadInstr = "ldrsb"; storeInstr = "strb"
+                case 2: loadInstr = "ldrsh"; storeInstr = "strh"
+                default: loadInstr = "ldr"; storeInstr = "str"
+                }
+            } else {
+                switch elemSize {
+                case 1: loadInstr = "ldrb"; storeInstr = "strb"
+                case 2: loadInstr = "ldrh"; storeInstr = "strh"
+                default: loadInstr = "ldr"; storeInstr = "str"
+                }
+            }
+        } else {
+            loadInstr = "ldr"; storeInstr = "str"
+        }
+        // Save resultReg to stack so it persists across the loop
+        emitLine("str \(resultReg.x), [sp, #-16]!")
+        // Stack: sp+0=result, sp+16=right, sp+32=left
+        for i in 0..<count {
+            let offset = i * elemSize
+            // Load left[i]: left addr at [sp+32]
+            emitLine("ldr x9, [sp, #32]")
+            if offset > 0 { emitLine("\(loadInstr) \(ldStReg), [x9, #\(offset)]") }
+            else { emitLine("\(loadInstr) \(ldStReg), [x9]") }
+            emitLine("str x16, [sp, #-16]!")  // push left[i]
+            // After push: sp+0=left[i], sp+16=result, sp+32=right, sp+48=left
+            // Load right[i]: right addr at [sp+32]
+            emitLine("ldr x9, [sp, #32]")
+            if offset > 0 { emitLine("\(loadInstr) \(ldStReg), [x9, #\(offset)]") }
+            else { emitLine("\(loadInstr) \(ldStReg), [x9]") }
+            emitLine("\(loadInstr) \(ldStReg17), [sp, #0]")  // left[i]
+            switch b.op {
+            case .add: emitLine("add \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .sub: emitLine("sub \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .mul: emitLine("mul \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .div:
+                if elemType.isSigned { emitLine("sdiv \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else { emitLine("udiv \(arithReg), \(ldStReg17), \(ldStReg)") }
+            case .mod:
+                if elemType.isSigned { emitLine("sdiv x9, \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), x9, \(ldStReg), \(ldStReg17)") }
+                else { emitLine("udiv x9, \(ldStReg17), \(ldStReg)"); emitLine("msub \(arithReg), x9, \(ldStReg), \(ldStReg17)") }
+            case .bitAnd: emitLine("and \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .bitOr: emitLine("orr \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .bitXor: emitLine("eor \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .shl: emitLine("lsl \(arithReg), \(ldStReg17), \(ldStReg)")
+            case .shr:
+                if elemType.isSigned { emitLine("asr \(arithReg), \(ldStReg17), \(ldStReg)") }
+                else { emitLine("lsr \(arithReg), \(ldStReg17), \(ldStReg)") }
+            default: emitLine("add \(arithReg), \(ldStReg17), \(ldStReg)")
+            }
+            // Store result[i]: result addr at [sp+16]
+            emitLine("ldr x9, [sp, #16]")
+            if offset > 0 { emitLine("\(storeInstr) \(arithReg), [x9, #\(offset)]") }
+            else { emitLine("\(storeInstr) \(arithReg), [x9]") }
+            emitLine("add sp, sp, #16")  // pop left[i]
+        }
+        // Pop result save + 2 address saves = 48 bytes
+        emitLine("add sp, sp, #48")
+        regAlloc.free(leftAddr)
+        regAlloc.free(rightAddr)
+        return resultReg
+    }
+
+    /// Emit binary operation between a vector and a scalar (scalar broadcast to all elements).
+    private func emitVectorScalarBinary(_ b: BinaryExpr, elemType: CType, count: Int, scalarOnRight: Bool) -> ARM64Reg {
+        let vecExpr = scalarOnRight ? b.left : b.right
+        let scalarExpr = scalarOnRight ? b.right : b.left
+        let vecAddr = emitAddr(vecExpr)
+        let scalarReg = emitExpr(scalarExpr)
+        let elemSize = elemType.sizeInBytes ?? 4
+        let totalSize = (count * elemSize + 15) & ~15
+        emitLine("sub sp, sp, #\(totalSize)")
+        let resultReg = regAlloc.alloc() ?? .x9
+        emitLine("mov \(resultReg.x), sp")
+        // Save: [sp+0]=result, [sp+8]=vecAddr, [sp+16]=scalar
+        emitLine("str \(scalarReg.x), [sp, #-16]!")
+        emitLine("str \(vecAddr.x), [sp, #-16]!")
+        emitLine("str \(resultReg.x), [sp, #-16]!")
+        for i in 0..<count {
+            let offset = i * elemSize
+            // Load vector element via saved pointer at [sp+8]
+            emitLine("ldr x9, [sp, #8]")
+            if offset > 0 { emitLine("ldr x16, [x9, #\(offset)]") }
+            else { emitLine("ldr x16, [x9]") }
+            emitLine("str x16, [sp, #-16]!")  // push vec[i]
+            // Load scalar from [sp+32] (offset by 16 from push)
+            emitLine("ldr x17, [sp, #32]")
+            // vec[i] is at [sp, #0] (just pushed)
+            emitLine("ldr x16, [sp, #0]")
+            // Apply op: for scalarOnRight, left=vec, right=scalar
+            let (a, c) = scalarOnRight ? ("x16", "x17") : ("x17", "x16")
+            switch b.op {
+            case .add: emitLine("add x16, \(a), \(c)")
+            case .sub: emitLine("sub x16, \(a), \(c)")
+            case .mul: emitLine("mul x16, \(a), \(c)")
+            case .div:
+                if elemType.isSigned { emitLine("sdiv x16, \(a), \(c)") }
+                else { emitLine("udiv x16, \(a), \(c)") }
+            default: emitLine("add x16, \(a), \(c)")
+            }
+            // Store result[i] via saved pointer at [sp+16] (offset by 16 from push)
+            emitLine("ldr x9, [sp, #16]")
+            if offset > 0 { emitLine("str x16, [x9, #\(offset)]") }
+            else { emitLine("str x16, [x9]") }
+            emitLine("add sp, sp, #16")  // pop vec[i]
+        }
+        emitLine("add sp, sp, #48")  // 3 saved values
+        regAlloc.free(vecAddr)
+        regAlloc.free(scalarReg)
+        return resultReg
+    }
+
     private func emitUnaryExpr(_ u: UnaryExpr) -> ARM64Reg {
         // For addressOf, we need the address, not the value
         if u.op == .addressOf {
             return emitAddr(u.operand)
+        }
+
+        // Check for vector (array) type unary operations (neg, bitNot)
+        let vecOperandType = exprType(u.operand).unqualified
+        if case .array(let elemType, let count) = vecOperandType,
+           u.op == .neg || u.op == .bitNot {
+            let srcAddr = emitAddr(u.operand)
+            let elemSize = elemType.sizeInBytes ?? 4
+            let totalSize = (count * elemSize + 15) & ~15
+            ensureLocalSpace(size: totalSize)
+            let resultOffset = -localOffset
+            let resultReg = regAlloc.alloc() ?? .x9
+            if resultOffset >= -256 && resultOffset <= 255 {
+                emitLine("add \(resultReg.x), x29, #\(resultOffset)")
+            } else {
+                emitLoadImm("x16", Int64(resultOffset))
+                emitLine("add \(resultReg.x), x29, x16")
+            }
+            let ldStReg: String = elemSize <= 4 ? "w16" : "x16"
+            let arithReg: String = elemSize <= 4 ? "w16" : "x16"
+            let loadInstr: String
+            let storeInstr: String
+            if elemSize <= 4 {
+                if elemType.isSigned {
+                    switch elemSize {
+                    case 1: loadInstr = "ldrsb"; storeInstr = "strb"
+                    case 2: loadInstr = "ldrsh"; storeInstr = "strh"
+                    default: loadInstr = "ldr"; storeInstr = "str"
+                    }
+                } else {
+                    switch elemSize {
+                    case 1: loadInstr = "ldrb"; storeInstr = "strb"
+                    case 2: loadInstr = "ldrh"; storeInstr = "strh"
+                    default: loadInstr = "ldr"; storeInstr = "str"
+                    }
+                }
+            } else {
+                loadInstr = "ldr"; storeInstr = "str"
+            }
+            // Save: srcAddr and resultReg on stack
+            emitLine("str \(srcAddr.x), [sp, #-16]!")
+            emitLine("str \(resultReg.x), [sp, #-16]!")
+            // Stack: sp+0=result, sp+16=srcAddr
+            for i in 0..<count {
+                let offset = i * elemSize
+                // Load element via srcAddr at [sp+16]
+                emitLine("ldr x9, [sp, #16]")
+                if offset > 0 { emitLine("\(loadInstr) \(ldStReg), [x9, #\(offset)]") }
+                else { emitLine("\(loadInstr) \(ldStReg), [x9]") }
+                switch u.op {
+                case .neg: emitLine("neg \(arithReg), \(ldStReg)")
+                case .bitNot: emitLine("mvn \(arithReg), \(ldStReg)")
+                default: break
+                }
+                // Store via resultReg at [sp+0]
+                emitLine("ldr x9, [sp, #0]")
+                if offset > 0 { emitLine("\(storeInstr) \(arithReg), [x9, #\(offset)]") }
+                else { emitLine("\(storeInstr) \(arithReg), [x9]") }
+            }
+            emitLine("add sp, sp, #32")  // 2 saves
+            regAlloc.free(srcAddr)
+            return resultReg
         }
 
         // For dereference, load from the address
@@ -7786,7 +8023,7 @@ public final class Codegen {
     /// Check if a type is an aggregate (struct or union) that needs byte-wise copy.
     private func isAggregateType(_ t: CType) -> Bool {
         switch t.unqualified {
-        case .structType, .unionType: return true
+        case .structType, .unionType, .array: return true
         default: return false
         }
     }

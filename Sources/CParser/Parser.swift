@@ -149,6 +149,9 @@ public final class Parser {
     /// parseDeclSpecifiers (applied between the base type and the declarator,
     /// e.g. `int __attribute__((aligned(8))) a`). Reset after each field.
     private var pendingDeclAligned: Int? = nil
+    /// Pending __attribute__((vector_size(N))) extracted from parseDeclSpecifiers.
+    /// When set, the base type should be wrapped in an array of (N / sizeof(base)) elements.
+    private var pendingVectorSize: Int? = nil
     /// Additional declarators from multi-declarator global declarations (e.g., `int a, b;`)
     private var pendingExternalDecls: [Decl] = []
     /// Nested function definitions discovered during function body parsing.
@@ -384,6 +387,7 @@ public final class Parser {
     }
 
     /// Extract alignment from __attribute__((aligned(N))) or __attribute__((aligned)).
+    /// Also extracts vector_size(N) into pendingVectorSize.
     /// Returns the alignment in bytes, or nil if no aligned attribute found.
     private func extractAlignment() -> Int? {
         var result: Int? = nil
@@ -412,6 +416,26 @@ public final class Parser {
                                 } else {
                                     // aligned with no arg = natural alignment (e.g., 16 for long double)
                                     result = 16
+                                }
+                            } else if attrName == "vector_size" || attrName == "__vector_size__" {
+                                if isPunct("(") {
+                                    advance()
+                                    if let vsExpr = try? parseAssignmentExpr() {
+                                        let v = evalIntConst(vsExpr)
+                                        if v > 0 { pendingVectorSize = Int(v) }
+                                    }
+                                    if isPunct(")") { advance() }
+                                }
+                            } else if attrName == "mode" || attrName == "__mode__" {
+                                // mode(SI) = 4-byte int, mode(DI) = 8-byte, mode(QI) = 1-byte, mode(HI) = 2-byte
+                                // Just skip the argument — the base type is already correct for SI/DI
+                                if isPunct("(") {
+                                    var depth = 0
+                                    while !isAtEnd() {
+                                        if isPunct("(") { depth += 1 }
+                                        else if isPunct(")") { depth -= 1; if depth == 0 { advance(); break } }
+                                        advance()
+                                    }
                                 }
                             } else {
                                 // Skip any arguments for unknown attributes
@@ -874,6 +898,16 @@ public final class Parser {
         // Apply qualifiers
         if isConst || isVolatile || isRestrict {
             baseType = .qualified(base: baseType, const: isConst, volatile: isVolatile, restrict: isRestrict)
+        }
+
+        // Apply vector_size: wrap base type in an array of (vectorSize / sizeof(base)) elements
+        if let vs = pendingVectorSize {
+            let elemSize = baseType.sizeInBytes ?? 4
+            let count = vs / elemSize
+            if count > 0 {
+                baseType = .array(of: baseType, count: count)
+            }
+            pendingVectorSize = nil
         }
 
         return (baseType, storageClass, isInline, isTypedef)
