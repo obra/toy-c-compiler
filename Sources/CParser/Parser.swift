@@ -709,9 +709,19 @@ public final class Parser {
             let (name, type, declLoc) = try parseDeclarator(baseType)
             // Skip __attribute__ after the typedef declarator
             skipAsmAndAttributes()
+            // Apply vector_size attribute from trailing __attribute__((vector_size(N)))
+            var finalType = type
+            if let vs = pendingVectorSize {
+                let elemSize = type.sizeInBytes ?? 4
+                let count = vs / elemSize
+                if count > 0 {
+                    finalType = .array(of: type, count: count)
+                }
+                pendingVectorSize = nil
+            }
             typedefNames.insert(name)
-            typedefTypes[name] = type
-            let td = TypedefDecl(name: name, type: type, loc: declLoc)
+            typedefTypes[name] = finalType
+            let td = TypedefDecl(name: name, type: finalType, loc: declLoc)
             if firstDecl == nil { firstDecl = .typedefDecl(td) }
         } while match(kind: .punct, spelling: ",")
 
