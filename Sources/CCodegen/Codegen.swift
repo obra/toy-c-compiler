@@ -2661,6 +2661,73 @@ public final class Codegen {
                     emitEpilogue()
                     return
                 }
+                // Complex-to-real conversion: function returns a scalar but expression
+                // is complex. Extract the real part (C semantics: complex→real discards imag).
+                if retType.isComplex && !funcRet.isComplex {
+                    let (isFP, partSize) = complexTypeInfo(retType)
+                    // Evaluate complex to temp
+                    let tmpOff = ensureTempSpace(size: partSize * 2)
+                    emitComplexExpr(v, storeAtOffset: tmpOff, complexType: retType)
+                    let realReg = regAlloc.alloc() ?? .x9
+                    emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
+                    if isFP && !funcRet.isFloating {
+                        // Complex FP → integer: convert real part to int
+                        let srcFp = partSize == 4 ? "s" : "d"
+                        let cvt = funcRet.isUnsigned ? "fcvtzu" : "fcvtzs"
+                        if funcRet.isSigned32Bit || (funcRet.isUnsigned && (funcRet.sizeInBytes ?? 8) <= 4) {
+                            emitLine("\(cvt) w0, \(srcFp)\(realReg.regNum)")
+                        } else {
+                            emitLine("\(cvt) x0, \(srcFp)\(realReg.regNum)")
+                        }
+                    } else if !isFP && funcRet.isFloating {
+                        // Complex int → float: convert real part to float
+                        let cvtf = retType.unqualified.complexRealType.isUnsigned ? "ucvtf" : "scvtf"
+                        let retFpReg = funcRet == .float ? "s0" : "d0"
+                        if partSize <= 4 {
+                            emitLine("sxtw \(realReg.x), \(realReg.w)")
+                        }
+                        if funcRet == .float {
+                            emitLine("\(cvtf) s0, \(realReg.x)")
+                        } else {
+                            emitLine("\(cvtf) d0, \(realReg.x)")
+                        }
+                    } else if !isFP && !funcRet.isFloating {
+                        // Complex int → int: just move the real part
+                        if funcRet.isSigned32Bit || funcRet == .uint || funcRet == .ushort || funcRet == .uchar || funcRet == .bool {
+                            emitLine("mov w0, \(realReg.w)")
+                        } else {
+                            emitLine("mov x0, \(realReg.x)")
+                        }
+                    } else {
+                        // FP complex → FP scalar: convert width if needed
+                        if partSize == 4 && (funcRet == .double || funcRet == .longDouble) {
+                            emitLine("fcvt d0, s\(realReg.regNum)")
+                        } else if partSize != 4 && funcRet == .float {
+                            emitLine("fcvt s0, d\(realReg.regNum)")
+                        } else {
+                            emitLine("fmov d0, d\(realReg.regNum)")
+                        }
+                    }
+                    regAlloc.free(realReg)
+                    // Narrow to exact return type width
+                    if let retSize = funcRet.sizeInBytes, retSize < 4, !funcRet.isFloating {
+                        if funcRet.isSigned {
+                            switch retSize {
+                            case 1: emitLine("sxtb w0, w0")
+                            case 2: emitLine("sxth w0, w0")
+                            default: break
+                            }
+                        } else {
+                            switch retSize {
+                            case 1: emitLine("uxtb w0, w0")
+                            case 2: emitLine("uxth w0, w0")
+                            default: break
+                            }
+                        }
+                    }
+                    emitEpilogue()
+                    return
+                }
                 if retType.isFloating {
                     // Float/double return value goes in s0 (float) or d0 (double)
                     let reg = emitExpr(v)
@@ -8452,6 +8519,11 @@ public final class Codegen {
                 if lu == .complexLongDouble || ru == .complexLongDouble { return .complexLongDouble }
                 if lu == .complexDouble || ru == .complexDouble { return .complexDouble }
                 if lu == .complexFloat || ru == .complexFloat { return .complexFloat }
+                // Integer complex types: if one operand is integer complex, result is that type
+                // (the real operand is converted to the complex type's real type)
+                if lu.isComplex && !ru.isComplex { return lu }
+                if ru.isComplex && !lu.isComplex { return ru }
+                if lu.isComplex && ru.isComplex { return lu }  // same complex type
                 // Floating-point usual arithmetic conversions
                 if lu == .longDouble || ru == .longDouble { return .longDouble }
                 if lu == .double || ru == .double { return .double }
