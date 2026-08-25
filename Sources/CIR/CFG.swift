@@ -243,42 +243,49 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
     while changed && iterations < 10 {
         changed = false
 
-        // Pass 1: Load forwarding (eliminate redundant loads)
+        // Pass 1: Push-pop elimination (str [sp,#-16]! → ldr [sp,#0] → mov)
+        let (pushPopResult, pushPopChanged) = pushPopElimination(result)
+        if pushPopChanged {
+            result = pushPopResult
+            changed = true
+        }
+
+        // Pass 2: Load forwarding (eliminate redundant loads)
         let (loadResult, loadChanged) = loadForwarding(result)
         if loadChanged {
             result = loadResult
             changed = true
         }
 
-        // Pass 2: Stack adjustment merging
+        // Pass 3: Stack adjustment merging
         let (stackResult, stackChanged) = stackAdjustmentMerge(result)
         if stackChanged {
             result = stackResult
             changed = true
         }
 
-        // Pass 3: Redundant branch elimination
+        // Pass 4: Redundant branch elimination
         let (branchResult, branchChanged) = redundantBranchElimination(result)
         if branchChanged {
             result = branchResult
             changed = true
         }
 
-        // Pass 4: Cross-block DCE (remove dead instructions)
+        // Pass 5: Cross-block DCE (remove dead instructions)
         let crossBlockResult = crossBlockDCE(result)
         if crossBlockResult.count != result.count {
             result = crossBlockResult
             changed = true
         }
 
-        // Pass 5: Copy propagation
+        // Pass 6: Copy propagation
         let (copyResult, copyChanged) = copyPropagation(result)
         if copyChanged {
             result = copyResult
             changed = true
         }
 
-        // Pass 6: Constant folding
+        // Pass 7: Constant folding
         let (foldResult, foldChanged) = constantFolding(result)
         if foldChanged {
             result = foldResult

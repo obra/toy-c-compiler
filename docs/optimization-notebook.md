@@ -54,3 +54,24 @@
 - 0 dead stores (single-pass codegen doesn't produce them)
 - 0 mov x0 before ret (peephole already handles)
 - 0 mov swap patterns (peephole already handles)
+
+### 4. Redundant branch elimination (commit b8a41f2)
+- Result: 537,558 instructions (66 branches removed)
+- What went well: simple pattern match, no issues
+
+### 5. Stack adjustment merging (commit fa7a197)
+- Result: pending benchmark (running)
+- Analysis: 18,671 mergeable add sp,sp,#N instructions
+- What went bad: first version crashed — didn't flush pending sp adjustment
+  when sp was referenced by mov sp,x29 or other instructions. Fixed by
+  flushing on any sp reference (refsSP check).
+- What went bad: add sp/sub sp parsing was in fallback code that was never
+  reached (the regular add/sub case matched first). Fixed by moving sp check
+  into the add/sub switch cases.
+
+### Analysis of remaining opportunities (after opt 3-5)
+- 19,109 mov reg, #0 — but these are mostly used (not dead, just zero init)
+- 14,801 add xN, x29, #N — frame address computations, hard to fold
+- 58,130 str [sp, #-N]! — argument pushes (calling convention, hard to remove)
+- 59,019 ldr [sp, ...] — argument loads (calling convention)
+- 3,725 push-then-immediately-load (could be direct mov to arg reg)

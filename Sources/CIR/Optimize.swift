@@ -380,17 +380,19 @@ public func copyPropagation(_ insts: [IRInst]) -> ([IRInst], Bool) {
 
     // Simple single-pass: for each mov, if the source is another mov's destination,
     // replace the source with the original source.
-    var copyMap: [VReg: Operand] = [:]
+    // Use NormalizedReg as key so x9/w9 are treated as the same register.
+    var copyMap: [NormalizedReg: Operand] = [:]
 
     for i in 0..<result.count {
         let inst = result[i]
 
         // Check if this is a mov
         if case .mov(let dst, let src) = inst {
+            let dstNorm = NormalizedReg(dst)
             // If src is a vreg that was the dst of a previous mov, use the original src
-            if case .vreg(let srcVReg) = src, let originalSrc = copyMap[srcVReg] {
+            if case .vreg(let srcVReg) = src, let originalSrc = copyMap[NormalizedReg(srcVReg)] {
                 // Don't create a self-mov (mov x, x) — keep the original
-                if case .vreg(let origVReg) = originalSrc, origVReg == dst {
+                if case .vreg(let origVReg) = originalSrc, NormalizedReg(origVReg) == dstNorm {
                     // This would be mov dst, dst — skip the propagation
                 } else {
                     result[i] = .mov(dst: dst, src: originalSrc)
@@ -398,23 +400,40 @@ public func copyPropagation(_ insts: [IRInst]) -> ([IRInst], Bool) {
                 }
             }
             // Record this copy
-            copyMap[dst] = src
+            copyMap[dstNorm] = src
             // If dst is reassigned, remove any entries that map to dst
             copyMap = copyMap.filter { _, v in
-                if case .vreg(let v2) = v, v2 == dst { return false }
+                if case .vreg(let v2) = v, NormalizedReg(v2) == dstNorm { return false }
                 return true
             }
         } else {
-            // For non-mov instructions, check if any source operands can be replaced
-            // For now, we only propagate through movs (conservative)
-            // If this instruction writes to a register that's in copyMap as a destination,
-            // invalidate that entry
+            // For non-mov instructions, invalidate any copy map entries for the dest register
             if let dst = destVReg(inst) {
-                copyMap.removeValue(forKey: dst)
+                let dstNorm = NormalizedReg(dst)
+                copyMap.removeValue(forKey: dstNorm)
                 // Also remove entries where dst appears as a source in the copy map
                 copyMap = copyMap.filter { _, v in
-                    if case .vreg(let v2) = v, v2 == dst { return false }
+                    if case .vreg(let v2) = v, NormalizedReg(v2) == dstNorm { return false }
                     return true
+                }
+            }
+            // Calls clobber all caller-saved registers (x0-x18) — invalidate all
+            if case .call = inst {
+                for regId in 0...18 {
+                    copyMap.removeValue(forKey: NormalizedReg(VReg(id: regId, kind: .gp)))
+                    copyMap = copyMap.filter { _, v in
+                        if case .vreg(let v2) = v, v2.id <= 18, v2.kind == .gp { return false }
+                        return true
+                    }
+                }
+            }
+            if case .callIndirect = inst {
+                for regId in 0...18 {
+                    copyMap.removeValue(forKey: NormalizedReg(VReg(id: regId, kind: .gp)))
+                    copyMap = copyMap.filter { _, v in
+                        if case .vreg(let v2) = v, v2.id <= 18, v2.kind == .gp { return false }
+                        return true
+                    }
                 }
             }
         }
@@ -432,25 +451,25 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
     var result = insts
     var changed = false
 
-    // Track register constant values
-    var constValues: [VReg: Int64] = [:]
+    // Track register constant values (use NormalizedReg so x9/w9 are the same)
+    var constValues: [NormalizedReg: Int64] = [:]
 
     for i in 0..<result.count {
         let inst = result[i]
 
         switch inst {
         case .loadImm(let dst, let val):
-            constValues[dst] = val
+            constValues[NormalizedReg(dst)] = val
 
         case .add(let dst, let s1, let s2):
             let v1 = getConst(s1, constValues)
             let v2 = getConst(s2, constValues)
             if let v1 = v1, let v2 = v2 {
                 result[i] = .loadImm(dst: dst, value: v1 &+ v2)
-                constValues[dst] = v1 &+ v2
+                constValues[NormalizedReg(dst)] = v1 &+ v2
                 changed = true
             } else {
-                constValues.removeValue(forKey: dst)
+                constValues.removeValue(forKey: NormalizedReg(dst))
             }
 
         case .sub(let dst, let s1, let s2):
@@ -458,10 +477,10 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             let v2 = getConst(s2, constValues)
             if let v1 = v1, let v2 = v2 {
                 result[i] = .loadImm(dst: dst, value: v1 &- v2)
-                constValues[dst] = v1 &- v2
+                constValues[NormalizedReg(dst)] = v1 &- v2
                 changed = true
             } else {
-                constValues.removeValue(forKey: dst)
+                constValues.removeValue(forKey: NormalizedReg(dst))
             }
 
         case .mul(let dst, let s1, let s2):
@@ -469,22 +488,33 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             let v2 = getConst(s2, constValues)
             if let v1 = v1, let v2 = v2 {
                 result[i] = .loadImm(dst: dst, value: v1 &* v2)
-                constValues[dst] = v1 &* v2
+                constValues[NormalizedReg(dst)] = v1 &* v2
                 changed = true
             } else {
-                constValues.removeValue(forKey: dst)
+                constValues.removeValue(forKey: NormalizedReg(dst))
             }
 
         case .mov(let dst, let src):
             if let val = getConst(src, constValues) {
-                constValues[dst] = val
+                constValues[NormalizedReg(dst)] = val
             } else {
-                constValues.removeValue(forKey: dst)
+                constValues.removeValue(forKey: NormalizedReg(dst))
             }
 
         default:
             if let dst = destVReg(inst) {
-                constValues.removeValue(forKey: dst)
+                constValues.removeValue(forKey: NormalizedReg(dst))
+            }
+            // Calls clobber all caller-saved registers (x0-x18)
+            if case .call = inst {
+                for regId in 0...18 {
+                    constValues.removeValue(forKey: NormalizedReg(VReg(id: regId, kind: .gp)))
+                }
+            }
+            if case .callIndirect = inst {
+                for regId in 0...18 {
+                    constValues.removeValue(forKey: NormalizedReg(VReg(id: regId, kind: .gp)))
+                }
             }
         }
     }
@@ -492,10 +522,10 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
     return (result, changed)
 }
 
-func getConst(_ op: Operand, _ map: [VReg: Int64]) -> Int64? {
+func getConst(_ op: Operand, _ map: [NormalizedReg: Int64]) -> Int64? {
     switch op {
     case .imm(let i): return i
-    case .vreg(let v): return map[v]
+    case .vreg(let v): return map[NormalizedReg(v)]
     default: return nil
     }
 }
@@ -578,6 +608,16 @@ func refsSP(_ inst: IRInst) -> Bool {
     // Check sources
     for src in sourceVRegs(inst) {
         if src.id == 31 {
+            return true
+        }
+    }
+    // Also flush on x29 (frame pointer) references — frame accesses
+    // depend on sp being correctly set up first
+    if let dst = destVReg(inst), dst.id == 29 {
+        return true
+    }
+    for src in sourceVRegs(inst) {
+        if src.id == 29 {
             return true
         }
     }
