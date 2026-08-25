@@ -10811,9 +10811,14 @@ public final class Codegen {
         var eliminated = 0
         var writeIdx = 0
         var skipNext = false
+        var deadCodeSkip = 0
         for readIdx in 0..<output.count {
             if skipNext {
                 skipNext = false
+                if deadCodeSkip > 0 {
+                    deadCodeSkip -= 1
+                    if deadCodeSkip > 0 { skipNext = true }
+                }
                 continue
             }
             let line = output[readIdx]
@@ -10883,6 +10888,32 @@ public final class Codegen {
                                     continue
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            // Pattern 3: Dead code after ret — eliminate "mov w0, #0  ; default return"
+            // and the following epilogue (mov sp, x29 + ldp + ret) when preceded by ret.
+            // This is 4 instructions of dead code per function that always returns.
+            if line == "mov w0, #0  ; default return" {
+                // Check if the previous emitted line is "ret"
+                if writeIdx > 0 && output[writeIdx - 1] == "ret" {
+                    // Skip this line and the next 3 (mov sp, x29 / ldp / ret)
+                    // unless a label follows (which would make it reachable)
+                    if readIdx + 3 < output.count {
+                        let l1 = output[readIdx + 1]  // mov sp, x29
+                        let l2 = output[readIdx + 2]  // ldp x29, x30, [sp], #16
+                        let l3 = output[readIdx + 3]  // ret
+                        // Check that these are the epilogue pattern and not followed by a label
+                        let l4: String? = readIdx + 4 < output.count ? output[readIdx + 4] : nil
+                        let isLabelAfter = l4?.hasSuffix(":") ?? false
+                        if l1 == "mov sp, x29" && l2 == "ldp x29, x30, [sp], #16" && l3 == "ret" && !isLabelAfter {
+                            // Skip all 4 lines (dead code after ret)
+                            skipNext = true  // skip mov sp, x29
+                            // We need to skip 3 more lines — use a counter
+                            deadCodeSkip = 3
+                            eliminated += 4
+                            continue
                         }
                     }
                 }
