@@ -1760,10 +1760,12 @@ public final class Codegen {
                 if case .vector = pt { return true }
                 return false
             }()
+            // Integer complex types are passed like small structs in GP registers
+            let isIntComplex = pt.isComplex && !isHFA
             let regWidth: Int
             if isHFA {
                 regWidth = hfaCount
-            } else if isStructOrVector, paramSize > 8, paramSize <= 16 {
+            } else if (isStructOrVector || isIntComplex), paramSize > 8, paramSize <= 16 {
                 regWidth = 2
             } else if isStructOrVector, paramSize > 16 {
                 // Large struct/vector: entirely on stack, does NOT consume GP registers
@@ -1867,6 +1869,26 @@ public final class Codegen {
                 if isInt {
                     // Always use 64-bit store for simplicity
                     emitStoreFP(argRegs[regIndex].x, offset)
+                } else if pt.isComplex {
+                    // Integer complex type: passed as a small struct in GP registers.
+                    // Two parts of partSize each; ≤16 bytes total.
+                    let (_, partSize) = complexTypeInfo(pt)
+                    let structSize = partSize * 2
+                    if structSize > 8 {
+                        // Two 64-bit registers (x0 and x1)
+                        emitStoreFP(argRegs[regIndex].x, offset)
+                        if regIndex + 1 < 8 {
+                            emitStoreFP(argRegs[regIndex + 1].x, offset + 8)
+                        } else {
+                            let stackSrcOffset = 16 + stackParamIdx * 8
+                            emitLoadFP("x9", stackSrcOffset)
+                            emitStoreFP("x9", offset + 8)
+                            stackParamIdx += 1
+                        }
+                    } else {
+                        // Both parts packed into one register
+                        emitStoreFP(argRegs[regIndex].x, offset)
+                    }
                 } else if isStructOrVector {
                     // Struct/vector parameter: store register(s) to stack
                     emitStoreFP(argRegs[regIndex].x, offset)
@@ -3816,7 +3838,7 @@ public final class Codegen {
             let realReg = regAlloc.alloc() ?? .x9
             let imagReg = regAlloc.alloc() ?? .x10
             if isFP { emitLine("fmov \(fpPrefix)\(realReg.regNum), #0.0") } else { emitLine("mov \(realReg.w), #0") }
-            loadFPConst(imagReg, f.value, isFP)
+            loadFPConst(imagReg, f.value, partSize == 4)
             emitStoreFP(realReg, offset: offset, isFP: isFP, partSize: partSize)
             emitStoreFP(imagReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
             regAlloc.free(realReg)
@@ -3875,6 +3897,17 @@ public final class Codegen {
                 } else if partSize <= 4 && exprType(b.right).unqualified.isSigned32Bit {
                     emitLine("sxtw \(rightReg.x), \(rightReg.w)")
                 }
+                // When target is integer complex but right operand is float/double,
+                // convert to integer.
+                if !isFP && exprType(b.right).unqualified.isFloating {
+                    let srcFp = exprType(b.right).unqualified == .float ? "s" : "d"
+                    let cvt = exprType(b.right).unqualified.isUnsigned ? "fcvtzu" : "fcvtzs"
+                    if partSize <= 4 {
+                        emitLine("\(cvt) \(rightReg.w), \(srcFp)\(rightReg.regNum)")
+                    } else {
+                        emitLine("\(cvt) \(rightReg.x), \(srcFp)\(rightReg.regNum)")
+                    }
+                }
                 let realReg = regAlloc.alloc() ?? .x9
                 emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
                 if b.op == .add { emitArith("add", realReg, realReg, rightReg) }
@@ -3903,8 +3936,19 @@ public final class Codegen {
                     } else if exprType(b.left).unqualified == .double && partSize == 4 {
                         emitLine("fcvt s\(leftReg.regNum), d\(leftReg.regNum)")
                     }
-                } else if partSize <= 4 && exprType(b.left).unqualified.isSigned32Bit {
-                    emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                } else {
+                    // Integer complex: convert float operand to integer if needed
+                    if exprType(b.left).unqualified.isFloating {
+                        let srcFp = exprType(b.left).unqualified == .float ? "s" : "d"
+                        let cvt = exprType(b.left).unqualified.isUnsigned ? "fcvtzu" : "fcvtzs"
+                        if partSize <= 4 {
+                            emitLine("\(cvt) \(leftReg.w), \(srcFp)\(leftReg.regNum)")
+                        } else {
+                            emitLine("\(cvt) \(leftReg.x), \(srcFp)\(leftReg.regNum)")
+                        }
+                    } else if partSize <= 4 && exprType(b.left).unqualified.isSigned32Bit {
+                        emitLine("sxtw \(leftReg.x), \(leftReg.w)")
+                    }
                 }
                 let realReg = regAlloc.alloc() ?? .x9
                 emitLoadFP(realReg, offset: tmpOff, isFP: isFP, partSize: partSize)
@@ -3915,7 +3959,7 @@ public final class Codegen {
                 // For subtraction: real - complex = (real-c) + (-d)i — negate imag part
                 if b.op == .sub {
                     if isFP { emitLine("fneg \(fpPrefix)\(realReg.regNum), \(fpPrefix)\(realReg.regNum)") }
-                    else { emitLine("neg \(realReg.x), \(realReg.x)") }
+                    else { emitLine("neg \(regName(realReg)), \(regName(realReg))") }
                 }
                 emitStoreFP(realReg, offset: offset + partSize, isFP: isFP, partSize: partSize)
                 regAlloc.free(realReg)
@@ -4132,13 +4176,18 @@ public final class Codegen {
                     let callFpPrefix = callPartSize == 4 ? "s" : "d"
                     emitLine("fmov \(callFpPrefix)\(realReg.regNum), \(callFpPrefix)0")
                     emitLine("fmov \(callFpPrefix)\(imagReg.regNum), \(callFpPrefix)1")
-                    // Convert float→double or double→float if target type differs
-                    if callPartSize == 4 && !isFP {
-                        emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
-                        emitLine("fcvt d\(imagReg.regNum), s\(imagReg.regNum)")
-                    } else if callPartSize != 4 && isFP {
-                        emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
-                        emitLine("fcvt s\(imagReg.regNum), d\(imagReg.regNum)")
+                    // Convert float→double or double→float only when the call's FP
+                    // width differs from the target's FP width (both are FP types).
+                    if isFP && callPartSize != partSize {
+                        if callPartSize == 4 {
+                            // float → double
+                            emitLine("fcvt d\(realReg.regNum), s\(realReg.regNum)")
+                            emitLine("fcvt d\(imagReg.regNum), s\(imagReg.regNum)")
+                        } else {
+                            // double → float
+                            emitLine("fcvt s\(realReg.regNum), d\(realReg.regNum)")
+                            emitLine("fcvt s\(imagReg.regNum), d\(imagReg.regNum)")
+                        }
                     }
                 } else {
                     // Integer complex return: result in x0 (and x1 if >8 bytes total).
@@ -4260,12 +4309,9 @@ public final class Codegen {
         let fpReg: String
         if isFP {
             fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
-        } else if partSize < 8 {
-            // Integer complex type with sub-8-byte parts
-            fpReg = partSize <= 4 ? reg.w : reg.x
         } else {
-            // Default: double FP register (complexDouble/complexLongDouble)
-            fpReg = "d\(reg.regNum)"
+            // Integer complex type: use integer registers (w for ≤4 bytes, x for 8)
+            fpReg = partSize <= 4 ? reg.w : reg.x
         }
         if offset >= -256 && offset <= 255 {
             emitLine("str \(fpReg), [x29, #\(offset)]")
@@ -4279,12 +4325,9 @@ public final class Codegen {
         let fpReg: String
         if isFP {
             fpReg = partSize == 4 ? "s\(reg.regNum)" : "d\(reg.regNum)"
-        } else if partSize < 8 {
-            // Integer complex type with sub-8-byte parts
-            fpReg = partSize <= 4 ? reg.w : reg.x
         } else {
-            // Default: double FP register (complexDouble/complexLongDouble)
-            fpReg = "d\(reg.regNum)"
+            // Integer complex type: use integer registers (w for ≤4 bytes, x for 8)
+            fpReg = partSize <= 4 ? reg.w : reg.x
         }
         if offset >= -256 && offset <= 255 {
             emitLine("ldr \(fpReg), [x29, #\(offset)]")
@@ -7913,6 +7956,38 @@ public final class Codegen {
                     evaluatedArgs.append(argReg)
                     floatArgs.insert(i)
                     regAlloc.free(argReg)
+                } else if argType.isComplex && isHFA(argType) == nil {
+                    // Integer complex arg: pass as small struct in GP registers.
+                    // Evaluate to a temp, then load the 1 or 2 chunks.
+                    let (_, partSize) = complexTypeInfo(argType)
+                    let structSize = partSize * 2
+                    let tmpOff = ensureTempSpace(size: structSize)
+                    emitComplexExpr(arg, storeAtOffset: tmpOff, complexType: argType)
+                    let addrReg = regAlloc.alloc() ?? .x9
+                    if tmpOff >= -4095 && tmpOff <= 4095 {
+                        emitLine("add \(addrReg.x), x29, #\(tmpOff)")
+                    } else {
+                        emitLoadImm("x16", Int64(tmpOff))
+                        emitLine("add \(addrReg.x), x29, x16")
+                    }
+                    if structSize > 8 {
+                        // Two 8-byte chunks
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                        emitLine("ldr x16, [\(addrReg.x)]")
+                        emitLine("str x16, [sp, #16]")
+                        emitLine("ldr x16, [\(addrReg.x), #\(partSize)]")
+                        emitLine("str x16, [sp, #0]")
+                        evaluatedArgs.append(addrReg)
+                        wideArgs.insert(i)
+                    } else {
+                        // Both parts in one 8-byte register
+                        emitLine("str \(addrReg.x), [sp, #-16]!")
+                        emitLine("ldr x16, [\(addrReg.x)]")
+                        emitLine("str x16, [sp, #0]")
+                        evaluatedArgs.append(addrReg)
+                    }
+                    regAlloc.free(addrReg)
                 } else {
                     let argReg: ARM64Reg
                     if let savedReg = compoundLiteralAddrs[i] {

@@ -956,8 +956,9 @@ public final class Parser {
         if hasChar { return isUnsigned ? .uchar : .char }
         if hasComplex {
             if hasFloat { return .complexFloat }
-            if longCount > 0 { return isUnsigned ? .complexUlong : .complexLongLong }
-            if hasDouble { return .complexDouble }
+            if hasDouble { return longCount > 0 ? .complexLongDouble : .complexDouble }
+            if longCount >= 2 { return isUnsigned ? .complexUlongLong : .complexLongLong }
+            if longCount == 1 { return isUnsigned ? .complexUlong : .complexLong }
             if hasChar { return isUnsigned ? .complexUchar : .complexSchar }
             if hasShort { return isUnsigned ? .complexUshort : .complexShort }
             // Default: _Complex int
