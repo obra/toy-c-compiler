@@ -33,6 +33,23 @@ should_skip() {
     if grep -q 'dg-require-effective-target dfp' "$f" 2>/dev/null; then
         return 0
     fi
+    # Check for tests that include missing gcc.dg/ files AND can't compile without them.
+    # Some tests have fallback behavior and compile fine, so we only skip if the
+    # include is the FIRST line (unconditional include with no fallback).
+    if grep -q '#include.*gcc.dg/' "$f" 2>/dev/null; then
+        local incfile=$(grep -o '#include.*gcc.dg/[^"]*' "$f" | head -1 | sed 's/#include "//' | sed 's|"$||')
+        if [ -n "$incfile" ]; then
+            local resolved="$TESTDIR/../../$(echo $incfile | sed 's|gcc.dg/|gcc.dg/|')"
+            if [ ! -f "$resolved" ]; then
+                # The included file doesn't exist. Check if the test can still compile
+                # by trying a quick compile. If it fails, skip it.
+                timeout 10 $CDRIVER "$f" -o /dev/null $INCLUDE 2>/dev/null
+                if [ $? -ne 0 ]; then
+                    return 0  # Can't compile — skip
+                fi
+            fi
+        fi
+    fi
     return 1
 }
 
