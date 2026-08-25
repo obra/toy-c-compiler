@@ -6707,32 +6707,15 @@ public final class Codegen {
                         emitLine("str x1, [\(dstReg.x), #8]")
                     }
                 } else {
-                    // Large struct (>16 bytes): caller passes destination address in x8.
-                    // Use a temporary buffer on the stack to avoid overlapping source
-                    // and destination (e.g., union aliasing where p and q overlap).
-                    // Allocate temp space, pass as x8, then copy to destination.
-                    let tempSize = (size + 15) & ~15  // align to 16
-                    ensureLocalSpace(size: tempSize)
-                    let tempOffset = -localOffset
-                    if tempOffset >= -256 && tempOffset <= 255 {
-                        emitLine("add x8, x29, #\(tempOffset)")
-                    } else {
-                        emitLoadImm("x16", Int64(tempOffset))
-                        emitLine("add x8, x29, x16")
-                    }
+                    // Large struct (>16 bytes): emitCallExpr sets up x8 internally
+                    // and returns the buffer address. Copy from there to destination.
                     // Save dstReg to stack since emitExpr may clobber it.
                     emitLine("str \(dstReg.x), [sp, #-16]!")
-                    _ = emitExpr(a.value)
-                    // Restore dstReg and copy from temp to destination
+                    let retBuf = emitExpr(a.value)
+                    // Restore dstReg and copy from return buffer to destination
                     emitLine("ldr \(dstReg.x), [sp], #16")
-                    // Use x16 for temp address to avoid clobbering dstReg
-                    if tempOffset >= -256 && tempOffset <= 255 {
-                        emitLine("add x16, x29, #\(tempOffset)")
-                    } else {
-                        emitLoadImm("x17", Int64(tempOffset))
-                        emitLine("add x16, x29, x17")
-                    }
-                    emitStructCopyToField("\(dstReg.x)", .x16, size)
+                    emitStructCopyToField("\(dstReg.x)", retBuf, size)
+                    regAlloc.free(retBuf)
                 }
                 regAlloc.free(dstReg)
                 return dstReg
