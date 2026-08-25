@@ -82,10 +82,10 @@ public func deadCodeElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
 }
 
 /// Normalized register identity — ignores isWord, so x9 and w9 are the same.
-struct NormalizedReg: Hashable {
-    let id: Int
-    let kind: VReg.RegKind
-    init(_ v: VReg) {
+public struct NormalizedReg: Hashable {
+    public let id: Int
+    public let kind: VReg.RegKind
+    public init(_ v: VReg) {
         self.id = v.id
         self.kind = v.kind
     }

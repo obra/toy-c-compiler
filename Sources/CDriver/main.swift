@@ -213,7 +213,7 @@ struct CompilerMain {
             if useIR {
                 let asmLines = asm.split(separator: "\n").map { String($0) }
                 let ir = parseAssembly(asmLines)
-                let optimized = optimizeIR(ir)
+                let optimized = optimizeIR2(ir)
                 let regMap = identityRegMap(optimized)
                 let lowered = lowerIR(optimized, regMap: regMap)
                 asm = lowered.joined(separator: "\n") + "\n"
