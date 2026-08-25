@@ -1977,6 +1977,11 @@ public final class Parser {
             let (name, type, dloc) = try parseDeclarator(baseType)
             // Check for nested function definition: type is function and next is '{'
             if case .function = type, isPunct("{") {
+                // Save lastFuncParams now — parsing the body may encounter
+                // further nested function definitions whose parseFunctionParams
+                // calls would overwrite lastFuncParams before we use it below.
+                let savedFuncParams = lastFuncParams
+                let savedFuncVariadic = lastFuncVariadic
                 // Parse the nested function body and hoist it as a top-level function
                 pendingLocalLabelsStack.append([])
                 let body = try parseCompoundStmt()
@@ -1987,7 +1992,7 @@ public final class Parser {
                     return type
                 }()
                 let fd = FuncDecl(name: name, returnType: retType,
-                                  params: lastFuncParams, variadic: lastFuncVariadic,
+                                  params: savedFuncParams, variadic: savedFuncVariadic,
                                   body: body, storageClass: .static, isInline: false, loc: dloc,
                                   parentFuncName: currentFuncName,
                                   localLabels: labels)

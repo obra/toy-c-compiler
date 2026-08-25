@@ -920,7 +920,7 @@ public final class Codegen {
                 } else if let mangled = staticLocalGlobals[id.name] {
                     emitLine(".quad \(mangled)")
                 } else if functionNames.contains(id.name) {
-                    emitLine(".quad _\(id.name)")
+                    emitLine(".quad _\(resolveFuncSymbol(id.name))")
                 } else {
                     // External symbol
                     emitLine(".quad _\(id.name)")
@@ -1000,7 +1000,7 @@ public final class Codegen {
         case .identifier(let id):
             // Function name, global/static variable, or external symbol in initializer
             if functionNames.contains(id.name) {
-                emitLine(".quad _\(id.name)")
+                emitLine(".quad _\(resolveFuncSymbol(id.name))")
             } else if globalLabels.contains(id.name) {
                 emitLine(".quad _\(id.name)")
             } else if let mangled = staticLocalGlobals[id.name] {
@@ -1141,7 +1141,7 @@ public final class Codegen {
             } else if let mangled = staticLocalGlobals[id.name] {
                 return (mangled, 0)
             } else if functionNames.contains(id.name) {
-                return ("_\(id.name)", 0)
+                return ("_\(resolveFuncSymbol(id.name))", 0)
             } else {
                 // External symbol — assume it's a global
                 return ("_\(id.name)", 0)
@@ -1559,6 +1559,15 @@ public final class Codegen {
     /// "nested" inside "foo" becomes "foo__nested".
     private func mangledNestedName(_ name: String, parent: String) -> String {
         return "\(parent)__\(name)"
+    }
+
+    /// Resolve a function's source name to its actual assembly symbol name,
+    /// applying nested-function mangling when applicable.
+    private func resolveFuncSymbol(_ name: String) -> String {
+        let callKey = "\(currentFuncName)__\(name)"
+        if let mangled = nestedNameMap[callKey] { return mangled }
+        if let mangled = nestedNameMap[name] { return mangled }
+        return name
     }
 
     private func emitFunction(_ fd: FuncDecl) {
