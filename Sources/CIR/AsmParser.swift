@@ -527,7 +527,11 @@ func parseInstruction(
     case "str", "strb", "strh":
         if args.count >= 2 {
             let src = parseOperand(args[0], counter: &counter)
-            let width = storeWidth(m)
+            var width = storeWidth(m)
+            // For plain "str", the width depends on the source register: w = 32-bit, x = 64-bit
+            if m == "str", case .vreg(let srcV) = src, srcV.kind == .gp {
+                width = srcV.isWord ? .word : .dword
+            }
             // Check for post-indexed: "str x9, [sp], #16"
             if args.count >= 3 && args[1].hasPrefix("[") && args[1].hasSuffix("]") && args[2].hasPrefix("#") {
                 let base = parseOperand(args[1].trimmingCharacters(in: CharacterSet(charactersIn: "[]")), counter: &counter)

@@ -63,9 +63,14 @@ public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) 
                     continue
                 }
             }
-            // Check if dst is used in 64-bit form before being reassigned
-            if !usedIn64BitForm(insts, after: i, reg: dst) {
-                // Extension is dead — skip it
+            // Only eliminate sxtw (32→64) when only 32-bit form is used.
+            // sxtb/sxth (byte/halfword→32/64) change the upper bits of the 32-bit
+            // register, so they CANNOT be eliminated even if only w-form is used.
+            let isSxtw: Bool = {
+                if case .sxtw = inst { return true }
+                return false
+            }()
+            if isSxtw, !usedIn64BitForm(insts, after: i, reg: dst) {
                 changed = true
                 i += 1
                 continue
