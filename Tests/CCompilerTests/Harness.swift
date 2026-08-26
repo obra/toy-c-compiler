@@ -117,6 +117,62 @@ public struct Harness {
         let stderr: String
     }
 
+    /// Compile C source using OUR compiler with --ir optimization, assemble with clang,
+    /// and verify it assembles correctly. Returns the assembly error count (0 = success).
+    /// Also runs the binary if assembly succeeds.
+    public static func runViaOurCompilerIR(_ source: String, expectedExit: Int = 0,
+                                             expectedStdout: String = "",
+                                             extraArgs: [String] = []) -> Bool {
+        let tmpDir = NSTemporaryDirectory()
+        let baseName = "ir_\(UUID().uuidString)"
+        let cFile = "\(tmpDir)\(baseName).c"
+        let sFile = "\(tmpDir)\(baseName).s"
+        let binFile = "\(tmpDir)\(baseName)"
+
+        do {
+            try source.write(toFile: cFile, atomically: true, encoding: .utf8)
+        } catch {
+            return false
+        }
+        defer {
+            try? FileManager.default.removeItem(atPath: cFile)
+            try? FileManager.default.removeItem(atPath: sFile)
+            try? FileManager.default.removeItem(atPath: binFile)
+        }
+
+        let ourCompiler = findOurCompiler()
+        guard let compiler = ourCompiler else {
+            print("Harness: could not find our compiler binary")
+            return false
+        }
+
+        // Compile with our compiler --ir → .s
+        let compileResult = runProcess(compiler, args: [cFile, "--ir"] + extraArgs, stdoutFile: sFile)
+        guard compileResult.exitCode == 0 else {
+            print("Harness: our compiler --ir failed:\n\(compileResult.stderr)")
+            return false
+        }
+
+        // Assemble with clang — this catches invalid instructions
+        let linkResult = runProcess("/usr/bin/clang", args: [sFile, "-o", binFile])
+        guard linkResult.exitCode == 0 else {
+            print("Harness: IR assembly FAILED:\n\(linkResult.stderr)")
+            return false
+        }
+
+        // Run the binary
+        let runResult = runProcess(binFile, args: [])
+        if runResult.exitCode != expectedExit {
+            print("Harness: IR exit code mismatch: got \(runResult.exitCode), expected \(expectedExit)")
+            return false
+        }
+        if runResult.stdout != expectedStdout {
+            print("Harness: IR stdout mismatch: got '\(runResult.stdout)', expected '\(expectedStdout)'")
+            return false
+        }
+        return true
+    }
+
     private static func runProcess(_ executable: String, args: [String],
                                    stdoutFile: String? = nil) -> ProcessResult {
         let proc = Process()

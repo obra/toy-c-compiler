@@ -15,17 +15,20 @@ public func loadForwarding(_ insts: [IRInst]) -> ([IRInst], Bool) {
     var changed = false
 
     // Track what register holds the value at each frame offset.
-    // Key: (base register id, offset) → Value: (register that holds it, instruction index)
+    // Key: (base register id, offset) → Value: register that holds it
     // When we see a load from that offset, replace with a mov from the tracked register.
     var frameValues: [FrameSlot: VReg] = [:]
-
-    // Track what register was loaded from each frame slot
-    // Key: (base, offset) → register that was loaded into
 
     for inst in insts {
         switch inst {
         // --- Load from frame: check if we already have the value ---
         case .load(let dst, let addr, let offset, let width, let signed):
+            // First, invalidate any frame values that reference the dest register
+            // (the load overwrites it, making any cached pointer to it stale)
+            let dstNorm = NormalizedReg(dst)
+            frameValues = frameValues.filter { _, reg in
+                NormalizedReg(reg) != dstNorm
+            }
             if let slot = frameSlot(addr, offset) {
                 if let cachedReg = frameValues[slot] {
                     // Forward: replace load with mov
@@ -53,8 +56,6 @@ public func loadForwarding(_ insts: [IRInst]) -> ([IRInst], Bool) {
                     frameValues.removeValue(forKey: slot)
                 }
             }
-            // Store also invalidates any cached load to a different-width slot
-            // at the same offset (e.g., storing w9 to #N invalidates ldr x from #N)
             result.append(inst)
 
         // --- Store to frame with register offset ---
@@ -78,27 +79,27 @@ public func loadForwarding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             frameValues.removeAll(keepingCapacity: true)
             result.append(inst)
 
-        // --- Pre/post-indexed stores modify the base register — be conservative ---
-        case .storePre, .storePost:
+        // --- Pre/post-indexed stores/loads — be conservative ---
+        case .storePre, .storePost, .loadPre, .loadPost:
             frameValues.removeAll(keepingCapacity: true)
             result.append(inst)
 
-        case .loadPre, .loadPost:
+        // --- Pairs are complex — just invalidate ---
+        case .stp, .stpPre, .stpPost, .ldp, .ldpPre, .ldpPost:
             frameValues.removeAll(keepingCapacity: true)
             result.append(inst)
 
-        // --- str/ldr to sp-relative addresses: track separately ---
-        case .stp, .stpPre, .stpPost:
-            // Pairs are complex — just invalidate
-            frameValues.removeAll(keepingCapacity: true)
-            result.append(inst)
-
-        case .ldp, .ldpPre, .ldpPost:
-            frameValues.removeAll(keepingCapacity: true)
-            result.append(inst)
-
-        // --- Everything else passes through ---
+        // --- Default: invalidate any frame values that reference the dest register ---
         default:
+            // If this instruction writes to a register that was previously stored
+            // to the frame, the cached value is now stale (the register has been
+            // reassigned). Remove all frameValues entries pointing to this register.
+            if let dst = destVReg(inst) {
+                let dstNorm = NormalizedReg(dst)
+                frameValues = frameValues.filter { _, reg in
+                    NormalizedReg(reg) != dstNorm
+                }
+            }
             result.append(inst)
         }
     }
@@ -112,10 +113,9 @@ struct FrameSlot: Hashable {
     let offset: Int
 }
 
-/// Try to extract a frame slot from a load/store address.
-/// Only handles constant-offset addressing (base register + immediate offset).
+/// Extract a FrameSlot from a load/store address+offset, if it's a frame reference.
 func frameSlot(_ addr: Operand, _ offset: Int) -> FrameSlot? {
-    if case .vreg(let v) = addr {
+    if case .vreg(let v) = addr, v.kind == .gp, v.id == 29 || v.id == 31 {
         return FrameSlot(baseRegId: v.id, offset: offset)
     }
     return nil
