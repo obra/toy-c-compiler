@@ -133,8 +133,20 @@ public func deadCodeElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
             changed = true
             continue
         }
+        // Eliminate self-movs: mov xN, xN (no-op)
+        if case .mov(let dst, let src) = inst,
+           case .vreg(let srcReg) = src,
+           NormalizedReg(dst) == NormalizedReg(srcReg) {
+            changed = true
+            continue
+        }
         // Also remove movk comment lines (leftover from loadImm folding)
         if case .comment(let text) = inst, text.hasPrefix("movk ") {
+            changed = true
+            continue
+        }
+        // Remove eliminated cbz/cbnz comments from constant folding
+        if case .comment(let text) = inst, text.hasPrefix("eliminated cb") {
             changed = true
             continue
         }

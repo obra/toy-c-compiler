@@ -209,9 +209,18 @@ public func crossBlockDCE(_ insts: [IRInst]) -> [IRInst] {
             }
         }
 
-        // Also mark movk comments for removal
+        // Also mark movk comments and eliminated cbz/cbnz comments for removal
         for i in 0..<blockInsts.count {
             if case .comment(let text) = blockInsts[i], text.hasPrefix("movk ") {
+                deadIndices.insert(i)
+            }
+            if case .comment(let text) = blockInsts[i], text.hasPrefix("eliminated cb") {
+                deadIndices.insert(i)
+            }
+            // Eliminate self-movs: mov xN, xN (no-op)
+            if case .mov(let dst, let src) = blockInsts[i],
+               case .vreg(let srcReg) = src,
+               NormalizedReg(dst) == NormalizedReg(srcReg) {
                 deadIndices.insert(i)
             }
         }
