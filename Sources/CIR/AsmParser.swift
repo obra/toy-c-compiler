@@ -431,31 +431,19 @@ func parseInstruction(
         if args.count >= 2 {
             let dst = parseReg(args[0], counter: &counter)!
             let src = parseOperand(args[1], counter: &counter)
-            // Check for movz with shift: movz x9, #0, lsl #48
-            if args.count >= 4 && args[2] == "lsl" {
-                let shiftStr = args[3].trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-                let shift = Int(shiftStr) ?? 0
-                if case .imm(let val) = src {
-                    return .loadImm(dst: dst, value: val << shift)
-                }
-            }
             return .mov(dst: dst, src: src)
         }
     case "movk":
-        // movk xN, #imm, lsl #shift — keep 16 bits, replace with shifted value
-        // The constant folding pass will combine movz+movk into the full value
+        // movk xN, #imm, lsl #shift — parse as orr with self (movk inserts bits)
         if args.count >= 2 {
             let dst = parseReg(args[0], counter: &counter)!
             let valStr = args[1].trimmingCharacters(in: CharacterSet(charactersIn: "#"))
             if let val = Int64(valStr) {
                 var shift = 0
-                if args.count >= 4 && args[2] == "lsl" {
-                    shift = Int(args[3].trimmingCharacters(in: CharacterSet(charactersIn: "#"))) ?? 0
+                if args.count >= 3 && args[2].hasPrefix("lsl") {
+                    let shiftStr = args[2].split(separator: "#").last.map { String($0) } ?? "0"
+                    shift = Int(shiftStr.trimmingCharacters(in: .whitespaces)) ?? 0
                 }
-                // movk: keep upper/lower bits, insert 16-bit value at shift position
-                // Represent as: orr dst, dst, #(val << shift) when the movz zeroed the lower bits
-                // But this is complex — for now, use loadImm with the full pattern if we can
-                // track the movz value. Instead, emit as a bitwise or with the shifted value.
                 return .orr(dst: dst, src1: .vreg(dst), src2: .imm(val << shift))
             }
         }

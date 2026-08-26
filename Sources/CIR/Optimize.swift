@@ -645,13 +645,21 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             }
 
         case .orr(let dst, let s1, let s2):
-            // Fold orr with known constants (e.g., movz #0 + movk #16376, lsl #48)
-            let v1 = getConst(s1, constValues)
-            let v2 = getConst(s2, constValues)
-            if let v1 = v1, let v2 = v2 {
-                result[i] = .loadImm(dst: dst, value: v1 | v2)
-                constValues[NormalizedReg(dst)] = v1 | v2
-                changed = true
+            // Fold orr with known constants. This handles movz+movk sequences:
+            // mov x9, #65535 → orr x9, x9, #0xFFFF0000 → loadImm x9, 0xFFFFFFFF
+            // Only fold when src1 is the same register as dst (self-or from movk)
+            // and both operands are known constants.
+            if case .vreg(let s1v) = s1, NormalizedReg(s1v) == NormalizedReg(dst) {
+                let v1 = getConst(s1, constValues)
+                let v2 = getConst(s2, constValues)
+                if let v1 = v1, let v2 = v2 {
+                    let combined = v1 | v2
+                    result[i] = .loadImm(dst: dst, value: combined)
+                    constValues[NormalizedReg(dst)] = combined
+                    changed = true
+                } else {
+                    constValues.removeValue(forKey: NormalizedReg(dst))
+                }
             } else {
                 constValues.removeValue(forKey: NormalizedReg(dst))
             }
