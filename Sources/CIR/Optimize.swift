@@ -411,13 +411,12 @@ public func copyPropagation(_ insts: [IRInst]) -> ([IRInst], Bool) {
             if let dst = destVReg(inst) {
                 let dstNorm = NormalizedReg(dst)
                 copyMap.removeValue(forKey: dstNorm)
-                // Also remove entries where dst appears as a source in the copy map
                 copyMap = copyMap.filter { _, v in
                     if case .vreg(let v2) = v, NormalizedReg(v2) == dstNorm { return false }
                     return true
                 }
             }
-            // Calls clobber all caller-saved registers (x0-x18) — invalidate all
+            // Calls clobber all caller-saved registers (x0-x18)
             if case .call = inst {
                 for regId in 0...18 {
                     copyMap.removeValue(forKey: NormalizedReg(VReg(id: regId, kind: .gp)))
@@ -440,6 +439,117 @@ public func copyPropagation(_ insts: [IRInst]) -> ([IRInst], Bool) {
     }
 
     return (result, changed)
+}
+
+/// Rewrite ONLY the source register of a store instruction using the copy map.
+/// Conservative: only replaces store source, not address. Only register-to-register.
+func rewriteStoreSource(_ inst: IRInst, copyMap: [NormalizedReg: Operand]) -> IRInst? {
+    func subReg(_ op: Operand) -> Operand {
+        if case .vreg(let v) = op, let replacement = copyMap[NormalizedReg(v)] {
+            if case .vreg(let replReg) = replacement, replReg.id != 31, replReg.id != 32 {
+                return replacement
+            }
+        }
+        return op
+    }
+
+    switch inst {
+    case .store(let src, let addr, let offset, let width):
+        let newSrc = subReg(src)
+        if newSrc != src { return .store(src: newSrc, addr: addr, offset: offset, width: width) }
+        return nil
+    default:
+        return nil
+    }
+}
+
+/// Rewrite source operands of an instruction using the copy map.
+/// Returns the rewritten instruction if any source was changed, nil otherwise.
+/// Only propagates register-to-register copies (not immediates) to avoid
+/// creating invalid instructions like `str #5, [addr]`.
+func rewriteSources(_ inst: IRInst, copyMap: [NormalizedReg: Operand]) -> IRInst? {
+    func sub(_ op: Operand) -> Operand {
+        if case .vreg(let v) = op, let replacement = copyMap[NormalizedReg(v)] {
+            // Only propagate register-to-register copies
+            // Don't propagate sp (VReg 31) — it's a special register
+            if case .vreg(let replReg) = replacement, replReg.id != 31 {
+                return replacement
+            }
+        }
+        return op
+    }
+
+    switch inst {
+    // Store: replace source operand
+    case .store(let src, let addr, let offset, let width):
+        let newSrc = sub(src)
+        let newAddr = sub(addr)
+        if newSrc != src || newAddr != addr {
+            return .store(src: newSrc, addr: newAddr, offset: offset, width: width)
+        }
+        return nil
+
+    // Store pre: replace source and addr
+    case .storePre(let src, let addr, let offset, let width):
+        let newSrc = sub(src)
+        let newAddr = sub(addr)
+        if newSrc != src || newAddr != addr {
+            return .storePre(src: newSrc, addr: newAddr, offset: offset, width: width)
+        }
+        return nil
+
+    // Binary ops: replace both sources
+    case .add(let dst, let s1, let s2):
+        let ns1 = sub(s1), ns2 = sub(s2)
+        if ns1 != s1 || ns2 != s2 { return .add(dst: dst, src1: ns1, src2: ns2) }
+        return nil
+    case .sub(let dst, let s1, let s2):
+        let ns1 = sub(s1), ns2 = sub(s2)
+        if ns1 != s1 || ns2 != s2 { return .sub(dst: dst, src1: ns1, src2: ns2) }
+        return nil
+    case .mul(let dst, let s1, let s2):
+        let ns1 = sub(s1), ns2 = sub(s2)
+        if ns1 != s1 || ns2 != s2 { return .mul(dst: dst, src1: ns1, src2: ns2) }
+        return nil
+
+    // Cmp: replace sources
+    case .cmp(let s1, let s2):
+        let ns1 = sub(s1), ns2 = sub(s2)
+        if ns1 != s1 || ns2 != s2 { return .cmp(src1: ns1, src2: ns2) }
+        return nil
+
+    // Load: replace address
+    case .load(let dst, let addr, let offset, let width, let signed):
+        let newAddr = sub(addr)
+        if newAddr != addr { return .load(dst: dst, addr: newAddr, offset: offset, width: width, signed: signed) }
+        return nil
+
+    // cbz/cbnz: replace source
+    case .cbz(let src, let label):
+        let ns = sub(src)
+        if ns != src { return .cbz(src: ns, label: label) }
+        return nil
+    case .cbnz(let src, let label):
+        let ns = sub(src)
+        if ns != src { return .cbnz(src: ns, label: label) }
+        return nil
+
+    // str/stp: replace sources
+    case .stp(let s1, let s2, let addr, let offset):
+        let ns1 = sub(s1), ns2 = sub(s2), na = sub(addr)
+        if ns1 != s1 || ns2 != s2 || na != addr { return .stp(src1: ns1, src2: ns2, addr: na, offset: offset) }
+        return nil
+
+    // addrr: replace base
+    case .addrr(let dst, let base, let offset):
+        let nb = sub(base)
+        if nb != base { return .addrr(dst: dst, base: nb, offset: offset) }
+        return nil
+
+    // Don't rewrite other instructions (conservative)
+    default:
+        return nil
+    }
 }
 
 // MARK: - Constant Folding
