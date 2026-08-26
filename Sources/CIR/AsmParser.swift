@@ -475,7 +475,11 @@ func parseInstruction(
     case "ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrsw":
         if args.count >= 2 {
             let dst = parseReg(args[0], counter: &counter)!
-            let (width, signed) = loadWidth(m)
+            var (width, signed) = loadWidth(m)
+            // For plain "ldr", the width depends on the register: w = 32-bit, x = 64-bit
+            if m == "ldr" && dst.kind == .gp {
+                width = dst.isWord ? .word : .dword
+            }
             // Check for post-indexed: "ldr x9, [sp], #16"
             if args.count >= 3 && args[1].hasPrefix("[") && args[1].hasSuffix("]") && args[2].hasPrefix("#") {
                 let base = parseOperand(args[1].trimmingCharacters(in: CharacterSet(charactersIn: "[]")), counter: &counter)

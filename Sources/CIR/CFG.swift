@@ -350,6 +350,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 13b: Load-sign-extend fusion (ldr wN + sxtw xN → ldrsw xN)
+        let (lseResult, lseChanged) = loadSignExtendFusion(result)
+        if lseChanged {
+            result = lseResult
+            changed = true
+        }
+
         // Pass 14: Load-target folding (ldr + mov → ldr directly)
         let (loadFoldResult, loadFoldChanged) = loadTargetFolding(result)
         if loadFoldChanged {
