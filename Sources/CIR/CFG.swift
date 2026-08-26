@@ -334,6 +334,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 14: Redundant SP restore elimination (mov sp, x29 when sp unchanged)
+        let (spResult, spChanged) = redundantSPRestoreElimination(result)
+        if spChanged {
+            result = spResult
+            changed = true
+        }
+
         iterations += 1
     }
 
