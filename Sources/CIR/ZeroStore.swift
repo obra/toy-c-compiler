@@ -22,7 +22,10 @@ public func zeroStoreElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
                 // Case 1: direct store of dst
                 if case .store(let storeSrc, let addr, let offset, let width) = insts[nextIdx],
                    case .vreg(let storeReg) = storeSrc, NormalizedReg(storeReg) == NormalizedReg(dst) {
+                    // Replace store source with zero register, but KEEP the mov.
+                    // The mov may be needed if the register was forwarded by load forwarding.
                     let wzr = VReg(id: 32, kind: .gp, isWord: dst.isWord)
+                    result.append(inst)  // keep mov dst, #0
                     result.append(.store(src: .vreg(wzr), addr: addr, offset: offset, width: width))
                     changed = true
                     i += 2
@@ -35,8 +38,9 @@ public func zeroStoreElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
                    nextIdx + 1 < insts.count,
                    case .store(let storeSrc, let addr, let offset, let width) = insts[nextIdx + 1],
                    case .vreg(let storeReg) = storeSrc, NormalizedReg(storeReg) == NormalizedReg(dst) {
-                    // mov #0 + sxtw (of zero) + str → str wzr
+                    // mov #0 + sxtw (of zero) + str → str wzr (keep mov, skip sxtw)
                     let wzr = VReg(id: 32, kind: .gp, isWord: false)
+                    result.append(inst)  // keep mov dst, #0
                     result.append(.store(src: .vreg(wzr), addr: addr, offset: offset, width: width))
                     changed = true
                     i += 3  // skip mov, sxtw, and store
@@ -45,7 +49,9 @@ public func zeroStoreElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
                 // Case 3: storePre of dst (str dst, [sp, #-16]!)
                 if case .storePre(let storeSrc, let addr, let offset, let width) = insts[nextIdx],
                    case .vreg(let storeReg) = storeSrc, NormalizedReg(storeReg) == NormalizedReg(dst) {
+                    // Replace store source with zero register, but KEEP the mov.
                     let wzr = VReg(id: 32, kind: .gp, isWord: dst.isWord)
+                    result.append(inst)  // keep mov dst, #0
                     result.append(.storePre(src: .vreg(wzr), addr: addr, offset: offset, width: width))
                     changed = true
                     i += 2
