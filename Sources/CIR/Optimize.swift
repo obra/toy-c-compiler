@@ -183,8 +183,13 @@ func implicitlyUsedRegs(_ inst: IRInst) -> [VReg] {
             [VReg(id: n, kind: .gp, isWord: false), VReg(id: n, kind: .gp, isWord: true)]
         }
     case .ret:
-        // x0 is the return value register (both w and x forms)
-        return [VReg(id: 0, kind: .gp, isWord: false), VReg(id: 0, kind: .gp, isWord: true)]
+        // x0 is the return value register for integer/pointer returns (both w and x forms)
+        // d0 is the return value register for float/double returns
+        return [
+            VReg(id: 0, kind: .gp, isWord: false),
+            VReg(id: 0, kind: .gp, isWord: true),
+            VReg(id: 0, kind: .fp, isWord: false),
+        ]
     default:
         return []
     }
@@ -635,6 +640,18 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
         case .mov(let dst, let src):
             if let val = getConst(src, constValues) {
                 constValues[NormalizedReg(dst)] = val
+            } else {
+                constValues.removeValue(forKey: NormalizedReg(dst))
+            }
+
+        case .orr(let dst, let s1, let s2):
+            // Fold orr with known constants (e.g., movz #0 + movk #16376, lsl #48)
+            let v1 = getConst(s1, constValues)
+            let v2 = getConst(s2, constValues)
+            if let v1 = v1, let v2 = v2 {
+                result[i] = .loadImm(dst: dst, value: v1 | v2)
+                constValues[NormalizedReg(dst)] = v1 | v2
+                changed = true
             } else {
                 constValues.removeValue(forKey: NormalizedReg(dst))
             }

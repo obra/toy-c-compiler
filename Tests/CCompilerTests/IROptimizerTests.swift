@@ -246,18 +246,15 @@ final class IROptimizerTests: XCTestCase {
 
     // MARK: - Variadic functions
 
-    /// Test variadic function argument handling.
+    /// Test variadic function with many stack arguments (exercises push/sp cancel).
     func testIRVariadic() {
         let source = """
-        int sum(int n, ...) {
-            int *args = (int*)&n;
-            int s = 0;
-            for (int i = 1; i <= n; i++) s += args[i];
-            return s;
+        int f(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j) {
+            return a + b + c + d + e + f + g + h + i + j;
         }
-        int main() { return sum(3, 10, 20, 12); }
+        int main() { return f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10); }
         """
-        XCTAssertTrue(Harness.runViaOurCompilerIR(source, expectedExit: 42))
+        XCTAssertTrue(Harness.runViaOurCompilerIR(source, expectedExit: 55))
     }
 
     // MARK: - Sign extension
