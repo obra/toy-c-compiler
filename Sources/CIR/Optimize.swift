@@ -611,6 +611,26 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
                 constValues.removeValue(forKey: NormalizedReg(dst))
             }
 
+        case .cmp(let s1, let s2):
+            // Fold constant operands into cmp: cmp reg, x10 where x10=#0 → cmp reg, #0
+            let ns1: Operand
+            if case .vreg(let v) = s1, let val = constValues[NormalizedReg(v)] {
+                ns1 = .imm(val)
+                changed = true
+            } else {
+                ns1 = s1
+            }
+            let ns2: Operand
+            if case .vreg(let v) = s2, let val = constValues[NormalizedReg(v)] {
+                ns2 = .imm(val)
+                changed = true
+            } else {
+                ns2 = s2
+            }
+            if ns1 != s1 || ns2 != s2 {
+                result[i] = .cmp(src1: ns1, src2: ns2)
+            }
+
         default:
             if let dst = destVReg(inst) {
                 constValues.removeValue(forKey: NormalizedReg(dst))
