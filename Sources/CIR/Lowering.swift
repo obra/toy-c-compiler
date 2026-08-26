@@ -93,6 +93,44 @@ fileprivate struct Lowerer {
         return "[x29, #\(v.id * 8)]"
     }
 
+    /// Render an operand as a register in the correct width for a store instruction.
+    /// strb/strh require w-form (32-bit) registers; str (dword) uses x-form (64-bit).
+    func storeRegForm(_ op: Operand, width: Width) -> String {
+        if case .vreg(let v) = op, v.kind == .gp {
+            // For byte/halfword/word stores, use w-form
+            // For dword stores, use x-form
+            let useWord = width != .dword
+            if v.id == 31 { return "sp" }
+            if v.id == 32 { return useWord ? "wzr" : "xzr" }
+            return useWord ? "w\(v.id)" : "x\(v.id)"
+        }
+        return operand(op)
+    }
+
+    /// Render a load destination register in the correct width.
+    /// ldrb/ldrh require w-form; ldrsw/ldrsb/ldrsh can use x-form (sign-extends);
+    /// ldr (dword) uses x-form; ldr (word unsigned) uses w-form.
+    func loadRegForm(_ v: VReg, width: Width, signed: Bool) -> String {
+        if v.kind == .gp {
+            // Signed loads (ldrsb, ldrsh, ldrsw) can target x-form (sign-extends)
+            // Unsigned byte/halfword loads (ldrb, ldrh) require w-form
+            // Unsigned word load (ldr wN) uses w-form
+            // Dword load (ldr xN) uses x-form
+            let useWord: Bool
+            if signed {
+                // Signed loads can use either w or x form — use the register's own form
+                useWord = v.isWord
+            } else {
+                // Unsigned: byte/halfword/word → w-form, dword → x-form
+                useWord = width != .dword
+            }
+            if v.id == 31 { return "sp" }
+            if v.id == 32 { return useWord ? "wzr" : "xzr" }
+            return useWord ? "w\(v.id)" : "x\(v.id)"
+        }
+        return regForm(v)
+    }
+
     /// Convert an FP register string to its 64-bit (D) form.
     /// "d0" → "d0", "s0" → "d0".
     func dForm(_ s: String) -> String {
@@ -254,7 +292,12 @@ fileprivate struct Lowerer {
 
         // --- Data movement ---
         case .mov(let dst, let src):
-            emit("mov \(regForm(dst)), \(operand(src))", into: &out)
+            // Use fmov for FP register copies
+            if dst.kind == .fp {
+                emit("fmov \(regForm(dst)), \(operand(src))", into: &out)
+            } else {
+                emit("mov \(regForm(dst)), \(operand(src))", into: &out)
+            }
         case .fmov(let dst, let src):
             emit("fmov \(regForm(dst)), \(operand(src))", into: &out)
 
@@ -273,9 +316,11 @@ fileprivate struct Lowerer {
         // --- Memory: load/store ---
         case .load(let dst, let addr, let offset, let width, let signed):
             let mnem = signed ? width.loadSignedMnemonic : width.loadMnemonic
-            emit("\(mnem) \(regForm(dst)), [\(operand(addr)), #\(offset)]", into: &out)
+            let dstReg = loadRegForm(dst, width: width, signed: signed)
+            emit("\(mnem) \(dstReg), [\(operand(addr)), #\(offset)]", into: &out)
         case .store(let src, let addr, let offset, let width):
-            emit("\(width.storeMnemonic) \(operand(src)), [\(operand(addr)), #\(offset)]", into: &out)
+            let srcReg = storeRegForm(src, width: width)
+            emit("\(width.storeMnemonic) \(srcReg), [\(operand(addr)), #\(offset)]", into: &out)
         case .loadReg(let dst, let addr, let index, let width, let signed):
             let mnem = signed ? width.loadSignedMnemonic : width.loadMnemonic
             emit("\(mnem) \(regForm(dst)), [\(operand(addr)), \(operand(index))]", into: &out)
@@ -302,7 +347,12 @@ fileprivate struct Lowerer {
         case .adr(let dst, let symbol):
             emit("adr \(regForm(dst)), \(symbol)", into: &out)
         case .adrp(let dst, let symbol):
-            emit("adrp \(regForm(dst)), \(symbol)@PAGE", into: &out)
+            // Don't add @PAGE if the symbol already has a relocation suffix (e.g., @GOTPAGE)
+            if symbol.contains("@") {
+                emit("adrp \(regForm(dst)), \(symbol)", into: &out)
+            } else {
+                emit("adrp \(regForm(dst)), \(symbol)@PAGE", into: &out)
+            }
         case .addSymbol(let dst, let base, let symbol):
             emit("add \(regForm(dst)), \(operand(base)), \(symbol)@PAGEOFF", into: &out)
 

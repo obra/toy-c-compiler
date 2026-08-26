@@ -29,8 +29,10 @@ public func loadForwarding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             if let slot = frameSlot(addr, offset) {
                 if let cachedReg = frameValues[slot] {
                     // Forward: replace load with mov
-                    // But only if the width matches (don't forward w to x without sign extension)
-                    if cachedReg.isWord == dst.isWord || (cachedReg.isWord && !dst.isWord) {
+                    // Only forward if widths match exactly. Forwarding a 32-bit
+                    // value to a 64-bit destination without sign extension is
+                    // incorrect — it produces invalid mov xN, wM instructions.
+                    if cachedReg.isWord == dst.isWord {
                         result.append(.mov(dst: dst, src: .vreg(cachedReg)))
                         changed = true
                         continue

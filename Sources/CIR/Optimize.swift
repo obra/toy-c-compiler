@@ -406,9 +406,13 @@ public func copyPropagation(_ insts: [IRInst]) -> ([IRInst], Bool) {
                 // Don't create a self-mov (mov x, x) — keep the original
                 if case .vreg(let origVReg) = originalSrc, NormalizedReg(origVReg) == dstNorm {
                     // This would be mov dst, dst — skip the propagation
-                } else {
-                    result[i] = .mov(dst: dst, src: originalSrc)
-                    changed = true
+                } else if case .vreg(let origVReg) = originalSrc, origVReg.kind == dst.kind {
+                    // Only propagate if register kinds match (GP→GP, FP→FP)
+                    // and widths match (x→x, w→w) to avoid invalid mov xN, wM
+                    if origVReg.isWord == dst.isWord {
+                        result[i] = .mov(dst: dst, src: originalSrc)
+                        changed = true
+                    }
                 }
             }
             // Record this copy
@@ -637,6 +641,8 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
 
         case .cmp(let s1, let s2):
             // Fold constant operands into cmp: cmp reg, x10 where x10=#0 → cmp reg, #0
+            // ARM64 cmp only supports: cmp reg, reg OR cmp reg, #imm (first operand must be register)
+            // The immediate must fit in 12-bit (0-4095) optionally shifted left 12.
             let ns1: Operand
             if case .vreg(let v) = s1, let val = constValues[NormalizedReg(v)] {
                 ns1 = .imm(val)
@@ -646,13 +652,26 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             }
             let ns2: Operand
             if case .vreg(let v) = s2, let val = constValues[NormalizedReg(v)] {
-                ns2 = .imm(val)
-                changed = true
+                // Only fold if the immediate is encodable in cmp
+                // ARM64 supports 12-bit unsigned imm (0-4095) or shifted (multiples of 4096 up to 0xFFF000)
+                if (val >= 0 && val <= 0xFFF) || (val >= 0 && val <= 0xFFF000 && val % 0x1000 == 0) {
+                    ns2 = .imm(val)
+                    changed = true
+                } else {
+                    ns2 = s2  // don't fold — too large for cmp immediate
+                }
             } else {
                 ns2 = s2
             }
             if ns1 != s1 || ns2 != s2 {
-                result[i] = .cmp(src1: ns1, src2: ns2)
+                // If first operand is an immediate, don't fold it into cmp.
+                // cmp #imm, reg is invalid ARM64. Keep s1 as register.
+                if case .imm = ns1 {
+                    // Can't put immediate in first operand. Only fold second.
+                    result[i] = .cmp(src1: s1, src2: ns2)
+                } else {
+                    result[i] = .cmp(src1: ns1, src2: ns2)
+                }
             }
 
         case .cbz(let src, let label):

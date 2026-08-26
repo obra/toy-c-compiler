@@ -27,7 +27,9 @@ public func pairCoalescing(_ insts: [IRInst]) -> ([IRInst], Bool) {
            width1 == .dword, width2 == .dword,
            sameOperand(addr1, addr2),
            abs(off2 - off1) == 8,
-           distinctOperands(src1, src2) {
+           distinctOperands(src1, src2),
+           sameKind(src1, src2),
+           sameWidth(src1, src2) {
             // Coalesce to stp
             let minOff = min(off1, off2)
             let (s1, s2) = off1 <= off2 ? (src1, src2) : (src2, src1)
@@ -50,7 +52,9 @@ public func pairCoalescing(_ insts: [IRInst]) -> ([IRInst], Bool) {
            width1 == .dword, width2 == .dword,
            sameOperand(addr1, addr2),
            abs(off2 - off1) == 8,
-           NormalizedReg(dst1) != NormalizedReg(dst2) {
+           NormalizedReg(dst1) != NormalizedReg(dst2),
+           dst1.kind == dst2.kind,
+           dst1.isWord == dst2.isWord {
             // Coalesce to ldp
             let minOff = min(off1, off2)
             let (d1, d2) = off1 <= off2 ? (dst1, dst2) : (dst2, dst1)
@@ -87,6 +91,28 @@ private func distinctOperands(_ a: Operand, _ b: Operand) -> Bool {
         return NormalizedReg(va) != NormalizedReg(vb)
     default:
         return a != b
+    }
+}
+
+/// Check if two operands are the same register kind (GP vs FP).
+/// stp/ldp require both operands to be the same kind.
+private func sameKind(_ a: Operand, _ b: Operand) -> Bool {
+    switch (a, b) {
+    case (.vreg(let va), .vreg(let vb)):
+        return va.kind == vb.kind
+    default:
+        return true
+    }
+}
+
+/// Check if two operands have the same register width (x vs w).
+/// stp requires both operands to be the same width.
+private func sameWidth(_ a: Operand, _ b: Operand) -> Bool {
+    switch (a, b) {
+    case (.vreg(let va), .vreg(let vb)):
+        return va.isWord == vb.isWord
+    default:
+        return true
     }
 }
 

@@ -223,6 +223,12 @@ public func crossBlockDCE(_ insts: [IRInst]) -> [IRInst] {
                NormalizedReg(dst) == NormalizedReg(srcReg) {
                 deadIndices.insert(i)
             }
+            // Eliminate self-fcvt: fcvt dN, dN (no-op)
+            if case .fcvt(let dst, let src, _) = blockInsts[i],
+               case .vreg(let srcReg) = src,
+               NormalizedReg(dst) == NormalizedReg(srcReg) {
+                deadIndices.insert(i)
+            }
         }
 
         // Emit non-dead instructions, prefixed with the block label if it's a real label
