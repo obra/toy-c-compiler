@@ -101,22 +101,21 @@
 - 689 patterns found in SQLite
 - No issues encountered
 
-## Summary (as of commit c80d779)
+## Summary (as of commit b4be1b5)
 - Original: 562,433 instructions
-- After opt 1-11: 530,424 (5.7% reduction)
-- After opt 14 (zero-source sxtw): 528,437 (6.1%)
-- After opt 15 (SP restore): pending benchmark
+- Latest: 525,852 instructions (6.5% reduction, 36,581 removed)
 - All 164 tests pass
 
-### 14. Zero-source sxtw elimination (commit 1af6db6)
-- Eliminates sxtw/sxtb/sxth when preceded by mov reg, #0
-- Sign-extending zero is zero — the extension is dead
-- sxtw: 10,761 → 9,615 (1,146 eliminated)
-- Total sxtw from original: 18,115 → 9,615 (8,500 total eliminated)
+### 16. Positive constant sxtw elimination (commit 317ae38)
+- Sign-extending positive constants (0-0x7FFFFFFF) is a no-op
+- sxtw: 9,615 → 8,618 (997 more eliminated)
+- What went bad: first attempt used `inst == .sxtw(dst, src)` which
+  doesn't compile (VReg vs Operand). Fixed with switch-based type check.
 
-### 15. Redundant SP restore elimination (commit c80d779)
-- Eliminates 'mov sp, x29' when sp was not modified after prologue
-- 216 functions with no sp modification
+### 17. Mov-store fusion (commit b4be1b5)
+- mov xN,xM + str xN,[addr] → str xM,[addr] when xN is dead
+- Uses usedAfter() liveness check for safety
+- mov: 72,674 → 71,673 (1,001 eliminated)
 - No issues encountered
 
 ### 11. Dead sign extension elimination (commit ff86f76, extended 7133693)
