@@ -46,3 +46,38 @@ public func addChainFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
 
     return (result, changed)
 }
+
+/// Fold consecutive `add xN, xN, #A` + `add xN, xN, #B` into `add xN, xN, #(A+B)`.
+/// These come from sequential offset computations (e.g., array index walks).
+public func addSelfChainFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
+    var result: [IRInst] = []
+    var changed = false
+
+    var i = 0
+    while i < insts.count {
+        // Look for: add xN, xN, #A followed by add xN, xN, #B
+        if case .add(let dst1, let src1a, let src1b) = insts[i],
+           case .vreg(let s1a) = src1a, NormalizedReg(s1a) == NormalizedReg(dst1),
+           case .imm(let off1) = src1b,
+           i + 1 < insts.count,
+           case .add(let dst2, let src2a, let src2b) = insts[i + 1],
+           case .vreg(let s2a) = src2a, NormalizedReg(s2a) == NormalizedReg(dst1),
+           case .imm(let off2) = src2b,
+           NormalizedReg(dst2) == NormalizedReg(dst1) {
+            // Fold: add xN, xN, #(off1 + off2)
+            let combined = Int(off1) + Int(off2)
+            // ARM64 add immediate: 12-bit unsigned (0-4095) or shifted (multiples of 4096)
+            if combined >= 0 && (combined <= 0xFFF || (combined % 0x1000 == 0 && combined <= 0xFFF000)) {
+                result.append(.add(dst: dst2, src1: src2a, src2: .imm(Int64(combined))))
+                changed = true
+                i += 2
+                continue
+            }
+        }
+
+        result.append(insts[i])
+        i += 1
+    }
+
+    return (result, changed)
+}

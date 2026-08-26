@@ -308,6 +308,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 8b: Self-add chain folding (add xN,xN,#A + add xN,xN,#B → add xN,xN,#(A+B))
+        let (selfAddResult, selfAddChanged) = addSelfChainFolding(result)
+        if selfAddChanged {
+            result = selfAddResult
+            changed = true
+        }
+
         // Pass 9: Address folding (fold addrr xN,x29,#N into load/store [x29, #N])
         let (addrResult, addrChanged) = addressFolding(result)
         if addrChanged {
