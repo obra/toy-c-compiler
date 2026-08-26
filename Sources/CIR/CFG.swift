@@ -327,6 +327,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 13: Load-target folding (ldr + mov → ldr directly)
+        let (loadFoldResult, loadFoldChanged) = loadTargetFolding(result)
+        if loadFoldChanged {
+            result = loadFoldResult
+            changed = true
+        }
+
         iterations += 1
     }
 
