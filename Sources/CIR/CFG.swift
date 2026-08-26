@@ -306,42 +306,49 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
-        // Pass 10: Zero store elimination (mov reg,#0 + str reg → str wzr)
+        // Pass 10: Pair coalescing (str+str → stp, ldr+ldr → ldp)
+        let (pairResult, pairChanged) = pairCoalescing(result)
+        if pairChanged {
+            result = pairResult
+            changed = true
+        }
+
+        // Pass 11: Zero store elimination (mov reg,#0 + str reg → str wzr)
         let (zeroResult, zeroChanged) = zeroStoreElimination(result)
         if zeroChanged {
             result = zeroResult
             changed = true
         }
 
-        // Pass 11: Compare-to-branch folding (cmp #0 + b.eq/ne → cbz/cbnz)
+        // Pass 12: Compare-to-branch folding (cmp #0 + b.eq/ne → cbz/cbnz)
         let (cmpResult, cmpChanged) = cmpToBranchFolding(result)
         if cmpChanged {
             result = cmpResult
             changed = true
         }
 
-        // Pass 12: Dead sign extension elimination (sxtw only used in 32-bit → remove)
+        // Pass 13: Dead sign extension elimination (sxtw only used in 32-bit → remove)
         let (sxtwResult, sxtwChanged) = deadSignExtensionElimination(result)
         if sxtwChanged {
             result = sxtwResult
             changed = true
         }
 
-        // Pass 13: Load-target folding (ldr + mov → ldr directly)
+        // Pass 14: Load-target folding (ldr + mov → ldr directly)
         let (loadFoldResult, loadFoldChanged) = loadTargetFolding(result)
         if loadFoldChanged {
             result = loadFoldResult
             changed = true
         }
 
-        // Pass 14: Redundant SP restore elimination (mov sp, x29 when sp unchanged)
+        // Pass 15: Redundant SP restore elimination (mov sp, x29 when sp unchanged)
         let (spResult, spChanged) = redundantSPRestoreElimination(result)
         if spChanged {
             result = spResult
             changed = true
         }
 
-        // Pass 15: Mov-store fusion (mov xN,xM + str xN → str xM)
+        // Pass 16: Mov-store fusion (mov xN,xM + str xN → str xM)
         let (fusionResult, fusionChanged) = movStoreFusion(result)
         if fusionChanged {
             result = fusionResult
