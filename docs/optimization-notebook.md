@@ -101,34 +101,30 @@
 - 689 patterns found in SQLite
 - No issues encountered
 
-## Summary (as of commit fe7deaf)
+## Summary (as of commit fcee8db)
 - Original: 562,433 instructions
-- After opt 1-7: 536,862 (4.0% reduction)
-- After opt 8-9: 533,213 (5.2% reduction)
-- After opt 10-12: 492,015 with buggy store-source copy prop (12% reduction)
-- After disabling store-source copy prop: pending benchmark
+- After opt 1-9: 533,213 (5.2% reduction)
+- After opt 10-11 (dead sxtw, add chain reorder): 531,591 (5.5%)
+- After extending sxtb/sxth/uxtb/uxth: 530,424 (5.7%)
+- After opt 13 (load-target folding): pending benchmark
 - All 164 tests pass
 
-### 10. Add chain folding (commit 811dd3f, reordered ff86f76)
-- Folds add xN,x29,#A + add xM,xN,#B → add xM,x29,#(A+B)
-- What went bad: no effect when run after address folding (which already
-  folded the first add). Fixed by moving before address folding.
-- 1,088 patterns found
-
-### 11. Dead sign extension elimination (commit ff86f76)
-- Removes sxtw xN,wN when 64-bit form is never used before reassignment
-- sxtw: 18,115 → 10,741 (7,374 eliminated!)
-- What went bad: conservative — stops at control flow boundaries.
-  Could be more aggressive with cross-block liveness.
+### 11. Dead sign extension elimination (commit ff86f76, extended 7133693)
+- Removes sxtw/sxtb/sxth/uxtb/uxth when extended form is never used
+- sxtw: 18,115 → 10,761 (7,354 eliminated)
+- sxtb: 1,475 → 774 (701 eliminated)
+- sxth: 1,192 → 727 (465 eliminated)
+- Total: 8,520 sign extensions eliminated
+- What went bad: initially only handled sxtw. Extended to all variants.
 
 ### 12. Store-source copy propagation (ATTEMPTED, DISABLED)
 - Attempted to replace store source with copy-propagated register
 - What went bad: caused incorrect results. `str x0, [x29, #-8]` was
-  rewritten to `str w9, [x29, #-8]` because a later `mov w9, w0` created
-  a copy map entry that somehow affected the earlier store. The exact
-  mechanism is unclear — copy propagation is a forward pass and shouldn't
-  see future entries. Possibly an issue with the optimizer running multiple
-  iterations and copy map state persisting incorrectly.
-- Also caused `str #5, [sp, #-16]!` (immediate as store source — invalid)
-  when copy propagation replaced register with immediate.
-- Disabled. Needs proper liveness analysis to determine safety.
+  rewritten to `str w9, [x29, #-8]` due to stale copy map entries.
+  Also created `str #5, [sp, #-16]!` (immediate as store source — invalid).
+- Disabled. Needs proper liveness analysis.
+
+### 13. Load-target folding (commit fcee8db)
+- Folds ldr xN, [addr] + mov xP, xN → ldr xP, [addr] when xN is dead
+- 857 patterns found in SQLite
+- No issues encountered
