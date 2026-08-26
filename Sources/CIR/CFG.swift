@@ -313,6 +313,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 11: Add chain folding (add xN,x29,#A + add xM,xN,#B → add xM,x29,#(A+B))
+        let (addFoldResult, addFoldChanged) = addChainFolding(result)
+        if addFoldChanged {
+            result = addFoldResult
+            changed = true
+        }
+
         iterations += 1
     }
 
