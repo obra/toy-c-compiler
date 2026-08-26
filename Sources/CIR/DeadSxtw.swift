@@ -114,7 +114,9 @@ func usedIn64BitForm(_ insts: [IRInst], after idx: Int, reg: VReg) -> Bool {
 
         // Stop at control flow (register might be used in other blocks)
         switch inst {
-        case .b, .bcond, .cbz, .cbnz, .tbz, .tbnz, .ret, .label:
+        case .ret:
+            return false  // Function exit — register is dead
+        case .b, .bcond, .cbz, .cbnz, .tbz, .tbnz, .label:
             // At control flow boundary, be conservative — assume 64-bit use possible
             return true
         case .call, .callIndirect:
