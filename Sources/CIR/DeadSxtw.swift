@@ -2,16 +2,13 @@ import CCommon
 
 // MARK: - Dead Sign Extension Elimination
 
-/// Eliminate `sxtw xN, wN` when the result (xN) is only used in its 32-bit
-/// form (wN). Since writing to wN already sets the upper 32 bits to zero
-/// (for ldr w) or preserves the sign extension (for arithmetic), the sxtw
-/// is unnecessary if the 64-bit form is never used.
+/// Eliminate sign/zero extension instructions when the result is only used
+/// in a narrower form. Handles sxtw, sxtb, sxth, uxtb, uxth.
 ///
 /// Pattern: sxtw x9, w9 followed by instructions using w9 (never x9)
 /// → remove the sxtw
 ///
-/// Only removes when xN is not used as a 64-bit source in any subsequent
-/// instruction before being reassigned.
+/// Only removes when the extended form is not used before being reassigned.
 public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
     var result: [IRInst] = []
     var changed = false
@@ -20,12 +17,33 @@ public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) 
     while i < insts.count {
         let inst = insts[i]
 
-        // Look for: sxtw dst, src (where dst and src have the same register number)
-        if case .sxtw(let dst, let src) = inst,
-           case .vreg(let srcVReg) = src, NormalizedReg(dst) == NormalizedReg(srcVReg) {
+        // Check all sign/zero extension instructions where dst and src have same reg number
+        let extDst: VReg? = {
+            switch inst {
+            case .sxtw(let d, _): return d
+            case .sxtb(let d, _): return d
+            case .sxth(let d, _): return d
+            case .uxtb(let d, _): return d
+            case .uxth(let d, _): return d
+            default: return nil
+            }
+        }()
+
+        let extSrc: VReg? = {
+            switch inst {
+            case .sxtw(_, let s): return s.asVReg
+            case .sxtb(_, let s): return s.asVReg
+            case .sxth(_, let s): return s.asVReg
+            case .uxtb(_, let s): return s.asVReg
+            case .uxth(_, let s): return s.asVReg
+            default: return nil
+            }
+        }()
+
+        if let dst = extDst, let src = extSrc, NormalizedReg(dst) == NormalizedReg(src) {
             // Check if dst is used in 64-bit form before being reassigned
             if !usedIn64BitForm(insts, after: i, reg: dst) {
-                // sxtw is dead — skip it
+                // Extension is dead — skip it
                 changed = true
                 i += 1
                 continue
