@@ -41,14 +41,27 @@ public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) 
         }()
 
         if let dst = extDst, let src = extSrc, NormalizedReg(dst) == NormalizedReg(src) {
-            // Check if the previous instruction is mov reg, #0
-            // Sign-extending zero is always zero — the extension is dead
+            // Check if the previous instruction is mov reg, #imm where imm fits in 32 bits
+            // Sign-extending a value that fits in 32 bits doesn't change it if it's
+            // already in the correct form (the mov already zero-extended or sign-extended)
             if i > 0, case .mov(let prevDst, let prevSrc) = insts[i - 1],
                NormalizedReg(prevDst) == NormalizedReg(dst),
-               case .imm(let val) = prevSrc, val == 0 {
-                changed = true
-                i += 1
-                continue
+               case .imm(let val) = prevSrc, val >= 0, val <= 0x7FFFFFFF {
+                // For sxtw: sign-extending a 32-bit positive value is a no-op
+                // For sxtb/sxth: same logic for smaller values
+                let extType: String = {
+                    switch inst {
+                    case .sxtw: return "sxtw"
+                    case .sxtb: return "sxtb"
+                    case .sxth: return "sxth"
+                    default: return ""
+                    }
+                }()
+                if extType == "sxtw" || (extType == "sxth" && val <= 0x7FFF) || (extType == "sxtb" && val <= 0x7F) {
+                    changed = true
+                    i += 1
+                    continue
+                }
             }
             // Check if dst is used in 64-bit form before being reassigned
             if !usedIn64BitForm(insts, after: i, reg: dst) {
