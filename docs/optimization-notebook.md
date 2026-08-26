@@ -156,3 +156,24 @@
 - Result: 524,509 → 515,883 instructions (8,626 saved, 1.6% reduction)
 - Total from original: 562,433 → 515,883 (8.3% total reduction)
 - No issues encountered. 164/164 tests pass.
+
+### 17. Pair coalescing (commit c090a4c)
+- Coalesces consecutive str+str [base, #off] and [base, #off+8] → stp
+- Also ldr+ldr → ldp. Normalizes zero register width (wzr→xzr) for stp.
+- 3,655 stp pairs + 137 ldp pairs in SQLite
+- 515,883 → 512,345 (3,538 saved)
+
+### 18. storePre cancellation in stackAdjustmentMerge (commit 56f6642)
+- add sp, #N + str x, [sp, #-M]! → str x, [sp, #(N-M)] + adjust sp by (N-M)
+- 3,893 exact + 3,141 partial cancellations
+- 524,509 → 515,883 (8,626 saved)
+
+### 19. Constant folding for cmp and cbz/cbnz (commit 80e8e9b, ab0df89)
+- Folds known constant register values into cmp operands
+- Folds cbz/cbnz with known-zero/nonzero sources
+- Clears constValues at labels/branches/ret for control flow correctness
+- 512,345 → 499,743 (12,602 saved)
+- What went bad: initial version didn't clear constants at control flow merge
+  points, causing incorrect cbz elimination when different branches set
+  different values to same register. Fixed by clearing at labels/branches/ret.
+- Total from original: 562,433 → 499,743 (11.1% reduction)
