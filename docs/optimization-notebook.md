@@ -101,13 +101,23 @@
 - 689 patterns found in SQLite
 - No issues encountered
 
-## Summary (as of commit fcee8db)
+## Summary (as of commit c80d779)
 - Original: 562,433 instructions
-- After opt 1-9: 533,213 (5.2% reduction)
-- After opt 10-11 (dead sxtw, add chain reorder): 531,591 (5.5%)
-- After extending sxtb/sxth/uxtb/uxth: 530,424 (5.7%)
-- After opt 13 (load-target folding): pending benchmark
+- After opt 1-11: 530,424 (5.7% reduction)
+- After opt 14 (zero-source sxtw): 528,437 (6.1%)
+- After opt 15 (SP restore): pending benchmark
 - All 164 tests pass
+
+### 14. Zero-source sxtw elimination (commit 1af6db6)
+- Eliminates sxtw/sxtb/sxth when preceded by mov reg, #0
+- Sign-extending zero is zero — the extension is dead
+- sxtw: 10,761 → 9,615 (1,146 eliminated)
+- Total sxtw from original: 18,115 → 9,615 (8,500 total eliminated)
+
+### 15. Redundant SP restore elimination (commit c80d779)
+- Eliminates 'mov sp, x29' when sp was not modified after prologue
+- 216 functions with no sp modification
+- No issues encountered
 
 ### 11. Dead sign extension elimination (commit ff86f76, extended 7133693)
 - Removes sxtw/sxtb/sxth/uxtb/uxth when extended form is never used
