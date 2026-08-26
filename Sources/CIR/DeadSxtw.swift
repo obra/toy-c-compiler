@@ -41,6 +41,15 @@ public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) 
         }()
 
         if let dst = extDst, let src = extSrc, NormalizedReg(dst) == NormalizedReg(src) {
+            // Check if the previous instruction is mov reg, #0
+            // Sign-extending zero is always zero — the extension is dead
+            if i > 0, case .mov(let prevDst, let prevSrc) = insts[i - 1],
+               NormalizedReg(prevDst) == NormalizedReg(dst),
+               case .imm(let val) = prevSrc, val == 0 {
+                changed = true
+                i += 1
+                continue
+            }
             // Check if dst is used in 64-bit form before being reassigned
             if !usedIn64BitForm(insts, after: i, reg: dst) {
                 // Extension is dead — skip it
