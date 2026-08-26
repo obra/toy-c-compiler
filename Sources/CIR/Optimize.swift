@@ -567,6 +567,18 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
     for i in 0..<result.count {
         let inst = result[i]
 
+        // At labels and after branches, control flow can merge with different
+        // register values. Clear all known constants to avoid incorrect folding.
+        if case .label = inst {
+            constValues.removeAll()
+        }
+        if case .b = inst {
+            constValues.removeAll()
+        }
+        if case .ret = inst {
+            constValues.removeAll()
+        }
+
         switch inst {
         case .loadImm(let dst, let val):
             constValues[NormalizedReg(dst)] = val
@@ -629,6 +641,34 @@ public func constantFolding(_ insts: [IRInst]) -> ([IRInst], Bool) {
             }
             if ns1 != s1 || ns2 != s2 {
                 result[i] = .cmp(src1: ns1, src2: ns2)
+            }
+
+        case .cbz(let src, let label):
+            // If src is a known constant, fold the branch
+            if case .vreg(let v) = src, let val = constValues[NormalizedReg(v)] {
+                if val == 0 {
+                    // cbz with known-zero source → always taken → unconditional branch
+                    result[i] = .b(label: label)
+                    changed = true
+                } else {
+                    // cbz with known-nonzero source → never taken → eliminate
+                    result[i] = .comment("eliminated cbz")
+                    changed = true
+                }
+            }
+
+        case .cbnz(let src, let label):
+            // If src is a known constant, fold the branch
+            if case .vreg(let v) = src, let val = constValues[NormalizedReg(v)] {
+                if val == 0 {
+                    // cbnz with known-zero source → never taken → eliminate
+                    result[i] = .comment("eliminated cbnz")
+                    changed = true
+                } else {
+                    // cbnz with known-nonzero source → always taken → unconditional branch
+                    result[i] = .b(label: label)
+                    changed = true
+                }
             }
 
         default:
