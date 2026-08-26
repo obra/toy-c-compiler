@@ -150,13 +150,13 @@ func parseReg(_ s: String, counter: inout Int) -> VReg? {
     if cleaned.hasPrefix("s") {
         let numStr = cleaned.dropFirst()
         if let num = Int(numStr) {
-            return VReg(id: num, kind: .fp)
+            return VReg(id: num, kind: .fp, isWord: true)  // single-precision (s form)
         }
     }
     if cleaned.hasPrefix("d") {
         let numStr = cleaned.dropFirst()
         if let num = Int(numStr) {
-            return VReg(id: num, kind: .fp)
+            return VReg(id: num, kind: .fp, isWord: false)  // double-precision (d form)
         }
     }
     if cleaned == "sp" {

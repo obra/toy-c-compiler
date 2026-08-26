@@ -87,6 +87,11 @@ fileprivate struct Lowerer {
                 if v.id == 32 { return v.isWord ? "wzr" : "xzr" }
                 return v.isWord ? "w\(num)" : "x\(num)"
             }
+            // FP registers: use isWord to choose s (single) vs d (double) form
+            if v.kind == .fp {
+                if v.id == 32 { return v.isWord ? "wzr" : "xzr" }
+                return v.isWord ? "s\(v.id)" : "d\(v.id)"
+            }
             return s
         }
         // Spilled: reference as a frame slot.
@@ -294,7 +299,15 @@ fileprivate struct Lowerer {
         case .mov(let dst, let src):
             // Use fmov for FP register copies
             if dst.kind == .fp {
-                emit("fmov \(regForm(dst)), \(operand(src))", into: &out)
+                // fmov dN, dM is valid (FP→FP)
+                // fmov dN, xM is valid (GP→FP, 64-bit)
+                // fmov dN, wM is INVALID — must use x-form for GP source
+                if case .vreg(let srcV) = src, srcV.kind == .gp, srcV.isWord {
+                    // Force 64-bit x-form for GP source
+                    emit("fmov \(regForm(dst)), x\(srcV.id)", into: &out)
+                } else {
+                    emit("fmov \(regForm(dst)), \(operand(src))", into: &out)
+                }
             } else {
                 emit("mov \(regForm(dst)), \(operand(src))", into: &out)
             }
