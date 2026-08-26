@@ -685,6 +685,24 @@ public func stackAdjustmentMerge(_ insts: [IRInst]) -> ([IRInst], Bool) {
             flushPending()
             result.append(inst)
 
+        case .storePre(let src, let addr, let offset, let width):
+            // Cancellation: add sp, #N + str x, [sp, #-M]!
+            // If pendingAdjust >= M, the storePre's net effect is:
+            //   sp_new = sp + pendingAdjust - M
+            //   store at sp + pendingAdjust - M (the final sp)
+            // Replace with: store at [sp, #(pendingAdjust - M)] + adjust sp by (pendingAdjust - M)
+            // When pendingAdjust == M (exact cancel): plain store at [sp], no sp change → saves 1 instruction
+            if isSPRef(addr), offset < 0, pendingAdjust >= -offset {
+                let netAdjust = pendingAdjust + offset  // pendingAdjust - |offset|
+                let storeOffset = netAdjust  // offset from original sp
+                result.append(.store(src: src, addr: addr, offset: storeOffset, width: width))
+                pendingAdjust = netAdjust
+                changed = true
+            } else {
+                flushPending()
+                result.append(inst)
+            }
+
         default:
             // Flush on any instruction that references sp (VReg 31) or modifies it
             if refsSP(inst) {

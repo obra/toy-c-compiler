@@ -136,3 +136,23 @@
 - Folds ldr xN, [addr] + mov xP, xN → ldr xP, [addr] when xN is dead
 - 857 patterns found in SQLite
 - No issues encountered
+
+### 14. SP restore elimination (commit N/A — no effect)
+- Attempted to eliminate redundant `mov sp, x29` in epilogues
+- All functions modify sp, so no redundant SP restores found
+- No effect
+
+### 15. Mov-store fusion (commit N/A)
+- Fuses mov xN, xM + str xN, [addr] → str xM, [addr] when xN is dead after store
+- Also handles mov xN, xM + str xN, [sp, #-16]! → str xM, [sp, #-16]!
+- ~235 mov+str patterns found; some fused
+
+### 16. storePre cancellation in stackAdjustmentMerge
+- Pattern: add sp, #N + str x, [sp, #-M]! → str x, [sp, #(N-M)] + adjust sp by (N-M)
+- When N == M (exact cancel): str x, [sp] with no sp change, saving 1 instruction
+- When N > M (partial cancel): plain store at offset + smaller sp adjustment
+  enables further merging with adjacent adjustments
+- 3,893 exact cancellations + 3,141 partial cancellations in SQLite
+- Result: 524,509 → 515,883 instructions (8,626 saved, 1.6% reduction)
+- Total from original: 562,433 → 515,883 (8.3% total reduction)
+- No issues encountered. 164/164 tests pass.
