@@ -292,31 +292,38 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
-        // Pass 8: Address folding (fold addrr xN,x29,#N into load/store [x29, #N])
+        // Pass 8: Add chain folding (must run BEFORE address folding to catch chains)
+        let (addFoldResult, addFoldChanged) = addChainFolding(result)
+        if addFoldChanged {
+            result = addFoldResult
+            changed = true
+        }
+
+        // Pass 9: Address folding (fold addrr xN,x29,#N into load/store [x29, #N])
         let (addrResult, addrChanged) = addressFolding(result)
         if addrChanged {
             result = addrResult
             changed = true
         }
 
-        // Pass 9: Zero store elimination (mov reg,#0 + str reg → str wzr)
+        // Pass 10: Zero store elimination (mov reg,#0 + str reg → str wzr)
         let (zeroResult, zeroChanged) = zeroStoreElimination(result)
         if zeroChanged {
             result = zeroResult
             changed = true
         }
 
-        // Pass 10: Compare-to-branch folding (cmp #0 + b.eq/ne → cbz/cbnz)
+        // Pass 11: Compare-to-branch folding (cmp #0 + b.eq/ne → cbz/cbnz)
         let (cmpResult, cmpChanged) = cmpToBranchFolding(result)
         if cmpChanged {
             result = cmpResult
             changed = true
         }
 
-        // Pass 11: Add chain folding (add xN,x29,#A + add xM,xN,#B → add xM,x29,#(A+B))
-        let (addFoldResult, addFoldChanged) = addChainFolding(result)
-        if addFoldChanged {
-            result = addFoldResult
+        // Pass 12: Dead sign extension elimination (sxtw only used in 32-bit → remove)
+        let (sxtwResult, sxtwChanged) = deadSignExtensionElimination(result)
+        if sxtwChanged {
+            result = sxtwResult
             changed = true
         }
 

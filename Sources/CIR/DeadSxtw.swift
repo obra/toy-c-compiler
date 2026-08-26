@@ -1,0 +1,89 @@
+import CCommon
+
+// MARK: - Dead Sign Extension Elimination
+
+/// Eliminate `sxtw xN, wN` when the result (xN) is only used in its 32-bit
+/// form (wN). Since writing to wN already sets the upper 32 bits to zero
+/// (for ldr w) or preserves the sign extension (for arithmetic), the sxtw
+/// is unnecessary if the 64-bit form is never used.
+///
+/// Pattern: sxtw x9, w9 followed by instructions using w9 (never x9)
+/// → remove the sxtw
+///
+/// Only removes when xN is not used as a 64-bit source in any subsequent
+/// instruction before being reassigned.
+public func deadSignExtensionElimination(_ insts: [IRInst]) -> ([IRInst], Bool) {
+    var result: [IRInst] = []
+    var changed = false
+
+    var i = 0
+    while i < insts.count {
+        let inst = insts[i]
+
+        // Look for: sxtw dst, src (where dst and src have the same register number)
+        if case .sxtw(let dst, let src) = inst,
+           case .vreg(let srcVReg) = src, NormalizedReg(dst) == NormalizedReg(srcVReg) {
+            // Check if dst is used in 64-bit form before being reassigned
+            if !usedIn64BitForm(insts, after: i, reg: dst) {
+                // sxtw is dead — skip it
+                changed = true
+                i += 1
+                continue
+            }
+        }
+
+        result.append(inst)
+        i += 1
+    }
+
+    return (result, changed)
+}
+
+/// Check if a register is used in 64-bit (x) form before being reassigned.
+/// Returns true if the 64-bit form is used, false if only 32-bit (w) form
+/// is used (or the register is reassigned without any use).
+func usedIn64BitForm(_ insts: [IRInst], after idx: Int, reg: VReg) -> Bool {
+    let regNorm = NormalizedReg(reg)
+
+    for j in (idx+1)..<min(idx+30, insts.count) {
+        let inst = insts[j]
+
+        // If reg is reassigned (written to), stop
+        if let dst = destVReg(inst), NormalizedReg(dst) == regNorm {
+            // Check if it's written in 64-bit form (x) — if so, the old value
+            // including sxtw is overwritten, so sxtw was dead
+            if !dst.isWord {
+                return false  // Reassigned in 64-bit form — sxtw was dead
+            }
+            // Written in 32-bit form (w) — the sxtw result is partially overwritten
+            // but the upper 32 bits survive. This is complex — be conservative.
+            return true  // Can't prove it's dead
+        }
+
+        // Check if reg is used as a source
+        for src in sourceVRegs(inst) {
+            if NormalizedReg(src) == regNorm {
+                // If used in 64-bit (x) form, sxtw is needed
+                if !src.isWord {
+                    return true
+                }
+                // If used in 32-bit (w) form, sxtw is not needed for this use
+                // but we need to keep checking for 64-bit uses
+            }
+        }
+
+        // Stop at control flow (register might be used in other blocks)
+        switch inst {
+        case .b, .bcond, .cbz, .cbnz, .tbz, .tbnz, .ret, .label:
+            // At control flow boundary, be conservative — assume 64-bit use possible
+            return true
+        case .call, .callIndirect:
+            return true
+        default:
+            break
+        }
+    }
+
+    // Reached end of window — be conservative
+    return true
+}
