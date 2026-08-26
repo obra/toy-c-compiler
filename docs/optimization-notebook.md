@@ -101,22 +101,21 @@
 - 689 patterns found in SQLite
 - No issues encountered
 
-## Summary (as of commit b4be1b5)
+## Summary (as of commit 1656f6f)
 - Original: 562,433 instructions
-- Latest: 525,852 instructions (6.5% reduction, 36,581 removed)
+- Latest: 524,720 instructions (6.7% reduction, 37,713 removed)
 - All 164 tests pass
-
-### 16. Positive constant sxtw elimination (commit 317ae38)
-- Sign-extending positive constants (0-0x7FFFFFFF) is a no-op
-- sxtw: 9,615 → 8,618 (997 more eliminated)
-- What went bad: first attempt used `inst == .sxtw(dst, src)` which
-  doesn't compile (VReg vs Operand). Fixed with switch-based type check.
 
 ### 17. Mov-store fusion (commit b4be1b5)
 - mov xN,xM + str xN,[addr] → str xM,[addr] when xN is dead
-- Uses usedAfter() liveness check for safety
 - mov: 72,674 → 71,673 (1,001 eliminated)
-- No issues encountered
+
+### 18. usedAfter fix (commit 1656f6f)
+- Fixed usedAfter() to return false at ret (registers are dead at function exit)
+- Enables load-target folding at function returns
+- mov: 71,673 → 70,541 (1,132 eliminated)
+- What went bad: usedAfter was returning true at ret, preventing load-target
+  folding from working on ldr+mov patterns at function exits.
 
 ### 11. Dead sign extension elimination (commit ff86f76, extended 7133693)
 - Removes sxtw/sxtb/sxth/uxtb/uxth when extended form is never used
