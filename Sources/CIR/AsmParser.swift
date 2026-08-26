@@ -440,9 +440,8 @@ func parseInstruction(
             let valStr = args[1].trimmingCharacters(in: CharacterSet(charactersIn: "#"))
             if let val = Int64(valStr) {
                 var shift = 0
-                if args.count >= 3 && args[2].hasPrefix("lsl") {
-                    let shiftStr = args[2].split(separator: "#").last.map { String($0) } ?? "0"
-                    shift = Int(shiftStr.trimmingCharacters(in: .whitespaces)) ?? 0
+                if args.count >= 4 && args[2] == "lsl" {
+                    shift = Int(args[3].trimmingCharacters(in: CharacterSet(charactersIn: "#"))) ?? 0
                 }
                 return .orr(dst: dst, src1: .vreg(dst), src2: .imm(val << shift))
             }
