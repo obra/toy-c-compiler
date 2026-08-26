@@ -341,6 +341,13 @@ public func optimizeIR2(_ insts: [IRInst]) -> [IRInst] {
             changed = true
         }
 
+        // Pass 15: Mov-store fusion (mov xN,xM + str xN → str xM)
+        let (fusionResult, fusionChanged) = movStoreFusion(result)
+        if fusionChanged {
+            result = fusionResult
+            changed = true
+        }
+
         iterations += 1
     }
 
